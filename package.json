@@ -1,0 +1,31 @@
+{
+  "name": "@lama/core",
+  "version": "1.0.0",
+  "description": "LAMA Core - Shared business logic handlers and services",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "find . -name '*.js' -not -path './node_modules/*' -delete"
+  },
+  "exports": {
+    "./handlers/*": "./handlers/*",
+    "./services/*": "./services/*",
+    "./models/*": "./models/*",
+    "./one-ai/*": "./one-ai/*"
+  },
+  "author": "lama.one Team",
+  "license": "MIT",
+  "private": true,
+  "peerDependencies": {
+    "@refinio/one.core": "*",
+    "@refinio/one.models": "*"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}

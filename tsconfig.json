@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "noEmit": false,
+    "noEmitOnError": false,
+    "outDir": ".",
+    "declaration": false,
+    "strict": false,
+    "resolveJsonModule": true,
+    "noImplicitAny": false
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "**/*.js"]
+}
