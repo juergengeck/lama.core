@@ -31,7 +31,7 @@ export type {
 
 // Component exports (will be added as components are implemented)
 export { AITopicManager } from './AITopicManager.js';
-// export { AIMessageProcessor } from './AIMessageProcessor.js';
+export { AIMessageProcessor } from './AIMessageProcessor.js';
 export { AIPromptBuilder } from './AIPromptBuilder.js';
 export { AIContactManager } from './AIContactManager.js';
 export { AITaskManager } from './AITaskManager.js';
