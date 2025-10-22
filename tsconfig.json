@@ -9,12 +9,17 @@
     "allowJs": true,
     "noEmit": false,
     "noEmitOnError": false,
-    "outDir": ".",
-    "declaration": false,
+    "outDir": "./dist",
+    "declaration": true,
     "strict": false,
     "resolveJsonModule": true,
-    "noImplicitAny": false
+    "noImplicitAny": false,
+    "baseUrl": ".",
+    "paths": {
+      "@refinio/*": ["./packages/*"],
+      "@anthropic-ai/*": ["../lama.browser/node_modules/@anthropic-ai/*"]
+    }
   },
   "include": ["**/*.ts"],
-  "exclude": ["node_modules", "**/*.js"]
+  "exclude": ["node_modules", "**/*.js", "packages/**", "dist/**"]
 }

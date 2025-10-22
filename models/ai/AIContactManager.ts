@@ -12,11 +12,22 @@
  * - Validate and sync AI contacts with available models
  */
 
-import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Person } from '@refinio/one.core/lib/recipes.js';
+import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
+import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Person, Instance, Keys } from '@refinio/one.core/lib/recipes.js';
+import type { KeyPair } from '@refinio/one.core/lib/crypto/encryption.js';
+import type { SignKeyPair } from '@refinio/one.core/lib/crypto/sign.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type { IAIContactManager } from './interfaces.js';
 import type { LLMModelInfo, AIContactCreationResult } from './types.js';
+
+// CRITICAL: Storage functions passed as dependencies to avoid module duplication in Vite worker bundles
+export interface AIContactManagerDeps {
+  storeVersionedObject: (obj: any) => Promise<any>;
+  getIdObject: (idHash: SHA256IdHash<any>) => Promise<any>;
+  createDefaultKeys?: (owner: SHA256IdHash<Person | Instance>, encryptionKeyPair?: KeyPair, signKeyPair?: SignKeyPair) => Promise<SHA256Hash<Keys>>;
+  hasDefaultKeys?: (owner: SHA256IdHash<Person | Instance>) => Promise<boolean>;
+}
 
 export class AIContactManager implements IAIContactManager {
   // modelId → personId cache
@@ -27,6 +38,7 @@ export class AIContactManager implements IAIContactManager {
 
   constructor(
     private leuteModel: LeuteModel,
+    private deps: AIContactManagerDeps,
     private llmObjectManager?: any // Optional - for LLM object storage
   ) {
     this.aiContacts = new Map();
@@ -86,19 +98,28 @@ export class AIContactManager implements IAIContactManager {
         name: displayName,
       };
 
-      const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
-      const result: any = await storeVersionedObject(personData);
+      console.log('[AIContactManager] About to call storeVersionedObject with:', personData);
+      console.log('[AIContactManager] storeVersionedObject function:', this.deps.storeVersionedObject);
+
+      const result: any = await this.deps.storeVersionedObject(personData);
+      console.log('[AIContactManager] storeVersionedObject result:', result);
       const personIdHashResult = typeof result === 'object' && result?.idHash ? result.idHash : result;
-      const { ensureIdHash } = await import('@refinio/one.core/lib/util/type-checks.js');
       const personIdHash = ensureIdHash(personIdHashResult);
 
       console.log(`[AIContactManager] Person ID: ${personIdHash.toString().substring(0, 8)}...`);
 
-      // Ensure cryptographic keys exist for this person
-      const { createDefaultKeys, hasDefaultKeys } = await import('@refinio/one.core/lib/keychain/keychain.js');
-      if (!(await hasDefaultKeys(personIdHash))) {
-        await createDefaultKeys(personIdHash);
-        console.log(`[AIContactManager] Created cryptographic keys`);
+      // Try to ensure cryptographic keys exist for this person
+      // This may fail in browser if Keys recipe isn't registered - that's OK for AI contacts
+      if (this.deps.hasDefaultKeys && this.deps.createDefaultKeys) {
+        try {
+          if (!(await this.deps.hasDefaultKeys(personIdHash))) {
+            await this.deps.createDefaultKeys(personIdHash);
+            console.log(`[AIContactManager] Created cryptographic keys`);
+          }
+        } catch (error) {
+          console.log(`[AIContactManager] Skipping key creation (not available in this platform):`, (error as Error).message);
+          // AI contacts don't need encryption keys, so this is fine
+        }
       }
 
       // Check if Someone with this modelId already exists
@@ -120,35 +141,36 @@ export class AIContactManager implements IAIContactManager {
 
       // If no Someone exists with this modelId, create Profile and Someone
       if (!existingSomeone) {
-        const ProfileModel = (await import('@refinio/one.models/lib/models/Leute/ProfileModel.js')).default;
         const myId = await this.leuteModel.myMainIdentity();
 
-        const profile = await ProfileModel.constructWithNewProfile(
-          personIdHash,
-          myId,
-          'default'
-        );
-
-        profile.personDescriptions?.push({
-          $type$: 'PersonName',
-          name: displayName,
-        });
-
-        await profile.saveAndLoad();
-        console.log(`[AIContactManager] Created profile: ${profile.idHash.toString().substring(0, 8)}...`);
-
-        // Create Someone object
-        const newSomeone = {
-          $type$: 'Someone' as const,
-          someoneId: modelId,
-          mainProfile: profile.idHash,
+        // Create Profile object directly (using all required properties from recipe)
+        const profileObj: any = {
+          $type$: 'Profile' as const,
+          profileId: `ai-${modelId}`,  // ID property
+          personId: personIdHash,  // referenceToId
+          owner: myId,
+          nickname: displayName,  // Profile recipe uses 'nickname', not 'name'
+          personDescription: [],  // Singular, not plural
+          communicationEndpoint: []  // Singular, not plural
         };
 
-        const someoneResult: any = await storeVersionedObject(newSomeone);
+        const profileResult: any = await this.deps.storeVersionedObject(profileObj);
+        const profileIdHash = typeof profileResult === 'object' && profileResult?.idHash ? profileResult.idHash : profileResult;
+        console.log(`[AIContactManager] Created profile: ${profileIdHash.toString().substring(0, 8)}...`);
+
+        // Create Someone object with all required properties
+        const newSomeone: any = {
+          $type$: 'Someone' as const,
+          someoneId: modelId,
+          mainProfile: profileIdHash,
+          identities: new Map([[personIdHash, new Set([profileIdHash])]])
+        };
+
+        const someoneResult: any = await this.deps.storeVersionedObject(newSomeone);
         const someoneIdHash = typeof someoneResult === 'object' && someoneResult?.idHash ? someoneResult.idHash : someoneResult;
 
-        // Add to LeuteModel
-        await this.leuteModel.addOther(someoneIdHash);
+        // Add to LeuteModel using addProfile (not addOther)
+        await (this.leuteModel as any).addProfile(profileIdHash);
         console.log(`[AIContactManager] Created and added Someone to contacts: ${someoneIdHash.toString().substring(0, 8)}...`);
       }
 
@@ -216,8 +238,7 @@ export class AIContactManager implements IAIContactManager {
           const personId = await someone.mainIdentity();
 
           // Get Person object to check email
-          const { getIdObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
-          const person = await getIdObject(personId);
+          const person = await this.deps.getIdObject(personId);
           const email = (person as any).email || '';
 
           // AI contacts have emails like "modelId@ai.local"

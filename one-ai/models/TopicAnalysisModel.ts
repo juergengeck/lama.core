@@ -6,6 +6,8 @@ import type { ChannelManager } from '@refinio/one.models/lib/models/index.js';
 
 import { Model } from '@refinio/one.models/lib/models/Model.js';
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
+import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import TopicAnalysisRoom from './TopicAnalysisRoom.js';
 
 export default class TopicAnalysisModel extends Model {
@@ -55,7 +57,6 @@ export default class TopicAnalysisModel extends Model {
         this.state.assertCurrentState('Initialised');
 
         // Calculate Keyword ID hashes from terms
-        const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
         const keywordIdHashes = [];
 
         for (const term of keywordTerms) {
@@ -88,7 +89,6 @@ export default class TopicAnalysisModel extends Model {
         };
 
         // STORE the versioned object first - this creates the vheads file for ID hash lookups
-        const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
         console.log('[TopicAnalysisModel] 🔍 About to store Subject with ID:', keywordCombination);
         console.log('[TopicAnalysisModel] 🔍 Subject object:', JSON.stringify(subjectObj, null, 2));
 
@@ -125,7 +125,6 @@ export default class TopicAnalysisModel extends Model {
         };
 
         // CRITICAL: Store as versioned object FIRST - creates vheads file for ID hash lookups
-        const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
         const result = await storeVersionedObject(keywordObj);
         console.log('[TopicAnalysisModel] ✅ Stored Keyword with idHash:', result.idHash, 'term:', keywordObj.term);
 
@@ -156,7 +155,6 @@ export default class TopicAnalysisModel extends Model {
         };
 
         // CRITICAL: Store as versioned object FIRST - creates vheads file for ID hash lookups
-        const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
         const result = await storeVersionedObject(keywordObj);
         console.log('[TopicAnalysisModel] ✅ Stored Keyword with subjects, idHash:', result.idHash, 'term:', keywordObj.term);
 
@@ -193,7 +191,6 @@ export default class TopicAnalysisModel extends Model {
             };
 
             // Store updated version FIRST
-            const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
             await storeVersionedObject(updatedKeyword);
 
             await this.channelManager.postToChannel(topicId, updatedKeyword);
@@ -247,7 +244,6 @@ export default class TopicAnalysisModel extends Model {
             }
 
             // Store updated version FIRST
-            const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
             await storeVersionedObject(updatedKeyword);
 
             await this.channelManager.postToChannel(topicId, updatedKeyword);
@@ -268,7 +264,6 @@ export default class TopicAnalysisModel extends Model {
         };
 
         // Store FIRST before posting to channel
-        const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
         const result = await storeVersionedObject(keywordObj);
 
         console.log('[TopicAnalysisModel] ✅ Created new keyword with subject:', { term: normalizedTerm, topicId, subjectIdHash, subjects: keywordObj.subjects, idHash: result.idHash });

@@ -9,6 +9,7 @@
 // import type { TopicAnalysisModel } from '../main/core/one-ai/models/TopicAnalysisModel.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
 // Service types (will be properly typed via ambient registry)
 type TopicAnalysisModel = any;
@@ -418,7 +419,6 @@ ${String(conversationText).substring(0, 3000)}`;
       const allKeywords: any = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
 
       // Create a map of keyword ID hash -> keyword term
-      const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
       const keywordHashToTerm = new Map<string, string>();
 
       for (const keyword of allKeywords) {

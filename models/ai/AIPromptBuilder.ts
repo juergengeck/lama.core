@@ -15,6 +15,7 @@
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
+import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type { IAIPromptBuilder, IAIMessageProcessor } from './interfaces.js';
 import type { PromptResult, RestartContext } from './types.js';
 
@@ -29,6 +30,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   private topicRestartSummaries: Map<string, any>;
 
   constructor(
+    private leuteModel: LeuteModel,
     private channelManager: ChannelManager,
     private llmManager: any, // LLMManager interface
     private topicManager: any, // AITopicManager
@@ -58,7 +60,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
     try {
       // Get topic room and retrieve messages
       const TopicModel = (await import('@refinio/one.models/lib/models/Chat/TopicModel.js')).default;
-      const topicModel = new TopicModel(this.channelManager as any);
+      const topicModel = new TopicModel(this.channelManager, this.leuteModel);
       const topicRoom = await topicModel.enterTopicRoom(topicId);
       const messages = await topicRoom.retrieveAllMessages();
 
@@ -283,7 +285,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
    */
   async restartConversationWithSummary(topicId: string): Promise<string | null> {
     const TopicModel = (await import('@refinio/one.models/lib/models/Chat/TopicModel.js')).default;
-    const topicModel = new TopicModel(this.channelManager as any);
+    const topicModel = new TopicModel(this.channelManager, this.leuteModel);
     const topicRoom = await topicModel.enterTopicRoom(topicId);
     const messages = await topicRoom.retrieveAllMessages();
 

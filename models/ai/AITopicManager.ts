@@ -14,6 +14,7 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import { getIdObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -40,7 +41,8 @@ export class AITopicManager implements IAITopicManager {
     private topicModel: TopicModel,
     private channelManager: ChannelManager,
     private leuteModel: LeuteModel,
-    private llmManager: any // LLMManager interface
+    private llmManager: any, // LLMManager interface
+    private topicGroupManager?: any // Optional - for topic creation (Node.js only)
   ) {
     this._topicModelMap = new Map();
     this._topicLoadingState = new Map();
@@ -173,7 +175,12 @@ export class AITopicManager implements IAITopicManager {
       return;
     }
 
-    const aiPersonId = await aiContactManager.ensureAIContactForModel(this.defaultModelId);
+    // Get model info for display name
+    const models = this.llmManager?.getAvailableModels() || [];
+    const model = models.find((m: any) => m.id === this.defaultModelId);
+    const displayName = model?.displayName || model?.name || this.defaultModelId;
+
+    const aiPersonId = await aiContactManager.ensureAIContactForModel(this.defaultModelId, displayName);
     if (!aiPersonId) {
       console.error('[AITopicManager] Could not get AI person ID');
       return;
@@ -187,7 +194,11 @@ export class AITopicManager implements IAITopicManager {
     // Create LAMA if it doesn't exist (uses private model variant)
     if (!lamaExists) {
       const privateModelId = this.defaultModelId + '-private';
-      const privateAiPersonId = await aiContactManager.ensureAIContactForModel(privateModelId);
+      // Register the private variant with llmManager
+      this.llmManager.registerPrivateVariant(this.defaultModelId);
+      // For private model, use the base model's display name
+      const privateDisplayName = `${displayName} (Private)`;
+      const privateAiPersonId = await aiContactManager.ensureAIContactForModel(privateModelId, privateDisplayName);
       if (!privateAiPersonId) {
         console.error('[AITopicManager] Could not get private AI person ID for LAMA');
         return;
@@ -208,7 +219,6 @@ export class AITopicManager implements IAITopicManager {
       const topic = await this.topicModel.topics.queryById(topicId);
       if (topic && (topic as any).group) {
         // Topic exists - try to determine its model from group members
-        const { getIdObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
         const group = await getIdObject((topic as any).group);
 
         if ((group as any).members) {
@@ -249,30 +259,51 @@ export class AITopicManager implements IAITopicManager {
   ): Promise<void> {
     console.log('[AITopicManager] Ensuring Hi chat...');
 
+    if (!this.topicGroupManager) {
+      console.warn('[AITopicManager] No topicGroupManager - cannot create topics (browser platform?)');
+      return;
+    }
+
     try {
-      // Get my identity
-      const myId = await this.leuteModel.myMainIdentity();
-
-      // Create topic with "hi" as ID
       const topicId = 'hi';
-      const topic = await this.topicModel.topics.createTopic(
-        topicId,
-        [myId, aiPersonId],
-        myId
-      );
+      let topicRoom: any;
+      let needsWelcome = false;
 
-      console.log(`[AITopicManager] Created Hi topic: ${topic.id}`);
+      // Check if topic already exists
+      try {
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        const messages = await topicRoom.retrieveAllMessages();
+        needsWelcome = messages.length === 0;
+      } catch (e) {
+        // Topic doesn't exist, create it
+        await this.topicGroupManager.createGroupTopic('Hi', topicId, [aiPersonId]);
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        needsWelcome = true;
+      }
 
-      // Register the topic
+      // Register as AI topic
       this.registerAITopic(topicId, modelId);
       this.setTopicDisplayName(topicId, 'Hi');
 
-      // Notify that topic was created (for welcome message generation)
-      if (onTopicCreated) {
-        await onTopicCreated(topicId, modelId);
+      // Send static welcome message immediately if needed
+      if (needsWelcome) {
+        const staticWelcome = `Hi! I'm LAMA, your local AI assistant.
+
+You can make me your own, give me a name of your choice, give me a persistent identity.
+
+We treat LLM as first-class citizens - they're communication peers just like people - and I will manage their learnings for you.
+
+The LAMA chat below is my memory. You can configure its visibility in Settings. All I learn from your conversations gets stored there for context, and is fully transparent for you. Nobody else can see this content.
+
+What can I help you with today?`;
+
+        await topicRoom.sendMessage(staticWelcome, aiPersonId, aiPersonId);
+        console.log('[AITopicManager] ✅ Hi chat created with welcome message');
+      } else {
+        console.log('[AITopicManager] ✅ Hi chat already exists');
       }
     } catch (error) {
-      console.error('[AITopicManager] Failed to create Hi chat:', error);
+      console.error('[AITopicManager] Failed to ensure Hi chat:', error);
       throw error;
     }
   }
@@ -285,29 +316,46 @@ export class AITopicManager implements IAITopicManager {
     privateAiPersonId: SHA256IdHash<Person>,
     onTopicCreated?: (topicId: string, modelId: string) => Promise<void>
   ): Promise<void> {
-    console.log('[AITopicManager] Ensuring LAMA chat...');
+    console.log(`[AITopicManager] Ensuring LAMA chat with private model: ${privateModelId}`);
+
+    if (!this.topicGroupManager) {
+      console.warn('[AITopicManager] No topicGroupManager - cannot create topics (browser platform?)');
+      return;
+    }
 
     try {
-      // Get my identity
-      const myId = await this.leuteModel.myMainIdentity();
-
-      // Create topic with "lama" as ID
       const topicId = 'lama';
-      const topic = await this.topicModel.topics.createTopic(
-        topicId,
-        [myId, privateAiPersonId],
-        myId
-      );
+      let topicRoom: any;
+      let needsWelcome = false;
 
-      console.log(`[AITopicManager] Created LAMA topic: ${topic.id}`);
+      // Check if topic already exists
+      try {
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        const messages = await topicRoom.retrieveAllMessages();
+        needsWelcome = messages.length === 0;
+      } catch (e) {
+        // Topic doesn't exist, create it with the PRIVATE AI contact
+        await this.topicGroupManager.createGroupTopic('LAMA', topicId, [privateAiPersonId]);
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        needsWelcome = true;
+      }
 
-      // Register the topic with private model
+      // Register as AI topic with the PRIVATE model ID
       this.registerAITopic(topicId, privateModelId);
       this.setTopicDisplayName(topicId, 'LAMA');
 
-      // Notify that topic was created (for welcome message generation)
-      if (onTopicCreated) {
-        await onTopicCreated(topicId, privateModelId);
+      // Generate welcome message asynchronously (non-blocking) if needed
+      if (needsWelcome && onTopicCreated) {
+        setImmediate(() => {
+          onTopicCreated(topicId, privateModelId).catch(err => {
+            console.error('[AITopicManager] Failed to generate LAMA welcome:', err);
+          });
+        });
+        console.log('[AITopicManager] ✅ LAMA chat created, welcome message generating in background');
+      } else if (needsWelcome) {
+        console.log('[AITopicManager] ⚠️ LAMA chat created but no welcome callback provided');
+      } else {
+        console.log('[AITopicManager] ✅ LAMA chat already exists');
       }
     } catch (error) {
       console.error('[AITopicManager] Failed to create LAMA chat:', error);
@@ -348,7 +396,6 @@ export class AITopicManager implements IAITopicManager {
 
           // Check if topic has a group (3+ participants including AI)
           if ((topic as any).group) {
-            const { getIdObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
             const group = await getIdObject((topic as any).group);
 
             if ((group as any).members) {
@@ -366,7 +413,7 @@ export class AITopicManager implements IAITopicManager {
           // If not found via group, check messages for AI sender (P2P conversations)
           if (!aiModelId && !((topic as any).group)) {
             const topicRoom = await this.topicModel.enterTopicRoom(topicId);
-            const messages = await topicRoom.retrieveAllMessages(10); // Check last 10 messages
+            const messages = await topicRoom.retrieveAllMessages(); // Check messages
 
             for (const msg of messages) {
               const msgSender = (msg as any).sender;

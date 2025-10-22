@@ -5,6 +5,8 @@
  */
 
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
+import { createKeyword } from './Keyword.js';
 
 /**
  * Create a Subject object using ONE.core versioned storage
@@ -22,8 +24,6 @@ export async function createSubject(
   keywordTerms: string[] = []
 ) {
   // Import createKeyword to store actual Keyword objects
-  const { createKeyword } = await import('./Keyword.js');
-  const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
   const keywordIdHashes = [];
 
   for (const term of keywordTerms) {

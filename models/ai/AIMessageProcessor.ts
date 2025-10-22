@@ -16,6 +16,7 @@ import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { IAIMessageProcessor, IAIPromptBuilder, IAITaskManager } from './interfaces.js';
 import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
@@ -39,6 +40,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     private llmManager: any, // LLMManager interface
     private leuteModel: LeuteModel,
     private topicManager: any, // AITopicManager
+    private topicModel: TopicModel, // For storing messages in ONE.core
     private stateManager?: any, // Optional state manager for tracking
     private platform?: LLMPlatform // Optional platform for UI events
   ) {
@@ -297,6 +299,23 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       // Emit completion
       if (this.platform) {
         this.platform.emitMessageUpdate(topicId, messageId, response, 'complete');
+      }
+
+      // CRITICAL: Store the welcome message in ONE.core so it persists
+      try {
+        const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        const aiPersonId = await this.getAIPersonIdForModel(modelId);
+
+        if (aiPersonId && topicRoom) {
+          // Send message as the AI (channelOwner = aiPersonId for AI's channel)
+          await topicRoom.sendMessage(response, aiPersonId, aiPersonId);
+          console.log(`[AIMessageProcessor] ✅ Welcome message stored in ONE.core for topic: ${topicId}`);
+        } else {
+          console.warn(`[AIMessageProcessor] Could not store welcome message - missing aiPersonId or topicRoom`);
+        }
+      } catch (storeError) {
+        console.error('[AIMessageProcessor] Failed to store welcome message in ONE.core:', storeError);
+        // Don't throw - the message was generated and emitted, storage is secondary
       }
 
       console.log(`[AIMessageProcessor] Generated welcome message for topic: ${topicId}`);

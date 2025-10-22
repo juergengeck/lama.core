@@ -20,13 +20,21 @@ import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
-import { AIContactManager } from '../models/ai/AIContactManager.js';
+import { AIContactManager, type AIContactManagerDeps } from '../models/ai/AIContactManager.js';
 import { AITopicManager } from '../models/ai/AITopicManager.js';
 import { AITaskManager } from '../models/ai/AITaskManager.js';
 import { AIPromptBuilder } from '../models/ai/AIPromptBuilder.js';
 import { AIMessageProcessor } from '../models/ai/AIMessageProcessor.js';
 import type { LLMPlatform } from '../services/llm-platform.js';
 import type { LLMModelInfo } from '../models/ai/types.js';
+
+/**
+ * Platform-agnostic settings persistence interface
+ */
+export interface AISettingsPersistence {
+  setDefaultModelId(modelId: string | null): Promise<boolean>;
+  getDefaultModelId(): Promise<string | null>;
+}
 
 /**
  * Dependencies required by AIAssistantHandler
@@ -61,6 +69,15 @@ export interface AIAssistantHandlerDependencies {
 
   /** Optional: Topic analysis model */
   topicAnalysisModel?: any;
+
+  /** Optional: Topic group manager for topic creation (Node.js only) */
+  topicGroupManager?: any;
+
+  /** Optional: Settings persistence for default model and other preferences */
+  settingsPersistence?: AISettingsPersistence;
+
+  /** Storage functions for AIContactManager (to avoid module duplication in Vite worker) */
+  storageDeps: AIContactManagerDeps;
 }
 
 /**
@@ -84,18 +101,20 @@ export class AIAssistantHandler {
     this.deps = deps;
 
     // Phase 1: Construct components with non-circular dependencies
-    this.contactManager = new AIContactManager(deps.leuteModel, deps.llmObjectManager);
+    this.contactManager = new AIContactManager(deps.leuteModel, deps.storageDeps, deps.llmObjectManager);
 
     this.topicManager = new AITopicManager(
       deps.topicModel,
       deps.channelManager,
       deps.leuteModel,
-      deps.llmManager
+      deps.llmManager,
+      deps.topicGroupManager
     );
 
     this.taskManager = new AITaskManager(deps.channelManager, deps.topicAnalysisModel);
 
     this.promptBuilder = new AIPromptBuilder(
+      deps.leuteModel,
       deps.channelManager,
       deps.llmManager,
       this.topicManager,
@@ -107,6 +126,7 @@ export class AIAssistantHandler {
       deps.llmManager,
       deps.leuteModel,
       this.topicManager,
+      deps.topicModel,
       deps.stateManager,
       deps.platform
     );
@@ -139,9 +159,6 @@ export class AIAssistantHandler {
       const models: LLMModelInfo[] = this.deps.llmManager?.getAvailableModels() || [];
       console.log(`[AIAssistantHandler] Found ${models.length} available models`);
 
-      // Set available models in message processor
-      this.messageProcessor.setAvailableLLMModels(models);
-
       // Load existing AI contacts
       const contactCount = await this.contactManager.loadExistingAIContacts(models);
       console.log(`[AIAssistantHandler] Loaded ${contactCount} existing AI contacts`);
@@ -154,14 +171,33 @@ export class AIAssistantHandler {
         }
       }
 
+      // Set available models in message processor (AFTER personIds are populated)
+      this.messageProcessor.setAvailableLLMModels(models);
+      console.log(`[AIAssistantHandler] Updated message processor with ${models.length} models (with personIds)`);
+
       // Scan existing conversations for AI participants
       const topicCount = await this.topicManager.scanExistingConversations(this.contactManager);
       console.log(`[AIAssistantHandler] Scanned ${topicCount} existing AI topics`);
 
-      // Set default model if not already set
+      // Load saved default model from persistence
+      if (this.deps.settingsPersistence && models.length > 0) {
+        const savedDefaultModel = await this.deps.settingsPersistence.getDefaultModelId();
+        if (savedDefaultModel) {
+          // Verify the saved model exists in available models
+          const modelExists = models.some(m => m.id === savedDefaultModel);
+          if (modelExists) {
+            this.topicManager.setDefaultModel(savedDefaultModel);
+            console.log(`[AIAssistantHandler] Restored saved default model: ${savedDefaultModel}`);
+          } else {
+            console.log(`[AIAssistantHandler] Saved model ${savedDefaultModel} not available, using fallback`);
+          }
+        }
+      }
+
+      // Set default model if not already set (fallback to first model)
       if (!this.topicManager.getDefaultModel() && models.length > 0) {
         this.topicManager.setDefaultModel(models[0].id);
-        console.log(`[AIAssistantHandler] Set default model: ${models[0].id}`);
+        console.log(`[AIAssistantHandler] Set fallback default model: ${models[0].id}`);
       }
 
       this.initialized = true;
@@ -269,8 +305,16 @@ export class AIAssistantHandler {
 
     this.topicManager.setDefaultModel(modelId);
 
-    // Ensure default chats exist with new model
-    await this.ensureDefaultChats();
+    // Persist to platform-specific storage if available
+    if (this.deps.settingsPersistence) {
+      await this.deps.settingsPersistence.setDefaultModelId(modelId);
+    }
+
+    // Ensure default chats exist with new model (fire-and-forget)
+    // Don't block setDefaultModel waiting for topic creation + welcome message generation
+    this.ensureDefaultChats().catch(error => {
+      console.error('[AIAssistantHandler] Failed to ensure default chats:', error);
+    });
   }
 
   /**
@@ -374,5 +418,19 @@ export class AIAssistantHandler {
    */
   getMessageProcessor(): AIMessageProcessor {
     return this.messageProcessor;
+  }
+
+  /**
+   * Get all AI contacts with their model information
+   * Returns array of {modelId, name, personId} for compatibility with chat handler
+   */
+  getAllContacts(): Array<{ modelId: string; name: string; personId: string | null }> {
+    const models = this.deps.llmManager.getAvailableModels();
+
+    return models.map(model => ({
+      modelId: model.id,
+      name: model.name,
+      personId: this.contactManager.getPersonIdForModel(model.id)
+    }));
   }
 }

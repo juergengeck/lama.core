@@ -40,7 +40,7 @@ export class AITaskManager implements IAITaskManager {
 
     try {
       // Check if subject channel already exists
-      const existingChannels = await this.channelManager.getMatchingChannelInfos({ id: 'ai-subjects' });
+      const existingChannels = await this.channelManager.getMatchingChannelInfos({ channelId: 'ai-subjects' });
 
       if (existingChannels.length > 0) {
         this.subjectChannelId = 'ai-subjects';
@@ -49,12 +49,9 @@ export class AITaskManager implements IAITaskManager {
       }
 
       // Create subject channel
-      const channelInfo = await this.channelManager.createChannel({
-        id: 'ai-subjects',
-        description: 'AI-generated subjects and keywords',
-      });
+      const channelInfo = await this.channelManager.createChannel('ai-subjects');
 
-      this.subjectChannelId = channelInfo.id;
+      this.subjectChannelId = (channelInfo as any).id;
       console.log('[AITaskManager] Created subject channel:', this.subjectChannelId);
     } catch (error) {
       console.error('[AITaskManager] Failed to initialize subject channel:', error);
