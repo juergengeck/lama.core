@@ -167,6 +167,11 @@ export const LLMRecipe = {
             itemtype: { type: 'string' },
             optional: true
         },
+        {
+            itemprop: 'systemPrompt',
+            itemtype: { type: 'string' },
+            optional: true
+        },
         // Network configuration fields (for remote Ollama)
         {
             itemprop: 'baseUrl',

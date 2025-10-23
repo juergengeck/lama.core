@@ -112,6 +112,7 @@ declare module '@OneObjectInterfaces' {
         checksum?: string;
         provider?: string;
         downloadUrl?: string;
+        systemPrompt?: string;
     }
 
     // GlobalLLMSettings - global settings for LLM management

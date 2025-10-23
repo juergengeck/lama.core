@@ -221,7 +221,10 @@ async function chatWithOllama(
 
               // Stream to callback if provided
               if ((options as any).onStream) {
-                (options as any).onStream(content, false)
+                console.log('[Ollama] ✅ Calling onStream callback with content length:', content.length)
+                ;(options as any).onStream(content, false)
+              } else {
+                console.warn('[Ollama] ⚠️  No onStream callback provided!')
               }
             } else {
               console.warn('[Ollama] No content extracted from JSON. Keys:', Object.keys(json))

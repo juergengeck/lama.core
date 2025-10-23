@@ -37,6 +37,9 @@ export class AITopicManager implements IAITopicManager {
   // Default model ID
   private defaultModelId: string | null;
 
+  // Mutex to prevent concurrent ensureDefaultChats calls
+  private ensuringDefaultChats: Promise<void> | null = null;
+
   constructor(
     private topicModel: TopicModel,
     private channelManager: ChannelManager,
@@ -155,6 +158,30 @@ export class AITopicManager implements IAITopicManager {
    */
   async ensureDefaultChats(
     aiContactManager: any, // IAIContactManager
+    onTopicCreated?: (topicId: string, modelId: string) => Promise<void>
+  ): Promise<void> {
+    // If already ensuring, return the existing promise (prevents race condition)
+    if (this.ensuringDefaultChats) {
+      console.log('[AITopicManager] ensureDefaultChats already in progress, waiting...');
+      return this.ensuringDefaultChats;
+    }
+
+    // Create and store the promise
+    this.ensuringDefaultChats = this.doEnsureDefaultChats(aiContactManager, onTopicCreated);
+
+    try {
+      await this.ensuringDefaultChats;
+    } finally {
+      // Clear the mutex when done
+      this.ensuringDefaultChats = null;
+    }
+  }
+
+  /**
+   * Internal implementation of ensureDefaultChats (called by mutex wrapper)
+   */
+  private async doEnsureDefaultChats(
+    aiContactManager: any,
     onTopicCreated?: (topicId: string, modelId: string) => Promise<void>
   ): Promise<void> {
     console.log('[AITopicManager] Ensuring default AI chats...');

@@ -180,16 +180,10 @@ export class AIContactManager implements IAIContactManager {
 
       // Create LLM object if manager is available
       if (this.llmObjectManager) {
-        try {
-          await this.createLLMObjectForAI(modelId, displayName, personIdHash);
-          console.log(`[AIContactManager] Ensured LLM object for ${modelId}`);
-        } catch (error) {
-          console.warn(`[AIContactManager] Could not create LLM object for ${modelId}:`, error);
-          // Fallback to cache-only
-          if (this.llmObjectManager.cacheAIPersonId) {
-            this.llmObjectManager.cacheAIPersonId(modelId, personIdHash);
-          }
-        }
+        await this.createLLMObjectForAI(modelId, displayName, personIdHash);
+        console.log(`[AIContactManager] Ensured LLM object for ${modelId}`);
+      } else {
+        throw new Error(`[AIContactManager] llmObjectManager not available - cannot create LLM object for ${modelId}`);
       }
 
       return personIdHash;
@@ -257,14 +251,9 @@ export class AIContactManager implements IAIContactManager {
 
                 // Ensure LLM object exists
                 if (this.llmObjectManager) {
-                  try {
-                    await this.createLLMObjectForAI(model.id, model.name, personId);
-                  } catch (error) {
-                    console.warn(`[AIContactManager] Could not create LLM object for ${model.id}:`, error);
-                    if (this.llmObjectManager.cacheAIPersonId) {
-                      this.llmObjectManager.cacheAIPersonId(model.id, personId);
-                    }
-                  }
+                  await this.createLLMObjectForAI(model.id, model.name, personId);
+                } else {
+                  throw new Error(`[AIContactManager] llmObjectManager not available - cannot ensure LLM object for ${model.id}`);
                 }
 
                 aiContactCount++;

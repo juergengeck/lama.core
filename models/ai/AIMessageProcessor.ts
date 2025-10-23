@@ -21,6 +21,7 @@ import type { IAIMessageProcessor, IAIPromptBuilder, IAITaskManager } from './in
 import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
 import OneObjectCache from '@chat/core/cache/OneObjectCache.js';
+import { DEFAULT_SYSTEM_PROMPT } from '../../constants/system-prompts.js';
 
 export class AIMessageProcessor implements IAIMessageProcessor {
   // Circular dependencies - injected via setters
@@ -80,6 +81,22 @@ export class AIMessageProcessor implements IAIMessageProcessor {
    */
   setAvailableLLMModels(models: LLMModelInfo[]): void {
     this.availableModels = models;
+  }
+
+  /**
+   * Get system prompt for a specific model
+   * Returns model-specific prompt from LLM object, or default if not set
+   */
+  private getSystemPromptForModel(modelId: string): string {
+    const model = this.llmManager?.getModel(modelId);
+
+    if (model?.systemPrompt) {
+      console.log(`[AIMessageProcessor] Using custom system prompt for model: ${modelId}`);
+      return model.systemPrompt;
+    }
+
+    console.log(`[AIMessageProcessor] Using default system prompt for model: ${modelId}`);
+    return DEFAULT_SYSTEM_PROMPT;
   }
 
   /**
@@ -182,7 +199,10 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
             // Send streaming updates via platform
             if (this.platform) {
+              console.log('[AIMessageProcessor] 📡 Emitting streaming update, fullResponse length:', fullResponse.length);
               this.platform.emitMessageUpdate(topicId, messageId, fullResponse, 'streaming');
+            } else {
+              console.warn('[AIMessageProcessor] ⚠️  No platform available for streaming!');
             }
           },
         },
@@ -193,15 +213,16 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       const response = result?.response;
 
       // Process analysis in background (non-blocking)
+      // Use setTimeout for browser compatibility (setImmediate is Node.js only)
       if (result?.analysis && this.taskManager) {
-        setImmediate(async () => {
+        setTimeout(async () => {
           try {
             console.log('[AIMessageProcessor] Processing analysis in background...');
             await this.processAnalysisResults(topicId, result.analysis);
           } catch (error) {
             console.error('[AIMessageProcessor] Analysis processing failed:', error);
           }
-        });
+        }, 0);
       }
 
       // Emit completion via platform
@@ -298,21 +319,27 @@ export class AIMessageProcessor implements IAIMessageProcessor {
    * Generate welcome message for a new topic
    */
   private async generateWelcomeMessage(topicId: string, modelId: string): Promise<void> {
-    console.log(`[AIMessageProcessor] Generating welcome message for topic: ${topicId}`);
+    const t0 = Date.now();
+    console.log(`[AIMessageProcessor] ⏱️  T+0ms: Starting welcome message generation for topic: ${topicId}`);
 
     try {
       // Emit thinking indicator
       if (this.platform) {
         this.platform.emitProgress(topicId, 0);
       }
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Progress indicator emitted`);
 
       // Build welcome prompt
       const welcomePrompt = this.buildWelcomePrompt(topicId);
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Welcome prompt built`);
+
+      // Use simple system prompt for welcome messages (no structured output instructions)
+      const simpleSystemPrompt = 'You are LAMA, a helpful local AI assistant. Respond naturally and warmly.';
 
       const history = [
         {
           role: 'system' as const,
-          content: 'You are a helpful AI assistant. Greet the user warmly and briefly.',
+          content: simpleSystemPrompt,
         },
         {
           role: 'user' as const,
@@ -323,28 +350,77 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       // Generate welcome message
       const messageId = `welcome-${Date.now()}`;
       let fullResponse = '';
+      let displayBuffer = ''; // Buffer for parsed display text
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling LLM...`);
 
-      const result = await this.llmManager?.chatWithAnalysis(
+      // Use regular chat (not chatWithAnalysis) to avoid structured output conflicts
+      let thinkingBuffer = ''; // Buffer for thinking section
+      const response = await this.llmManager?.chat(
         history,
         modelId,
         {
           onStream: (chunk: string) => {
             fullResponse += chunk;
 
-            // Send streaming updates
-            if (this.platform) {
-              this.platform.emitMessageUpdate(topicId, messageId, fullResponse, 'streaming');
+            // Parse and extract BOTH [THINKING] and [RESPONSE] sections in real-time
+            // Use greedy matching to get the LAST occurrence (in case LLM includes examples)
+
+            // Extract thinking section - match from last [THINKING] to last [/THINKING]
+            const thinkingMatch = fullResponse.match(/\[THINKING\]\s*([\s\S]*)\[\/THINKING\]/);
+            if (thinkingMatch) {
+              thinkingBuffer = thinkingMatch[1].trim();
+            }
+
+            // Extract response section - match from last [RESPONSE] to end (may not have closing tag yet)
+            const responseMatch = fullResponse.match(/\[RESPONSE\]\s*([\s\S]*)(?:\[\/RESPONSE\]|$)/);
+            if (responseMatch) {
+              displayBuffer = responseMatch[1].trim();
+            }
+
+            // Send streaming updates with both thinking and response
+            if (this.platform && (thinkingBuffer || displayBuffer)) {
+              this.platform.emitMessageUpdate(
+                topicId,
+                messageId,
+                {
+                  thinking: thinkingBuffer || undefined,
+                  response: displayBuffer,
+                  raw: fullResponse,
+                },
+                'streaming'
+              );
             }
           },
-        },
-        topicId
+        }
       );
 
-      const response = result?.response || fullResponse;
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: LLM response received`);
 
-      // Emit completion
+      // Parse structured response: extract both [THINKING] and [RESPONSE] sections
+      // Use greedy matching to get the LAST occurrence (in case LLM includes examples)
+      const finalThinkingMatch = response.match(/\[THINKING\]\s*([\s\S]*)\[\/THINKING\]/);
+      const finalResponseMatch = response.match(/\[RESPONSE\]\s*([\s\S]*)(?:\[\/RESPONSE\]|$)/);
+
+      const finalThinking = finalThinkingMatch ? finalThinkingMatch[1].trim() : '';
+      const finalResponse = finalResponseMatch ? finalResponseMatch[1].trim() : response;
+
+      // Log full response with thinking for debugging
+      console.log(`[AIMessageProcessor] Full welcome response:`, response);
+      console.log(`[AIMessageProcessor] Extracted thinking:`, finalThinking);
+      console.log(`[AIMessageProcessor] Extracted response:`, finalResponse);
+
+      // Emit completion with both thinking and response
       if (this.platform) {
-        this.platform.emitMessageUpdate(topicId, messageId, response, 'complete');
+        this.platform.emitMessageUpdate(
+          topicId,
+          messageId,
+          {
+            thinking: finalThinking || undefined,
+            response: finalResponse,
+            raw: response,
+          },
+          'complete'
+        );
       }
 
       // CRITICAL: Store the welcome message in ONE.core so it persists
@@ -357,14 +433,15 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
         if (aiPersonId && topicRoom) {
           // Send message as the AI (channelOwner = aiPersonId for AI's channel)
-          await topicRoom.sendMessage(response, aiPersonId, aiPersonId);
-          console.log(`[AIMessageProcessor] ✅ Welcome message stored in ONE.core for topic: ${topicId}`);
+          // Store the extracted response (without thinking tags)
+          await topicRoom.sendMessage(finalResponse, aiPersonId, aiPersonId);
+          console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Welcome message stored in ONE.core`);
 
           // Add welcome message to cache
           if (this.promptBuilder) {
             const messageObj = {
               data: {
-                text: response,
+                text: finalResponse,
                 sender: aiPersonId
               },
               timestamp: Date.now()
@@ -381,9 +458,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         // Don't throw - the message was generated and emitted, storage is secondary
       }
 
-      console.log(`[AIMessageProcessor] Generated welcome message for topic: ${topicId}`);
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: ✅ Welcome message generation complete for topic: ${topicId}`);
     } catch (error) {
-      console.error('[AIMessageProcessor] Failed to generate welcome message:', error);
+      console.error(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: ❌ Failed to generate welcome message:`, error);
 
       // Emit error
       if (this.platform) {
@@ -397,9 +474,14 @@ export class AIMessageProcessor implements IAIMessageProcessor {
    */
   private buildWelcomePrompt(topicId: string): string {
     if (topicId === 'hi') {
-      return 'Please introduce yourself briefly and warmly.';
+      return 'Please introduce yourself briefly and warmly as LAMA, a local AI assistant.';
     } else if (topicId === 'lama') {
-      return 'Welcome the user to LAMA (your private conversation space).';
+      return `Welcome the user to LAMA, explaining that this is your private memory space. Explain that:
+- This is your personal memory where you store context from all conversations
+- Everything you learn gets stored here for transparency
+- Nobody else can see this content - it's completely private
+- The user can configure visibility in Settings
+Ask what you can help them with today.`;
     } else {
       return 'Greet the user and offer to help.';
     }

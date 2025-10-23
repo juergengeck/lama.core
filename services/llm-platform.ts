@@ -30,13 +30,13 @@ export interface LLMPlatform {
    * Emit message update (streaming or completion)
    * @param topicId - Topic/conversation ID
    * @param messageId - Message identifier
-   * @param text - Message text (partial or complete)
+   * @param content - Message content (string for backward compat, or object with thinking/response)
    * @param status - Message status ('pending' | 'streaming' | 'complete' | 'error')
    */
   emitMessageUpdate(
     topicId: string,
     messageId: string,
-    text: string,
+    content: string | { thinking?: string; response: string; raw?: string },
     status: string
   ): void;
 
@@ -83,7 +83,7 @@ export class NullLLMPlatform implements LLMPlatform {
   emitMessageUpdate(
     _topicId: string,
     _messageId: string,
-    _text: string,
+    _content: string | { thinking?: string; response: string; raw?: string },
     _status: string
   ): void {
     // No-op

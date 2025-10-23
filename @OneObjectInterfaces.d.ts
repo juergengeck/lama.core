@@ -68,6 +68,7 @@ declare module '@OneObjectInterfaces' {
         checksum?: string;
         provider?: string;
         downloadUrl?: string;
+        systemPrompt?: string;
         // Network configuration (for remote Ollama)
         baseUrl?: string;
         authType?: 'none' | 'bearer';

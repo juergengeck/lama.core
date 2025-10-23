@@ -9,6 +9,7 @@
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { generateSystemPromptForModel } from '../constants/system-prompts.js';
 
 // Re-export types for convenience
 export interface TestConnectionRequest {
@@ -216,6 +217,8 @@ export class LLMConfigHandler {
         modified: now,
         createdAt: new Date().toISOString(),
         lastUsed: new Date().toISOString(),
+        // Auto-generate system prompt for this model
+        systemPrompt: generateSystemPromptForModel(request.modelName, request.modelName),
       };
 
       // Add network fields if provided
@@ -487,6 +490,178 @@ export class LLMConfigHandler {
       return {
         success: false,
         error: error.message || 'Failed to delete configuration',
+        errorCode: 'STORAGE_ERROR',
+      };
+    }
+  }
+
+  /**
+   * Get all LLM configurations
+   */
+  async getAllConfigs(): Promise<any[]> {
+    console.log('[LLMConfigHandler] Getting all LLM configs');
+
+    try {
+      if (!this.nodeOneCore) {
+        console.warn('[LLMConfigHandler] ONE.core not initialized');
+        return [];
+      }
+
+      const llmObjects: any[] = [];
+      const iterator = this.nodeOneCore.channelManager.objectIteratorWithType('LLM', {
+        channelId: 'lama',
+      });
+
+      for await (const obj of iterator) {
+        if (obj && obj.data && !obj.data.deleted) {
+          llmObjects.push(obj.data);
+        }
+      }
+
+      console.log(`[LLMConfigHandler] Found ${llmObjects.length} LLM configurations`);
+      return llmObjects;
+    } catch (error: any) {
+      console.error('[LLMConfigHandler] Get all configs error:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Update system prompt for an LLM
+   */
+  async updateSystemPrompt(request: {
+    llmId: string;
+    systemPrompt: string;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+    errorCode?: string;
+  }> {
+    console.log('[LLMConfigHandler] Updating system prompt for LLM:', request.llmId);
+
+    try {
+      if (!this.nodeOneCore) {
+        return {
+          success: false,
+          error: 'ONE.core not initialized',
+          errorCode: 'STORAGE_ERROR',
+        };
+      }
+
+      // Load the LLM object
+      const llmIdHash = ensureIdHash(request.llmId);
+      let llmObject: any = null;
+
+      const iterator = this.nodeOneCore.channelManager.objectIteratorWithType('LLM', {
+        channelId: 'lama',
+      });
+
+      for await (const obj of iterator) {
+        if (obj && obj.data && obj.data.id === llmIdHash) {
+          llmObject = obj.data;
+          break;
+        }
+      }
+
+      if (!llmObject) {
+        return {
+          success: false,
+          error: 'LLM configuration not found',
+          errorCode: 'NOT_FOUND',
+        };
+      }
+
+      // Update the system prompt
+      llmObject.systemPrompt = request.systemPrompt;
+      llmObject.modified = Date.now();
+
+      // Store updated object
+      await storeVersionedObject(llmObject);
+      await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
+
+      console.log('[LLMConfigHandler] System prompt updated successfully');
+
+      return {
+        success: true,
+      };
+    } catch (error: any) {
+      console.error('[LLMConfigHandler] Update system prompt error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to update system prompt',
+        errorCode: 'STORAGE_ERROR',
+      };
+    }
+  }
+
+  /**
+   * Regenerate system prompt for an LLM using the default template
+   */
+  async regenerateSystemPrompt(request: { llmId: string }): Promise<{
+    success: boolean;
+    systemPrompt?: string;
+    error?: string;
+    errorCode?: string;
+  }> {
+    console.log('[LLMConfigHandler] Regenerating system prompt for LLM:', request.llmId);
+
+    try {
+      if (!this.nodeOneCore) {
+        return {
+          success: false,
+          error: 'ONE.core not initialized',
+          errorCode: 'STORAGE_ERROR',
+        };
+      }
+
+      // Load the LLM object
+      const llmIdHash = ensureIdHash(request.llmId);
+      let llmObject: any = null;
+
+      const iterator = this.nodeOneCore.channelManager.objectIteratorWithType('LLM', {
+        channelId: 'lama',
+      });
+
+      for await (const obj of iterator) {
+        if (obj && obj.data && obj.data.id === llmIdHash) {
+          llmObject = obj.data;
+          break;
+        }
+      }
+
+      if (!llmObject) {
+        return {
+          success: false,
+          error: 'LLM configuration not found',
+          errorCode: 'NOT_FOUND',
+        };
+      }
+
+      // Generate fresh system prompt using the same logic as new LLM creation
+      const newSystemPrompt = generateSystemPromptForModel(
+        llmObject.modelId,
+        llmObject.modelName || llmObject.modelId
+      );
+
+      // Update the LLM object
+      llmObject.systemPrompt = newSystemPrompt;
+      llmObject.modified = Date.now();
+
+      // Store updated object
+      await storeVersionedObject(llmObject);
+      await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
+
+      console.log('[LLMConfigHandler] System prompt regenerated successfully');
+
+      return {
+        success: true,
+        systemPrompt: newSystemPrompt,
+      };
+    } catch (error: any) {
+      console.error('[LLMConfigHandler] Regenerate system prompt error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to regenerate system prompt',
         errorCode: 'STORAGE_ERROR',
       };
     }
