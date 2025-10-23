@@ -4,18 +4,19 @@
  * Can run in Node.js or browser environments
  */
 
-import EventEmitter from 'events';
+import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import type { LLMPlatform } from './llm-platform.js';
 import { LLM_RESPONSE_SCHEMA } from '../schemas/llm-response.schema.js';
 
-class LLMManager extends EventEmitter {
+class LLMManager {
   name: any;
   description: any;
   onStream: any;
   match: any;
   length: any;
   substring: any;
-  onChatStream: any;
+  // Event for streaming chat responses
+  onChatStream = new OEvent<(data: { chunk: string; partial: string }) => void>();
   contextLength: any;
   parameters: any;
   capabilities: any;
@@ -31,7 +32,6 @@ class LLMManager extends EventEmitter {
   forwardLog?: (level: string, message: string) => void; // Optional log forwarding
 
   constructor(platform?: LLMPlatform, mcpManager?: any, forwardLog?: (level: string, message: string) => void) {
-    super()
     this.platform = platform
     this.mcpManager = mcpManager
     this.forwardLog = forwardLog

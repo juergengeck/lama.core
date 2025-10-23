@@ -349,8 +349,11 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
       // CRITICAL: Store the welcome message in ONE.core so it persists
       try {
+        console.log(`[AIMessageProcessor] 🔍 About to store welcome message for topic: ${topicId}`);
         const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        console.log(`[AIMessageProcessor] 🔍 topicRoom:`, topicRoom ? 'EXISTS' : 'NULL');
         const aiPersonId = await this.getAIPersonIdForModel(modelId);
+        console.log(`[AIMessageProcessor] 🔍 aiPersonId:`, aiPersonId ? aiPersonId.toString().substring(0, 16) + '...' : 'NULL');
 
         if (aiPersonId && topicRoom) {
           // Send message as the AI (channelOwner = aiPersonId for AI's channel)
@@ -369,10 +372,12 @@ export class AIMessageProcessor implements IAIMessageProcessor {
             this.promptBuilder.addMessageToCache(topicId, messageObj);
           }
         } else {
-          console.warn(`[AIMessageProcessor] Could not store welcome message - missing aiPersonId or topicRoom`);
+          console.warn(`[AIMessageProcessor] ⚠️ Could not store welcome message - aiPersonId: ${aiPersonId ? 'EXISTS' : 'NULL'}, topicRoom: ${topicRoom ? 'EXISTS' : 'NULL'}`);
         }
       } catch (storeError) {
-        console.error('[AIMessageProcessor] Failed to store welcome message in ONE.core:', storeError);
+        console.error('[AIMessageProcessor] ❌ Failed to store welcome message in ONE.core:');
+        console.error('[AIMessageProcessor] Error details:', storeError);
+        console.error('[AIMessageProcessor] Error stack:', storeError instanceof Error ? storeError.stack : 'No stack trace');
         // Don't throw - the message was generated and emitted, storage is secondary
       }
 
