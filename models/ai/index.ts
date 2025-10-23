@@ -35,3 +35,4 @@ export { AIMessageProcessor } from './AIMessageProcessor.js';
 export { AIPromptBuilder } from './AIPromptBuilder.js';
 export { AIContactManager } from './AIContactManager.js';
 export { AITaskManager } from './AITaskManager.js';
+export { AIMessageListener } from './AIMessageListener.js';
