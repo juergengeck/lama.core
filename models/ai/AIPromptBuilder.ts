@@ -29,15 +29,22 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   // Topic restart summaries
   private topicRestartSummaries: Map<string, any>;
 
+  // Message cache: topicId → {messages, timestamp}
+  // Caches retrieveAllMessages() results with 5-second TTL
+  private messageCache: Map<string, { messages: any[]; timestamp: number }>;
+  private readonly MESSAGE_CACHE_TTL = 5000; // 5 seconds
+
   constructor(
     private leuteModel: LeuteModel,
     private channelManager: ChannelManager,
+    private topicModel: any, // Shared TopicModel instance
     private llmManager: any, // LLMManager interface
     private topicManager: any, // AITopicManager
     private contextEnrichmentService?: any // Optional - for past conversation hints
   ) {
     this.lastRestartPoint = new Map();
     this.topicRestartSummaries = new Map();
+    this.messageCache = new Map();
   }
 
   /**
@@ -58,11 +65,8 @@ export class AIPromptBuilder implements IAIPromptBuilder {
     console.log(`[AIPromptBuilder] Building prompt for topic: ${topicId}`);
 
     try {
-      // Get topic room and retrieve messages
-      const TopicModel = (await import('@refinio/one.models/lib/models/Chat/TopicModel.js')).default;
-      const topicModel = new TopicModel(this.channelManager, this.leuteModel);
-      const topicRoom = await topicModel.enterTopicRoom(topicId);
-      const messages = await topicRoom.retrieveAllMessages();
+      // Get messages from cache or load fresh
+      const messages = await this.getCachedMessages(topicId);
 
       // Check if context window restart is needed
       const { needsRestart, restartContext } = await this.checkContextWindowAndPrepareRestart(
@@ -284,9 +288,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
    * Manually trigger conversation restart with summary
    */
   async restartConversationWithSummary(topicId: string): Promise<string | null> {
-    const TopicModel = (await import('@refinio/one.models/lib/models/Chat/TopicModel.js')).default;
-    const topicModel = new TopicModel(this.channelManager, this.leuteModel);
-    const topicRoom = await topicModel.enterTopicRoom(topicId);
+    const topicRoom = await this.topicModel.enterTopicRoom(topicId);
     const messages = await topicRoom.retrieveAllMessages();
 
     const summary = await this.generateConversationSummaryForRestart(topicId, messages);
@@ -337,5 +339,69 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   private get topicAnalysisModel(): any {
     // This would be injected if needed - for now return undefined
     return undefined;
+  }
+
+  /**
+   * Get cached messages or load fresh if cache miss/expired
+   */
+  private async getCachedMessages(topicId: string): Promise<any[]> {
+    const now = Date.now();
+    const cached = this.messageCache.get(topicId);
+
+    // Cache hit and still valid
+    if (cached && (now - cached.timestamp) < this.MESSAGE_CACHE_TTL) {
+      console.log(`[AIPromptBuilder] Message cache HIT for topic ${topicId}`);
+      return cached.messages;
+    }
+
+    // Cache miss or expired - load fresh
+    console.log(`[AIPromptBuilder] Message cache MISS for topic ${topicId} - loading from channel`);
+    const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+    const messages = await topicRoom.retrieveAllMessages();
+
+    // Store in cache
+    this.messageCache.set(topicId, {
+      messages,
+      timestamp: now
+    });
+
+    return messages;
+  }
+
+  /**
+   * Add a new message to the cache (updates cache instead of invalidating)
+   */
+  public addMessageToCache(topicId: string, message: any): void {
+    const cached = this.messageCache.get(topicId);
+
+    if (cached) {
+      // Append to existing cache
+      cached.messages.push(message);
+      cached.timestamp = Date.now(); // Refresh timestamp
+      console.log(`[AIPromptBuilder] Added message to cache for topic ${topicId} (now ${cached.messages.length} messages)`);
+    } else {
+      // No cache exists - create new cache with this message
+      this.messageCache.set(topicId, {
+        messages: [message],
+        timestamp: Date.now()
+      });
+      console.log(`[AIPromptBuilder] Created cache with 1 message for topic ${topicId}`);
+    }
+  }
+
+  /**
+   * Invalidate message cache for a topic (call when cache is unreliable)
+   */
+  public invalidateMessageCache(topicId: string): void {
+    this.messageCache.delete(topicId);
+    console.log(`[AIPromptBuilder] Invalidated message cache for topic ${topicId}`);
+  }
+
+  /**
+   * Clear all message caches
+   */
+  public clearMessageCache(): void {
+    this.messageCache.clear();
+    console.log('[AIPromptBuilder] Cleared all message caches');
   }
 }

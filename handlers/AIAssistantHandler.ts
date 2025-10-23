@@ -76,6 +76,9 @@ export interface AIAssistantHandlerDependencies {
   /** Optional: Settings persistence for default model and other preferences */
   settingsPersistence?: AISettingsPersistence;
 
+  /** Optional: LLM config handler for browser platform */
+  llmConfigHandler?: any;
+
   /** Storage functions for AIContactManager (to avoid module duplication in Vite worker) */
   storageDeps: AIContactManagerDeps;
 }
@@ -116,6 +119,7 @@ export class AIAssistantHandler {
     this.promptBuilder = new AIPromptBuilder(
       deps.leuteModel,
       deps.channelManager,
+      deps.topicModel,
       deps.llmManager,
       this.topicManager,
       deps.contextEnrichmentService
@@ -126,9 +130,11 @@ export class AIAssistantHandler {
       deps.llmManager,
       deps.leuteModel,
       this.topicManager,
+      this.contactManager,
       deps.topicModel,
       deps.stateManager,
-      deps.platform
+      deps.platform,
+      deps.topicAnalysisModel
     );
   }
 
@@ -194,10 +200,10 @@ export class AIAssistantHandler {
         }
       }
 
-      // Set default model if not already set (fallback to first model)
-      if (!this.topicManager.getDefaultModel() && models.length > 0) {
-        this.topicManager.setDefaultModel(models[0].id);
-        console.log(`[AIAssistantHandler] Set fallback default model: ${models[0].id}`);
+      // DO NOT auto-select a default model - user must choose via ModelOnboarding
+      // The model should only be set when explicitly selected by the user
+      if (!this.topicManager.getDefaultModel()) {
+        console.log(`[AIAssistantHandler] No default model set - user must select via ModelOnboarding`);
       }
 
       this.initialized = true;
@@ -214,6 +220,16 @@ export class AIAssistantHandler {
   async ensureDefaultChats(): Promise<void> {
     console.log('[AIAssistantHandler] Ensuring default AI chats...');
 
+    // CRITICAL: Load default model from storage first
+    // The topic manager needs to know the default model before creating chats
+    const config = await this.deps.llmConfigHandler?.getConfig({});
+    if (config?.success && config.config?.modelName) {
+      console.log(`[AIAssistantHandler] Setting default model: ${config.config.modelName}`);
+      this.topicManager.setDefaultModel(config.config.modelName);
+    } else {
+      console.log('[AIAssistantHandler] No default model configured yet');
+    }
+
     await this.topicManager.ensureDefaultChats(
       this.contactManager,
       async (topicId: string, modelId: string) => {
@@ -221,6 +237,21 @@ export class AIAssistantHandler {
         await this.messageProcessor.handleNewTopic(topicId, modelId);
       }
     );
+
+    // CRITICAL: Refresh message processor's model list after ensureDefaultChats
+    // because private variants may have been registered during topic creation
+    const updatedModels: LLMModelInfo[] = this.deps.llmManager?.getAvailableModels() || [];
+
+    // Update model info with personIds (including newly created private variants)
+    for (const model of updatedModels) {
+      const personId = this.contactManager.getPersonIdForModel(model.id);
+      if (personId) {
+        model.personId = personId;
+      }
+    }
+
+    this.messageProcessor.setAvailableLLMModels(updatedModels);
+    console.log(`[AIAssistantHandler] Refreshed message processor with ${updatedModels.length} models (after ensureDefaultChats)`);
   }
 
   /**

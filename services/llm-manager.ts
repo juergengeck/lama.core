@@ -6,6 +6,7 @@
 
 import EventEmitter from 'events';
 import type { LLMPlatform } from './llm-platform.js';
+import { LLM_RESPONSE_SCHEMA } from '../schemas/llm-response.schema.js';
 
 class LLMManager extends EventEmitter {
   name: any;
@@ -284,27 +285,13 @@ class LLMManager extends EventEmitter {
 
   async discoverClaudeModels(providedApiKey?: string): Promise<any> {
     try {
-      let apiKey = providedApiKey
-
-      // If no API key provided, try to get from secure storage (Electron only)
-      if (!apiKey) {
-        try {
-          // Platform-specific: Only available in Electron
-          // @ts-expect-error - Platform-specific import, not available in all contexts
-          const oneCoreHandlers = await import('../ipc/handlers/one-core.js')
-          const apiKeyResult: any = await oneCoreHandlers.default.secureRetrieve({} as any, { key: 'claude_api_key' })
-
-          if (!apiKeyResult?.success || !apiKeyResult.value) {
-            console.log('[LLMManager] No Claude API key configured, skipping model discovery')
-            return
-          }
-
-          apiKey = apiKeyResult.value
-        } catch (error) {
-          console.log('[LLMManager] Secure storage not available (browser platform), skipping Claude discovery without API key')
-          return
-        }
+      // Platform layer must provide API key - lama.core is platform-agnostic
+      if (!providedApiKey) {
+        console.log('[LLMManager] No Claude API key provided, skipping Claude model discovery')
+        return
       }
+
+      const apiKey = providedApiKey
 
       console.log('[LLMManager] Discovering Claude models with API key:', apiKey?.substring(0, 20) + '...')
 
@@ -404,14 +391,17 @@ class LLMManager extends EventEmitter {
 
   async startLamaMCPServer(): Promise<any> {
     try {
-      // MCP SDK and path are Node.js only - wrap in try-catch
+      // MCP SDK and path are Node.js only - construct paths dynamically to bypass Vite
       let Client, StdioClientTransport, path
       try {
-        // @ts-expect-error - MCP SDK only available in Electron/Node.js
-        const clientModule = await import('@modelcontextprotocol/sdk/client/index.js');
-        // @ts-expect-error - MCP SDK only available in Electron/Node.js
-        const transportModule = await import('@modelcontextprotocol/sdk/client/stdio.js');
-        const pathModule = await import('path');
+        // Use dynamic paths to prevent Vite from trying to resolve at build time
+        const mcpClient = ['@modelcontextprotocol', 'sdk', 'client', 'index.js'].join('/')
+        const mcpTransport = ['@modelcontextprotocol', 'sdk', 'client', 'stdio.js'].join('/')
+
+        // Dynamic imports - MCP SDK only available in Electron/Node.js
+        const clientModule = await import(/* @vite-ignore */ mcpClient);
+        const transportModule = await import(/* @vite-ignore */ mcpTransport);
+        const pathModule = await import(/* @vite-ignore */ 'path');
         Client = clientModule.Client
         StdioClientTransport = transportModule.StdioClientTransport
         path = pathModule.default || pathModule
@@ -521,6 +511,19 @@ class LLMManager extends EventEmitter {
     const logMsg1 = `[LLMManager] ============= ENHANCING MESSAGES =============`
     const logMsg2 = `[LLMManager] MCP Tools size: ${this.mcpTools.size}`
     const toolDescriptions = this.getToolDescriptions()
+
+    // Check for null/undefined BEFORE accessing .length
+    if (!toolDescriptions) {
+      const logMsg5 = `[LLMManager] NO TOOL DESCRIPTIONS - returning original messages`
+      console.log(logMsg1)
+      console.log(logMsg2)
+      console.log(logMsg5)
+      this.forwardLog?.('log', logMsg1)
+      this.forwardLog?.('log', logMsg2)
+      this.forwardLog?.('warn', logMsg5)
+      return messages
+    }
+
     const logMsg3 = `[LLMManager] Tool descriptions length: ${toolDescriptions.length}`
     const logMsg4 = `[LLMManager] ============================================`
 
@@ -534,13 +537,6 @@ class LLMManager extends EventEmitter {
     this.forwardLog?.('log', logMsg2)
     this.forwardLog?.('log', logMsg3)
     this.forwardLog?.('log', logMsg4)
-
-    if (!toolDescriptions) {
-      const logMsg5 = `[LLMManager] NO TOOL DESCRIPTIONS - returning original messages`
-      console.log(logMsg5)
-      this.forwardLog?.('warn', logMsg5)
-      return messages
-    }
 
     const enhanced = [...messages]
     const systemIndex = enhanced.findIndex(m => m.role === 'system')
@@ -729,16 +725,7 @@ class LLMManager extends EventEmitter {
 
       console.log(`[LLMManager] Chat with analysis using ${model.id}, topicId: ${topicId}`)
 
-      // Import structured output schema
-      // Schema is optional - only available in Electron
-      let LLM_RESPONSE_SCHEMA
-      try {
-        // @ts-expect-error - Schema only available in Electron
-        const schemaModule = await import('../schemas/llm-response.schema.js')
-        LLM_RESPONSE_SCHEMA = schemaModule.LLM_RESPONSE_SCHEMA
-      } catch (error) {
-        console.log('[LLMManager] LLM response schema not available (browser platform)')
-      }
+      // Schema is now always available from lama.core
 
       // STREAMING STRATEGY:
       // Stream natural response FIRST (no structured output in user-facing response)
@@ -935,21 +922,10 @@ class LLMManager extends EventEmitter {
   async chatWithClaude(model: any, messages: any, options: any = {}): Promise<any> {
     const { chatWithClaude } = await import('./claude.js')
 
-    // Get API key from secure storage (Electron only) or options
-    let apiKey = options.apiKey
+    // Platform layer must provide API key - lama.core is platform-agnostic
+    const apiKey = options.apiKey
     if (!apiKey) {
-      try {
-        // @ts-expect-error - Platform-specific import, not available in all contexts
-        const oneCoreHandlers = await import('../ipc/handlers/one-core.js')
-        const apiKeyResult: any = await oneCoreHandlers.default.secureRetrieve({} as any, { key: 'claude_api_key' })
-        apiKey = apiKeyResult?.value
-      } catch (error) {
-        throw new Error('Claude API key not available - provide via options.apiKey or configure in Electron secure storage')
-      }
-    }
-
-    if (!apiKey) {
-      throw new Error('Claude API key not configured')
+      throw new Error('Claude API key not provided - platform layer must supply options.apiKey')
     }
 
     // Extract base model ID - stored as claude:claude-3-5-sonnet-20241022

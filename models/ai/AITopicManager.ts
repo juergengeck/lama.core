@@ -218,7 +218,15 @@ export class AITopicManager implements IAITopicManager {
     try {
       const topic = await this.topicModel.topics.queryById(topicId);
       if (topic && (topic as any).group) {
-        // Topic exists - try to determine its model from group members
+        // Verify topic is actually in storage (not just in collection cache)
+        try {
+          await this.topicModel.enterTopicRoom(topicId);
+        } catch {
+          console.log(`[AITopicManager] Topic '${topicId}' in collection but not in storage - will recreate`);
+          return false;
+        }
+
+        // Topic exists in storage - try to determine its model from group members
         const group = await getIdObject((topic as any).group);
 
         if ((group as any).members) {
@@ -346,11 +354,12 @@ What can I help you with today?`;
 
       // Generate welcome message asynchronously (non-blocking) if needed
       if (needsWelcome && onTopicCreated) {
-        setImmediate(() => {
+        // Use setTimeout for cross-platform compatibility (Node.js and browser)
+        setTimeout(() => {
           onTopicCreated(topicId, privateModelId).catch(err => {
             console.error('[AITopicManager] Failed to generate LAMA welcome:', err);
           });
-        });
+        }, 0);
         console.log('[AITopicManager] ✅ LAMA chat created, welcome message generating in background');
       } else if (needsWelcome) {
         console.log('[AITopicManager] ⚠️ LAMA chat created but no welcome callback provided');

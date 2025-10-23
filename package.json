@@ -19,6 +19,9 @@
   "private": true,
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
+    "@chat/core": "file:../chat.core",
+    "@refinio/one.core": "file:./packages/one.core",
+    "@refinio/one.models": "file:./packages/one.models",
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {

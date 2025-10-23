@@ -20,6 +20,7 @@ import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { IAIMessageProcessor, IAIPromptBuilder, IAITaskManager } from './interfaces.js';
 import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
+import OneObjectCache from '@chat/core/cache/OneObjectCache.js';
 
 export class AIMessageProcessor implements IAIMessageProcessor {
   // Circular dependencies - injected via setters
@@ -35,18 +36,29 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   // Available LLM models
   private availableModels: LLMModelInfo[];
 
+  // Person object cache for performance
+  private personCache: OneObjectCache<Person>;
+
   constructor(
     private channelManager: ChannelManager,
     private llmManager: any, // LLMManager interface
     private leuteModel: LeuteModel,
     private topicManager: any, // AITopicManager
+    private contactManager: any, // AIContactManager
     private topicModel: TopicModel, // For storing messages in ONE.core
     private stateManager?: any, // Optional state manager for tracking
-    private platform?: LLMPlatform // Optional platform for UI events
+    private platform?: LLMPlatform, // Optional platform for UI events
+    private topicAnalysisModel?: any // Optional topic analysis model for subject/keyword creation
   ) {
     this.pendingMessageQueues = new Map();
     this.welcomeGenerationInProgress = new Map();
     this.availableModels = [];
+    this.personCache = new OneObjectCache<Person>(['Person']);
+
+    // Handle cache errors
+    this.personCache.onError((error) => {
+      console.error('[AIMessageProcessor] Person cache error:', error);
+    });
   }
 
   /**
@@ -100,7 +112,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     message: string,
     senderId: SHA256IdHash<Person>
   ): Promise<string | null> {
-    console.log(`[AIMessageProcessor] Processing message for topic ${topicId}: "${message}"`);
+    const t0 = Date.now()
+    console.log(`[AIMessageProcessor] ⏱️  T+0ms: Processing message for topic ${topicId}: "${message}"`);
 
     // Check if welcome generation is in progress for this topic
     const welcomeInProgress = this.welcomeGenerationInProgress.get(topicId);
@@ -147,7 +160,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
       const { messages: history } = await this.promptBuilder.buildPrompt(topicId, message, senderId);
 
-      console.log(`[AIMessageProcessor] Sending ${history.length} messages to LLM`);
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Prompt built - sending ${history.length} messages to LLM`);
 
       // Generate message ID for streaming
       const messageId = `ai-${Date.now()}`;
@@ -159,6 +172,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       }
 
       // Get AI response with analysis in a single call
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling llmManager.chatWithAnalysis()`)
       const result: any = await this.llmManager?.chatWithAnalysis(
         history,
         modelId,
@@ -175,6 +189,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         topicId // Pass topicId for analysis
       );
 
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: chatWithAnalysis() completed`)
       const response = result?.response;
 
       // Process analysis in background (non-blocking)
@@ -192,6 +207,37 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       // Emit completion via platform
       if (this.platform) {
         this.platform.emitMessageUpdate(topicId, messageId, response || fullResponse, 'complete');
+      }
+
+      // CRITICAL: Store the AI's response to the channel
+      // This persists the message in ONE.core so it doesn't vanish after streaming
+      try {
+        const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        if (topicRoom) {
+          // Post the AI's response to the channel
+          // - response: the AI's message text
+          // - aiPersonId: the author (AI's person ID)
+          // - aiPersonId: the channel owner (AI posts to its own channel)
+          await topicRoom.sendMessage(response || fullResponse, aiPersonId, aiPersonId);
+          console.log(`[AIMessageProcessor] ✅ Stored AI response to channel ${topicId}`);
+
+          // Add message to cache so next buildPrompt() doesn't reload all messages
+          if (this.promptBuilder) {
+            const messageObj = {
+              data: {
+                text: response || fullResponse,
+                sender: aiPersonId
+              },
+              timestamp: Date.now()
+            };
+            this.promptBuilder.addMessageToCache(topicId, messageObj);
+          }
+        } else {
+          console.error(`[AIMessageProcessor] Could not enter topic room ${topicId}`);
+        }
+      } catch (error) {
+        console.error('[AIMessageProcessor] Failed to store AI response:', error);
+        // Don't throw - the response was already streamed to UI
       }
 
       return response || fullResponse;
@@ -310,6 +356,18 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           // Send message as the AI (channelOwner = aiPersonId for AI's channel)
           await topicRoom.sendMessage(response, aiPersonId, aiPersonId);
           console.log(`[AIMessageProcessor] ✅ Welcome message stored in ONE.core for topic: ${topicId}`);
+
+          // Add welcome message to cache
+          if (this.promptBuilder) {
+            const messageObj = {
+              data: {
+                text: response,
+                sender: aiPersonId
+              },
+              timestamp: Date.now()
+            };
+            this.promptBuilder.addMessageToCache(topicId, messageObj);
+          }
         } else {
           console.warn(`[AIMessageProcessor] Could not store welcome message - missing aiPersonId or topicRoom`);
         }
@@ -376,6 +434,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
     console.log('[AIMessageProcessor] Processing analysis results...');
 
+    let subjectsProcessed = false;
+    let keywordsProcessed = false;
+
     // Process subjects if present
     if (analysis.subjects && Array.isArray(analysis.subjects)) {
       console.log(`[AIMessageProcessor] Processing ${analysis.subjects.length} subjects...`);
@@ -383,8 +444,27 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       for (const subjectData of analysis.subjects) {
         try {
           await this.processSubject(topicId, subjectData);
+          subjectsProcessed = true;
+          // processSubject also creates keywords, so mark those as processed too
+          if (subjectData.keywords && subjectData.keywords.length > 0) {
+            keywordsProcessed = true;
+          }
         } catch (error) {
           console.warn('[AIMessageProcessor] Failed to process subject:', error);
+        }
+      }
+
+      // Emit analysis update events using platform abstraction
+      if (this.platform?.emitAnalysisUpdate) {
+        if (subjectsProcessed && keywordsProcessed) {
+          this.platform.emitAnalysisUpdate(topicId, 'both');
+          console.log(`[AIMessageProcessor] Emitted 'both' analysis update for topic ${topicId}`);
+        } else if (subjectsProcessed) {
+          this.platform.emitAnalysisUpdate(topicId, 'subjects');
+          console.log(`[AIMessageProcessor] Emitted 'subjects' analysis update for topic ${topicId}`);
+        } else if (keywordsProcessed) {
+          this.platform.emitAnalysisUpdate(topicId, 'keywords');
+          console.log(`[AIMessageProcessor] Emitted 'keywords' analysis update for topic ${topicId}`);
         }
       }
     }
@@ -405,14 +485,58 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
     console.log(`[AIMessageProcessor] Processing subject: ${name} (isNew: ${isNew})`);
 
-    // This would delegate to TopicAnalysisModel if available
-    // For now, just log the subject data
-    console.log(`[AIMessageProcessor] Subject data:`, {
-      name,
-      description,
-      isNew,
-      keywordCount: subjectKeywords?.length || 0,
-    });
+    if (!this.topicAnalysisModel) {
+      console.warn('[AIMessageProcessor] TopicAnalysisModel not available - skipping subject creation');
+      return;
+    }
+
+    try {
+      // Extract keyword terms from keyword objects
+      const keywordTerms = (subjectKeywords || []).map((kw: any) =>
+        typeof kw === 'string' ? kw : kw.term
+      );
+
+      if (keywordTerms.length === 0) {
+        console.warn('[AIMessageProcessor] No keywords for subject - skipping:', name);
+        return;
+      }
+
+      // Create subject with keyword combination as ID
+      // The keyword combination is used as a unique identifier
+      const keywordCombination = keywordTerms.sort().join('+');
+
+      console.log(`[AIMessageProcessor] Creating subject "${name}" with keywords: ${keywordTerms.join(', ')}`);
+
+      const subject = await this.topicAnalysisModel.createSubject(
+        topicId,
+        keywordTerms,
+        keywordCombination,
+        description,
+        1.0 // confidence
+      );
+
+      console.log(`[AIMessageProcessor] ✅ Created subject with idHash: ${subject.idHash}`);
+
+      // Create/update keywords and link them to this subject
+      for (const keywordData of subjectKeywords || []) {
+        try {
+          const term = typeof keywordData === 'string' ? keywordData : keywordData.term;
+
+          await this.topicAnalysisModel.addKeywordToSubject(
+            topicId,
+            term,
+            subject.idHash
+          );
+
+          console.log(`[AIMessageProcessor] ✅ Linked keyword "${term}" to subject "${name}"`);
+        } catch (error) {
+          console.warn(`[AIMessageProcessor] Failed to link keyword to subject:`, error);
+        }
+      }
+    } catch (error) {
+      console.error('[AIMessageProcessor] Failed to create subject:', error);
+      throw error;
+    }
   }
 
   /**
@@ -420,22 +544,24 @@ export class AIMessageProcessor implements IAIMessageProcessor {
    * This is a helper that would be injected or accessed via dependency
    */
   private async getAIPersonIdForModel(modelId: string): Promise<SHA256IdHash<Person> | null> {
-    // Find the model in available models
-    const model = this.availableModels.find(m => m.id === modelId);
-    if (!model) {
-      console.error(`[AIMessageProcessor] Model ${modelId} not found in available models`);
+    // Use AIContactManager to get the person ID
+    // The contact should already exist (created by AITopicManager)
+    try {
+      // Get display name from llmManager for fallback contact creation
+      const models = this.llmManager?.getAvailableModels() || [];
+      // Strip -private suffix to find base model for display name
+      const baseModelId = modelId.replace(/-private$/, '');
+      const model = models.find((m: any) => m.id === baseModelId);
+      const displayName = model?.displayName || model?.name || modelId;
+      const fullDisplayName = modelId.endsWith('-private') ? `${displayName} (Private)` : displayName;
+
+      // Get person ID from contact manager (will use cache if available)
+      const personId = await this.contactManager.ensureAIContactForModel(modelId, fullDisplayName);
+      return personId;
+    } catch (error) {
+      console.error(`[AIMessageProcessor] Failed to get AI person ID for ${modelId}:`, error);
       return null;
     }
-
-    // Return cached personId if available
-    if (model.personId) {
-      return model.personId;
-    }
-
-    // This would normally call aiContactManager.ensureAIContactForModel(modelId)
-    // For now, return null - this will be wired up in AIHandler
-    console.warn('[AIMessageProcessor] Model personId not cached, contact manager integration needed');
-    return null;
   }
 
   /**

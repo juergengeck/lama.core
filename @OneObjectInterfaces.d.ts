@@ -36,14 +36,42 @@ declare module '@OneObjectInterfaces' {
 
     export interface LLM {
         $type$: 'LLM';
-        modelId: string;
-        name: string;
-        provider: string;
-        endpoint?: string;
-        apiKey?: string;
+        name: string; // ID field - model name
+        modelId?: string;
+        filename: string;
+        modelType: 'local' | 'remote';
+        active: boolean;
+        deleted: boolean;
+        creator?: string;
+        created: number;
+        modified: number;
+        createdAt: string;
+        lastUsed: string;
+        lastInitialized?: number;
+        usageCount?: number;
+        size?: number;
+        personId?: string;
+        capabilities?: Array<'chat' | 'inference'>;
+        // Model parameters
         temperature?: number;
         maxTokens?: number;
         contextSize?: number;
+        batchSize?: number;
+        threads?: number;
+        mirostat?: number;
+        topK?: number;
+        topP?: number;
+        // Optional properties
+        architecture?: string;
+        contextLength?: number;
+        quantization?: string;
+        checksum?: string;
+        provider?: string;
+        downloadUrl?: string;
+        // Network configuration (for remote Ollama)
+        baseUrl?: string;
+        authType?: 'none' | 'bearer';
+        encryptedAuthToken?: string;
     }
 
     export interface Keyword {

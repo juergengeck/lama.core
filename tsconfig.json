@@ -10,6 +10,7 @@
     "noEmit": false,
     "noEmitOnError": false,
     "outDir": "./dist",
+    "rootDir": ".",
     "declaration": true,
     "strict": false,
     "resolveJsonModule": true,
@@ -20,6 +21,6 @@
       "@anthropic-ai/*": ["../lama.browser/node_modules/@anthropic-ai/*"]
     }
   },
-  "include": ["**/*.ts"],
+  "include": ["handlers/**/*.ts", "models/**/*.ts", "one-ai/**/*.ts", "services/**/*.ts", "recipes/**/*.ts", "*.d.ts"],
   "exclude": ["node_modules", "**/*.js", "packages/**", "dist/**"]
 }

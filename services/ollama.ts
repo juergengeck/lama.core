@@ -96,17 +96,20 @@ async function chatWithOllama(
   console.log(`[Ollama] Starting request ${requestId} to ${baseUrl}`)
 
   try {
-    // Keep conversation structure for better context
-    const systemMessages = messages.filter((msg: any) => msg.role === 'system')
-    const nonSystemMessages = messages.filter((msg: any) => msg.role !== 'system')
-    const recentNonSystemMessages = nonSystemMessages.slice(-10) // Keep more context
-    const formattedMessages = [...systemMessages, ...recentNonSystemMessages]
+    const t0 = Date.now()
+    console.log(`[Ollama-${requestId}] ⏱️  T+0ms: Request started`)
+
+    // Trust the caller (AIPromptBuilder) to provide properly formatted messages
+    // No need to reorganize - messages are already in the correct order
+    const formattedMessages = messages
 
     const startTime = Date.now()
+    console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Using ${formattedMessages.length} messages from prompt builder`)
 
     // Prepare headers with auth if provided
     const headers = {
       'Content-Type': 'application/json',
+      'Connection': 'keep-alive',
       ...(authHeaders || {})
     };
 
@@ -120,7 +123,7 @@ async function chatWithOllama(
       stream: useStreaming,
       options: {
         temperature: options.temperature || 0.7,
-        num_predict: options.max_tokens || 2048,
+        num_predict: options.max_tokens || -1,  // -1 = unlimited, let model stop naturally via EOS
         top_k: 40,
         top_p: 0.95
       }
@@ -136,13 +139,17 @@ async function chatWithOllama(
       console.log('[Ollama] ==============================================');
     }
 
+    console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Sending fetch to ${baseUrl}/api/chat`)
+
     const response: any = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers,
       signal: controller.signal,
       body: JSON.stringify(requestBody)
     })
-    
+
+    console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Response received (status: ${response.status})`)
+
     if (!response.ok) {
       throw new Error(`Ollama API error: ${response.statusText}`)
     }
@@ -175,6 +182,7 @@ async function chatWithOllama(
 
         if (!firstChunkTime) {
           firstChunkTime = Date.now()
+          console.log(`[Ollama-${requestId}] ⏱️  T+${firstChunkTime - t0}ms: 🎉 FIRST CHUNK RECEIVED (time to first token)`)
         }
 
         buffer += decoder.decode(value, { stream: true })
@@ -188,25 +196,35 @@ async function chatWithOllama(
 
           try {
             const json = JSON.parse(line)
+
+            // DEBUG: Log the actual structure we receive
+            console.log('[Ollama] Received JSON:', JSON.stringify(json, null, 2))
+
             // Handle different response formats:
             // 1. Regular models: json.message.content
-            // 2. Reasoning models (gpt-oss, deepseek-r1): json.thinking
+            // 2. Reasoning models (gpt-oss, deepseek-r1): json.thinking or json.message.thinking
             let content = ''
 
             if (json.message && json.message.content) {
               content = json.message.content
+            } else if (json.message && json.message.thinking) {
+              // Reasoning models can put thinking inside message object
+              content = json.message.thinking
             } else if (json.thinking) {
-              // Reasoning models use 'thinking' field
+              // Or thinking at top level
               content = json.thinking
             }
 
             if (content) {
               fullResponse += content
+              console.log('[Ollama] Extracted content, length:', content.length)
 
               // Stream to callback if provided
               if ((options as any).onStream) {
                 (options as any).onStream(content, false)
               }
+            } else {
+              console.warn('[Ollama] No content extracted from JSON. Keys:', Object.keys(json))
             }
           } catch (e: any) {
             console.error('[Ollama] Error parsing JSON line:', e.message, 'Line:', line)

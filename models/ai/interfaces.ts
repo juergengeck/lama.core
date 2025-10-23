@@ -120,6 +120,15 @@ export interface IAIPromptBuilder {
 
   /** Set message processor (circular dependency resolution) */
   setMessageProcessor(processor: IAIMessageProcessor): void;
+
+  /** Add a new message to the cache (updates cache instead of invalidating) */
+  addMessageToCache(topicId: string, message: any): void;
+
+  /** Invalidate message cache for a topic (call when cache is unreliable) */
+  invalidateMessageCache(topicId: string): void;
+
+  /** Clear all message caches */
+  clearMessageCache(): void;
 }
 
 /**

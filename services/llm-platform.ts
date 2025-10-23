@@ -59,6 +59,13 @@ export interface LLMPlatform {
    * @returns File contents as Buffer
    */
   readModelFile?(path: string): Promise<Buffer>;
+
+  /**
+   * Emit analysis update notification (keywords/subjects updated)
+   * @param topicId - Topic/conversation ID
+   * @param analysisType - Type of analysis ('keywords' | 'subjects' | 'both')
+   */
+  emitAnalysisUpdate?(topicId: string, analysisType: 'keywords' | 'subjects' | 'both'): void;
 }
 
 /**
