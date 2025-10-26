@@ -395,6 +395,94 @@ export default class TopicAnalysisModel extends Model {
     }
 
     /**
+     * Get all subjects across all topics
+     * Used for global keyword aggregation and cross-topic analysis
+     */
+    async getAllSubjects(): Promise<any[]> {
+        this.state.assertCurrentState('Initialised');
+
+        console.log('[TopicAnalysisModel] getAllSubjects called');
+
+        // Get all topics from TopicModel
+        const allTopics = await this.topicModel.getTopics();
+
+        console.log('[TopicAnalysisModel] Found topics:', {
+            topicCount: allTopics?.length || 0
+        });
+
+        // Aggregate subjects from all topics
+        const allSubjects: any[] = [];
+
+        for (const topic of allTopics || []) {
+            try {
+                const topicSubjects: any = await this.getSubjects(topic.id);
+                if (Array.isArray(topicSubjects)) {
+                    // Add topic context to each subject for reference
+                    const subjectsWithTopic = topicSubjects.map(s => ({
+                        ...s,
+                        topicId: topic.id,
+                        topicName: topic.name || topic.id
+                    }));
+                    allSubjects.push(...subjectsWithTopic);
+                }
+            } catch (err) {
+                console.error('[TopicAnalysisModel] Error getting subjects for topic:', topic.id, err);
+            }
+        }
+
+        console.log('[TopicAnalysisModel] Retrieved all subjects:', {
+            topicCount: allTopics?.length || 0,
+            totalSubjects: allSubjects.length
+        });
+
+        return allSubjects;
+    }
+
+    /**
+     * Get all keywords across all topics
+     * Used for global keyword aggregation and statistics
+     */
+    async getAllKeywords(): Promise<any[]> {
+        this.state.assertCurrentState('Initialised');
+
+        console.log('[TopicAnalysisModel] getAllKeywords called');
+
+        // Get all topics from TopicModel
+        const allTopics = await this.topicModel.getTopics();
+
+        console.log('[TopicAnalysisModel] Found topics:', {
+            topicCount: allTopics?.length || 0
+        });
+
+        // Aggregate keywords from all topics
+        const allKeywords: any[] = [];
+
+        for (const topic of allTopics || []) {
+            try {
+                const topicKeywords: any = await this.getKeywords(topic.id);
+                if (Array.isArray(topicKeywords)) {
+                    // Add topic context to each keyword for reference
+                    const keywordsWithTopic = topicKeywords.map(k => ({
+                        ...k,
+                        topicId: topic.id,
+                        topicName: topic.name || topic.id
+                    }));
+                    allKeywords.push(...keywordsWithTopic);
+                }
+            } catch (err) {
+                console.error('[TopicAnalysisModel] Error getting keywords for topic:', topic.id, err);
+            }
+        }
+
+        console.log('[TopicAnalysisModel] Retrieved all keywords:', {
+            topicCount: allTopics?.length || 0,
+            totalKeywords: allKeywords.length
+        });
+
+        return allKeywords;
+    }
+
+    /**
      * Get a single keyword by term
      * Uses proper ONE.core channel retrieval instead of direct storage access
      */

@@ -42,6 +42,47 @@ export interface UpdateKeywordAccessStateResponse {
   error?: string;
 }
 
+export interface GetAllKeywordsRequest {
+  includeArchived?: boolean;
+  sortBy?: 'frequency' | 'alphabetical' | 'lastSeen';
+  limit?: number;
+  offset?: number;
+}
+
+export interface AggregatedKeyword {
+  $type$: 'Keyword';
+  term: string;
+  category: string | null;
+  frequency: number;
+  score: number;
+  extractedAt: string;
+  lastSeen: string;
+  subjects: any[];
+
+  // Aggregated statistics
+  topicCount: number;
+  subjectCount: number;
+  topTopics: Array<{
+    topicId: string;
+    topicName: string;
+    frequency: number;
+  }>;
+
+  // Access control summary
+  accessControlCount: number;
+  hasRestrictions: boolean;
+}
+
+export interface GetAllKeywordsResponse {
+  success: boolean;
+  data?: {
+    keywords: AggregatedKeyword[];
+    totalCount: number;
+    hasMore: boolean;
+  };
+  error?: string;
+}
+
 /**
  * KeywordDetailHandler - Pure business logic for keyword detail operations
  *
@@ -319,6 +360,182 @@ export class KeywordDetailHandler {
         data: {
           accessState: null,
           created: false
+        }
+      };
+    }
+  }
+
+  /**
+   * Get all keywords across all topics with aggregated statistics
+   */
+  async getAllKeywords(request: GetAllKeywordsRequest = {}): Promise<GetAllKeywordsResponse> {
+    const startTime = Date.now();
+    const {
+      includeArchived = false,
+      sortBy = 'frequency',
+      limit = 500,
+      offset = 0
+    } = request;
+
+    console.log('[KeywordDetailHandler] Getting all keywords:', { sortBy, limit, offset });
+
+    try {
+      // Validate inputs
+      if (!['frequency', 'alphabetical', 'lastSeen'].includes(sortBy)) {
+        throw new Error(`Invalid sortBy: must be 'frequency', 'alphabetical', or 'lastSeen'`);
+      }
+
+      if (limit < 1 || limit > 500) {
+        throw new Error('Invalid limit: must be between 1 and 500');
+      }
+
+      if (offset < 0) {
+        throw new Error('Invalid offset: must be non-negative');
+      }
+
+      // Initialize model
+      await this.ensureModelInitialized();
+      const channelManager = this.nodeOneCore.channelManager;
+
+      // Get all subjects from all topics
+      const allSubjects = await this.topicAnalysisModel.getAllSubjects();
+      const filteredSubjects = includeArchived
+        ? allSubjects
+        : allSubjects.filter((s: any) => !s.archived);
+
+      console.log('[KeywordDetailHandler] Loaded subjects:', filteredSubjects.length);
+
+      // Get all keywords from all topics
+      const allKeywords = await this.topicAnalysisModel.getAllKeywords();
+      console.log('[KeywordDetailHandler] Loaded keywords:', allKeywords.length);
+
+      // Get all access states
+      const allAccessStates = await this.keywordAccessStorage.getAllAccessStates(channelManager);
+      console.log('[KeywordDetailHandler] Loaded access states:', allAccessStates.length);
+
+      // Aggregate keywords by term
+      const keywordMap = new Map<string, AggregatedKeyword>();
+
+      for (const keyword of allKeywords) {
+        if (!keywordMap.has(keyword.term)) {
+          keywordMap.set(keyword.term, {
+            $type$: 'Keyword',
+            term: keyword.term,
+            category: keyword.category || null,
+            frequency: keyword.frequency || 0,
+            score: keyword.score || 0,
+            extractedAt: keyword.extractedAt || new Date().toISOString(),
+            lastSeen: keyword.extractedAt || new Date().toISOString(),
+            subjects: keyword.subjects || [],
+            topicCount: 0,
+            subjectCount: 0,
+            topTopics: [],
+            accessControlCount: 0,
+            hasRestrictions: false
+          });
+        }
+      }
+
+      // Aggregate statistics from subjects
+      const topicFrequencyMap = new Map<string, Map<string, number>>(); // keyword -> topicId -> frequency
+
+      for (const subject of filteredSubjects) {
+        const keywordTerms = (subject.keywords || [])
+          .map((kHash: any) => {
+            const kw = allKeywords.find((k: any) => k.id === kHash || k.idHash === kHash);
+            return kw?.term;
+          })
+          .filter(Boolean);
+
+        for (const term of keywordTerms) {
+          const agg = keywordMap.get(term);
+          if (!agg) continue;
+
+          agg.subjectCount++;
+
+          // Track topic frequencies
+          if (!topicFrequencyMap.has(term)) {
+            topicFrequencyMap.set(term, new Map());
+          }
+          const topicMap = topicFrequencyMap.get(term)!;
+          const currentFreq = topicMap.get(subject.topicId) || 0;
+          topicMap.set(subject.topicId, currentFreq + (subject.messageCount || 1));
+        }
+      }
+
+      // Calculate topTopics and topicCount
+      for (const [term, agg] of keywordMap.entries()) {
+        const topicMap = topicFrequencyMap.get(term);
+        if (topicMap) {
+          agg.topicCount = topicMap.size;
+
+          // Convert to array and sort by frequency
+          agg.topTopics = Array.from(topicMap.entries())
+            .map(([topicId, frequency]) => ({
+              topicId,
+              topicName: topicId, // TODO: Get actual topic name from TopicModel
+              frequency
+            }))
+            .sort((a, b) => b.frequency - a.frequency)
+            .slice(0, 3);
+
+          // Update total frequency from top topics
+          agg.frequency = Array.from(topicMap.values()).reduce((sum, f) => sum + f, 0);
+        }
+
+        // Add access control summary
+        const accessStates = allAccessStates.filter((s: any) => s.keywordTerm === term);
+        agg.accessControlCount = accessStates.length;
+        agg.hasRestrictions = accessStates.some((s: any) => s.state === 'deny');
+      }
+
+      // Convert to array
+      let keywords = Array.from(keywordMap.values());
+
+      // Sort
+      switch (sortBy) {
+        case 'frequency':
+          keywords.sort((a, b) => b.frequency - a.frequency || b.score - a.score);
+          break;
+        case 'alphabetical':
+          keywords.sort((a, b) => a.term.localeCompare(b.term) || b.frequency - a.frequency);
+          break;
+        case 'lastSeen':
+          keywords.sort((a, b) =>
+            new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime() ||
+            b.frequency - a.frequency
+          );
+          break;
+      }
+
+      // Paginate
+      const totalCount = keywords.length;
+      keywords = keywords.slice(offset, offset + limit);
+
+      console.log('[KeywordDetailHandler] Aggregated keywords:', {
+        total: totalCount,
+        returned: keywords.length,
+        time: `${Date.now() - startTime}ms`
+      });
+
+      return {
+        success: true,
+        data: {
+          keywords,
+          totalCount,
+          hasMore: (offset + limit) < totalCount
+        }
+      };
+
+    } catch (error) {
+      console.error('[KeywordDetailHandler] Error getting all keywords:', error);
+      return {
+        success: false,
+        error: (error as Error).message,
+        data: {
+          keywords: [],
+          totalCount: 0,
+          hasMore: false
         }
       };
     }

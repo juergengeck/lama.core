@@ -178,13 +178,12 @@ export class AIContactManager implements IAIContactManager {
       this.aiContacts.set(modelId, personIdHash);
       this.personToModel.set(personIdHash, modelId);
 
-      // Create LLM object if manager is available
-      if (this.llmObjectManager) {
-        await this.createLLMObjectForAI(modelId, displayName, personIdHash);
-        console.log(`[AIContactManager] Ensured LLM object for ${modelId}`);
-      } else {
-        throw new Error(`[AIContactManager] llmObjectManager not available - cannot create LLM object for ${modelId}`);
+      // Create LLM object
+      if (!this.llmObjectManager) {
+        throw new Error(`[AIContactManager] llmObjectManager not initialized - required for AI contact creation`);
       }
+      await this.createLLMObjectForAI(modelId, displayName, personIdHash);
+      console.log(`[AIContactManager] Ensured LLM object for ${modelId}`);
 
       return personIdHash;
     } catch (error) {
@@ -250,11 +249,11 @@ export class AIContactManager implements IAIContactManager {
                 this.personToModel.set(personId, model.id);
 
                 // Ensure LLM object exists
-                if (this.llmObjectManager) {
-                  await this.createLLMObjectForAI(model.id, model.name, personId);
-                } else {
-                  throw new Error(`[AIContactManager] llmObjectManager not available - cannot ensure LLM object for ${model.id}`);
+                if (!this.llmObjectManager) {
+                  throw new Error(`[AIContactManager] llmObjectManager not initialized - required for AI contact loading`);
                 }
+                await this.createLLMObjectForAI(model.id, model.name, personId);
+                console.log(`[AIContactManager] Ensured LLM object for ${model.id}`);
 
                 aiContactCount++;
                 break;

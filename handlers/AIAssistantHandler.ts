@@ -139,6 +139,30 @@ export class AIAssistantHandler {
   }
 
   /**
+   * Load default model from platform-specific persistence
+   * @private
+   */
+  private async _loadDefaultModelFromPersistence(models: LLMModelInfo[]): Promise<string | null> {
+    // Try browser-specific llmConfigHandler first (if available)
+    if (this.deps.llmConfigHandler) {
+      const config = await this.deps.llmConfigHandler.getConfig({});
+      if (config?.success && config.config?.modelName) {
+        return config.config.modelName;
+      }
+    }
+
+    // Try Electron-specific settingsPersistence (if available)
+    if (this.deps.settingsPersistence) {
+      const savedModelId = await this.deps.settingsPersistence.getDefaultModelId();
+      if (savedModelId) {
+        return savedModelId;
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Initialize the AI handler and all components
    * Performs two-phase initialization to resolve circular dependencies
    */
@@ -185,25 +209,25 @@ export class AIAssistantHandler {
       const topicCount = await this.topicManager.scanExistingConversations(this.contactManager);
       console.log(`[AIAssistantHandler] Scanned ${topicCount} existing AI topics`);
 
-      // Load saved default model from persistence
-      if (this.deps.settingsPersistence && models.length > 0) {
-        const savedDefaultModel = await this.deps.settingsPersistence.getDefaultModelId();
+      // Load saved default model from persistence (unified for browser + Electron)
+      if (models.length > 0) {
+        const savedDefaultModel = await this._loadDefaultModelFromPersistence(models);
         if (savedDefaultModel) {
           // Verify the saved model exists in available models
           const modelExists = models.some(m => m.id === savedDefaultModel);
           if (modelExists) {
-            this.topicManager.setDefaultModel(savedDefaultModel);
+            // Use the handler's setDefaultModel which creates default chats
+            await this.setDefaultModel(savedDefaultModel);
             console.log(`[AIAssistantHandler] Restored saved default model: ${savedDefaultModel}`);
           } else {
-            console.log(`[AIAssistantHandler] Saved model ${savedDefaultModel} not available, using fallback`);
+            console.log(`[AIAssistantHandler] Saved model ${savedDefaultModel} not available`);
           }
         }
       }
 
-      // DO NOT auto-select a default model - user must choose via ModelOnboarding
-      // The model should only be set when explicitly selected by the user
+      // Do NOT auto-select - let user choose
       if (!this.topicManager.getDefaultModel()) {
-        console.log(`[AIAssistantHandler] No default model set - user must select via ModelOnboarding`);
+        console.log(`[AIAssistantHandler] No default model set - user must select one`);
       }
 
       this.initialized = true;
@@ -215,20 +239,18 @@ export class AIAssistantHandler {
   }
 
   /**
-   * Ensure default AI chats exist (Hi and LAMA)
+   * Create default AI chats (Hi and LAMA)
+   * Called when user selects a default model
    */
-  async ensureDefaultChats(): Promise<void> {
-    console.log('[AIAssistantHandler] Ensuring default AI chats...');
+  private async createDefaultChats(): Promise<void> {
+    console.log('[AIAssistantHandler] Creating default AI chats...');
 
-    // CRITICAL: Load default model from storage first
-    // The topic manager needs to know the default model before creating chats
-    const config = await this.deps.llmConfigHandler?.getConfig({});
-    if (config?.success && config.config?.modelName) {
-      console.log(`[AIAssistantHandler] Setting default model: ${config.config.modelName}`);
-      this.topicManager.setDefaultModel(config.config.modelName);
-    } else {
-      console.log('[AIAssistantHandler] No default model configured yet');
+    const defaultModel = this.topicManager.getDefaultModel();
+    if (!defaultModel) {
+      throw new Error('Cannot create default chats - no default model set');
     }
+
+    console.log(`[AIAssistantHandler] Using default model: ${defaultModel}`);
 
     await this.topicManager.ensureDefaultChats(
       this.contactManager,
@@ -238,7 +260,7 @@ export class AIAssistantHandler {
       }
     );
 
-    // CRITICAL: Refresh message processor's model list after ensureDefaultChats
+    // Refresh message processor's model list after chat creation
     // because private variants may have been registered during topic creation
     const updatedModels: LLMModelInfo[] = this.deps.llmManager?.getAvailableModels() || [];
 
@@ -251,7 +273,7 @@ export class AIAssistantHandler {
     }
 
     this.messageProcessor.setAvailableLLMModels(updatedModels);
-    console.log(`[AIAssistantHandler] Refreshed message processor with ${updatedModels.length} models (after ensureDefaultChats)`);
+    console.log(`[AIAssistantHandler] ✅ Default chats created with ${updatedModels.length} models`);
   }
 
   /**
@@ -321,7 +343,8 @@ export class AIAssistantHandler {
   }
 
   /**
-   * Set the default AI model
+   * Set the default AI model and create default chats
+   * Called when user selects a model in ModelOnboarding
    */
   async setDefaultModel(modelId: string): Promise<void> {
     console.log(`[AIAssistantHandler] Setting default model: ${modelId}`);
@@ -331,21 +354,20 @@ export class AIAssistantHandler {
     const model = models.find((m: any) => m.id === modelId);
 
     if (!model) {
-      throw new Error(`[AIAssistantHandler] Model ${modelId} not found`);
+      throw new Error(`Model ${modelId} not found`);
     }
 
     this.topicManager.setDefaultModel(modelId);
 
-    // Persist to platform-specific storage if available
+    // Persist the model
     if (this.deps.settingsPersistence) {
       await this.deps.settingsPersistence.setDefaultModelId(modelId);
     }
 
-    // Ensure default chats exist with new model (fire-and-forget)
-    // Don't block setDefaultModel waiting for topic creation + welcome message generation
-    this.ensureDefaultChats().catch(error => {
-      console.error('[AIAssistantHandler] Failed to ensure default chats:', error);
-    });
+    // Create chats - throws if fails
+    await this.createDefaultChats();
+
+    console.log(`[AIAssistantHandler] ✅ Default model set and chats created: ${modelId}`);
   }
 
   /**

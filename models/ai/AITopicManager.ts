@@ -198,8 +198,7 @@ export class AITopicManager implements IAITopicManager {
 
     // SECOND: Create missing topics (requires default model)
     if (!this.defaultModelId) {
-      console.log('[AITopicManager] No default model - cannot create missing default chats');
-      return;
+      throw new Error('No default model set - cannot create default chats');
     }
 
     // Get model info for display name
@@ -209,8 +208,7 @@ export class AITopicManager implements IAITopicManager {
 
     const aiPersonId = await aiContactManager.ensureAIContactForModel(this.defaultModelId, displayName);
     if (!aiPersonId) {
-      console.error('[AITopicManager] Could not get AI person ID');
-      return;
+      throw new Error(`Could not create AI contact for model: ${this.defaultModelId}`);
     }
 
     // Create Hi if it doesn't exist
@@ -227,8 +225,7 @@ export class AITopicManager implements IAITopicManager {
       const privateDisplayName = `${displayName} (Private)`;
       const privateAiPersonId = await aiContactManager.ensureAIContactForModel(privateModelId, privateDisplayName);
       if (!privateAiPersonId) {
-        console.error('[AITopicManager] Could not get private AI person ID for LAMA');
-        return;
+        throw new Error(`Could not create AI contact for private model: ${privateModelId}`);
       }
       await this.ensureLamaChat(privateModelId, privateAiPersonId, onTopicCreated);
     }
@@ -295,8 +292,7 @@ export class AITopicManager implements IAITopicManager {
     console.log('[AITopicManager] Ensuring Hi chat...');
 
     if (!this.topicGroupManager) {
-      console.warn('[AITopicManager] No topicGroupManager - cannot create topics (browser platform?)');
-      return;
+      throw new Error('topicGroupManager not initialized - cannot create topics');
     }
 
     try {
@@ -354,8 +350,7 @@ What can I help you with today?`;
     console.log(`[AITopicManager] Ensuring LAMA chat with private model: ${privateModelId}`);
 
     if (!this.topicGroupManager) {
-      console.warn('[AITopicManager] No topicGroupManager - cannot create topics (browser platform?)');
-      return;
+      throw new Error('topicGroupManager not initialized - cannot create topics');
     }
 
     try {
