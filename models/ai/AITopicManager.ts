@@ -13,11 +13,12 @@
  */
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Person } from '@refinio/one.core/lib/recipes.js';
+import type { Person, Group } from '@refinio/one.core/lib/recipes.js';
 import { getIdObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import { HI_WELCOME_MESSAGE } from '../../constants/welcome-messages.js';
 import type { IAITopicManager } from './interfaces.js';
 import type { AIMode, LLMModelInfo } from './types.js';
 
@@ -251,10 +252,11 @@ export class AITopicManager implements IAITopicManager {
         }
 
         // Topic exists in storage - try to determine its model from group members
-        const group = await getIdObject((topic as any).group);
+        const group = await getIdObject((topic as any).group) as Group;
 
-        if ((group as any).members) {
-          for (const memberId of (group as any).members) {
+        // CRITICAL: OLD one.core structure has 'person' array directly on Group
+        if (group.person) {
+          for (const memberId of group.person) {
             const modelId = aiContactManager.getModelIdForPersonId(memberId);
 
             if (modelId) {
@@ -283,6 +285,7 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Ensure Hi chat exists with static welcome message
+   * NOTE: Hi chat uses a STATIC welcome message - no LLM generation
    */
   private async ensureHiChat(
     modelId: string,
@@ -316,20 +319,11 @@ export class AITopicManager implements IAITopicManager {
       this.registerAITopic(topicId, modelId);
       this.setTopicDisplayName(topicId, 'Hi');
 
-      // Send static welcome message immediately if needed
+      // Post static welcome message directly (NO LLM generation for Hi chat)
       if (needsWelcome) {
-        const staticWelcome = `Hi! I'm LAMA, your local AI assistant.
-
-You can make me your own, give me a name of your choice, give me a persistent identity.
-
-We treat LLM as first-class citizens - they're communication peers just like people - and I will manage their learnings for you.
-
-The LAMA chat below is my memory. You can configure its visibility in Settings. All I learn from your conversations gets stored there for context, and is fully transparent for you. Nobody else can see this content.
-
-What can I help you with today?`;
-
-        await topicRoom.sendMessage(staticWelcome, aiPersonId, aiPersonId);
-        console.log('[AITopicManager] ✅ Hi chat created with welcome message');
+        console.log('[AITopicManager] ✅ Hi chat created, posting static welcome message');
+        await topicRoom.sendMessage(HI_WELCOME_MESSAGE, aiPersonId, aiPersonId);
+        console.log('[AITopicManager] ✅ Static welcome message posted to Hi chat');
       } else {
         console.log('[AITopicManager] ✅ Hi chat already exists');
       }
@@ -341,6 +335,7 @@ What can I help you with today?`;
 
   /**
    * Ensure LAMA chat exists (uses private model variant)
+   * NOTE: LAMA chat generates DYNAMIC welcome message via LLM (unlike Hi chat)
    */
   private async ensureLamaChat(
     privateModelId: string,
@@ -374,17 +369,14 @@ What can I help you with today?`;
       this.registerAITopic(topicId, privateModelId);
       this.setTopicDisplayName(topicId, 'LAMA');
 
-      // Generate welcome message asynchronously (non-blocking) if needed
+      // Trigger LLM-generated welcome message via callback (fire and forget - don't block)
       if (needsWelcome && onTopicCreated) {
-        // Use setTimeout for cross-platform compatibility (Node.js and browser)
-        setTimeout(() => {
-          onTopicCreated(topicId, privateModelId).catch(err => {
-            console.error('[AITopicManager] Failed to generate LAMA welcome:', err);
-          });
-        }, 0);
-        console.log('[AITopicManager] ✅ LAMA chat created, welcome message generating in background');
+        console.log('[AITopicManager] ✅ LAMA chat created, triggering LLM welcome message generation (background)');
+        onTopicCreated(topicId, privateModelId).catch(err => {
+          console.error('[AITopicManager] Failed to generate LAMA welcome message:', err);
+        });
       } else if (needsWelcome) {
-        console.log('[AITopicManager] ⚠️ LAMA chat created but no welcome callback provided');
+        console.log('[AITopicManager] ✅ LAMA chat created (no callback provided for welcome message)');
       } else {
         console.log('[AITopicManager] ✅ LAMA chat already exists');
       }
