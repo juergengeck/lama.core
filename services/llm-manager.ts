@@ -457,11 +457,18 @@ class LLMManager {
     }
 
     console.log(`[LLMManager] Chat with ${(model as any).id} (${messages.length} messages), ${this.mcpTools.size} MCP tools available`)
-    console.log(`[LLMManager] ABOUT TO ENHANCE MESSAGES`)
 
-    // Add tool descriptions to system message
-    const enhancedMessages = this.enhanceMessagesWithTools(messages)
-    console.log(`[LLMManager] ENHANCEMENT COMPLETE`)
+    // Check if tools should be disabled for this call
+    const shouldDisableTools = (options as any)?.disableTools === true
+    if (shouldDisableTools) {
+      console.log(`[LLMManager] Tools explicitly disabled via disableTools option`)
+    } else {
+      console.log(`[LLMManager] ABOUT TO ENHANCE MESSAGES`)
+    }
+
+    // Add tool descriptions to system message (unless explicitly disabled)
+    const enhancedMessages = shouldDisableTools ? messages : this.enhanceMessagesWithTools(messages)
+    console.log(`[LLMManager] ENHANCEMENT ${shouldDisableTools ? 'SKIPPED' : 'COMPLETE'}`)
 
     let response
 
@@ -561,13 +568,29 @@ class LLMManager {
 
   async processToolCalls(response: any, context?: any): Promise<any> {
     console.log('[LLMManager] Checking for tool calls in response...')
-    console.log('[LLMManager] Response preview:', response?.substring(0, 200))
+
+    // Handle both string responses and object responses (with thinking)
+    let responseText: string;
+    let hasThinking = false;
+    if (typeof response === 'object' && response._hasThinking) {
+      // Response includes thinking metadata
+      responseText = response.content;
+      hasThinking = true;
+      console.log('[LLMManager] Response includes thinking metadata, using content field');
+    } else if (typeof response === 'string') {
+      responseText = response;
+    } else {
+      console.warn('[LLMManager] Unexpected response type:', typeof response);
+      return response || '';
+    }
+
+    console.log('[LLMManager] Response preview:', responseText?.substring(0, 200))
 
     // Check for tool calls in response - try both with and without backticks
-    let toolCallMatch = response?.match(/```json\s*({[\s\S]*?})\s*```/)
+    let toolCallMatch = responseText?.match(/```json\s*({[\s\S]*?})\s*```/)
     if (!toolCallMatch) {
       // Try without backticks for plain JSON response (anywhere in the response)
-      toolCallMatch = response?.match(/(\{[^}]*"tool"[^}]*"parameters"[^}]*\})/)
+      toolCallMatch = responseText?.match(/(\{[^}]*"tool"[^}]*"parameters"[^}]*\})/)
       if (toolCallMatch) {
         console.log('[LLMManager] Found plain JSON tool call')
       }

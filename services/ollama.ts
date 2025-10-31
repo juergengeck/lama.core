@@ -168,6 +168,7 @@ async function chatWithOllama(
 
     // Process streaming response using ReadableStream (web standard)
     let fullResponse = ''
+    let fullThinking = '' // Separate accumulation for thinking (reasoning models)
     let firstChunkTime = null
     let buffer = ''
 
@@ -202,32 +203,60 @@ async function chatWithOllama(
 
             // Handle different response formats:
             // 1. Regular models: json.message.content
-            // 2. Reasoning models (gpt-oss, deepseek-r1): json.thinking or json.message.thinking
+            // 2. Reasoning models: json.message.thinking (store separately, NEVER show)
+            // 3. Alternative formats: json.response, json.message (if string), json.text
             let content = ''
+            let thinking = ''
 
-            if (json.message && json.message.content) {
+            // Extract content (what we show to user)
+            if (json.message && typeof json.message === 'object' && json.message.content) {
               content = json.message.content
-            } else if (json.message && json.message.thinking) {
-              // Reasoning models can put thinking inside message object
-              content = json.message.thinking
-            } else if (json.thinking) {
-              // Or thinking at top level
-              content = json.thinking
+            } else if (json.message && typeof json.message === 'string') {
+              // Sometimes message is directly a string
+              content = json.message
+            } else if (json.response) {
+              // Some models use 'response' field
+              content = json.response
+            } else if (json.text) {
+              // Some models use 'text' field
+              content = json.text
             }
 
+            // Extract thinking separately (reasoning models like gpt-oss, deepseek-r1)
+            // CRITICAL: Never use thinking as content - it's internal reasoning
+            if (json.message && json.message.thinking) {
+              thinking = json.message.thinking
+            } else if (json.thinking) {
+              thinking = json.thinking
+            }
+
+            // Accumulate content for display
             if (content) {
               fullResponse += content
               console.log('[Ollama] Extracted content, length:', content.length)
 
-              // Stream to callback if provided
+              // Stream to callback if provided (ONLY stream content, not thinking)
               if ((options as any).onStream) {
                 console.log('[Ollama] ✅ Calling onStream callback with content length:', content.length)
                 ;(options as any).onStream(content, false)
               } else {
                 console.warn('[Ollama] ⚠️  No onStream callback provided!')
               }
-            } else {
-              console.warn('[Ollama] No content extracted from JSON. Keys:', Object.keys(json))
+            }
+
+            // Accumulate thinking separately (don't stream it)
+            if (thinking) {
+              fullThinking += thinking
+              console.log('[Ollama] Accumulated thinking, total length:', fullThinking.length)
+            }
+
+            if (!content && !thinking && !json.done) {
+              // Log details for debugging but don't crash
+              // (Skip final completion messages with done: true)
+              console.warn('[Ollama] No content/thinking extracted from JSON. Keys:', Object.keys(json))
+              if (json.message) {
+                console.warn('[Ollama] message type:', typeof json.message, 'message keys:', Object.keys(json.message || {}))
+              }
             }
           } catch (e: any) {
             console.error('[Ollama] Error parsing JSON line:', e.message, 'Line:', line)
@@ -243,19 +272,31 @@ async function chatWithOllama(
       try {
         const json = JSON.parse(buffer)
         let content = ''
+        let thinking = ''
 
+        // Extract content
         if (json.message && json.message.content) {
           content = json.message.content
-        } else if (json.thinking) {
-          // Reasoning models use 'thinking' field
-          content = json.thinking
         }
 
+        // Extract thinking separately (NEVER use as content)
+        if (json.message && json.message.thinking) {
+          thinking = json.message.thinking
+        } else if (json.thinking) {
+          thinking = json.thinking
+        }
+
+        // Accumulate content
         if (content) {
           fullResponse += content
           if ((options as any).onStream) {
             (options as any).onStream(content, false)
           }
+        }
+
+        // Accumulate thinking
+        if (thinking) {
+          fullThinking += thinking
         }
       } catch (e: any) {
         console.error('[Ollama] Error parsing final JSON:', e.message)
@@ -275,13 +316,26 @@ async function chatWithOllama(
       console.log('[Ollama] Full response length:', fullResponse.length)
       console.log('[Ollama] Full response (first 500 chars):', fullResponse.substring(0, 500))
       console.log('[Ollama] Full response (last 200 chars):', fullResponse.substring(Math.max(0, fullResponse.length - 200)))
+      if (fullThinking) {
+        console.log('[Ollama] Thinking captured (length):', fullThinking.length)
+        console.log('[Ollama] Thinking (first 200 chars):', fullThinking.substring(0, 200))
+      }
       console.log('[Ollama] ===========================================')
     }
-    
+
     // Clean up request tracking
     activeRequests.delete(requestId)
     console.log(`[Ollama] Completed request ${requestId}`)
-    
+
+    // Return structured response with thinking as metadata
+    // If there's thinking, return object; otherwise return string for backwards compat
+    if (fullThinking) {
+      return {
+        content: fullResponse,
+        thinking: fullThinking,
+        _hasThinking: true
+      }
+    }
     return fullResponse
   } catch (error) {
     console.error(`[Ollama] Chat error for request ${requestId}:`, error)

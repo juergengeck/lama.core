@@ -20,7 +20,7 @@ import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { IAIMessageProcessor, IAIPromptBuilder, IAITaskManager } from './interfaces.js';
 import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
-import OneObjectCache from '@chat/core/cache/OneObjectCache.js';
+import OneObjectCache from '@refinio/one.models/lib/api/utils/caches/OneObjectCache.js';
 import { DEFAULT_SYSTEM_PROMPT } from '../../constants/system-prompts.js';
 
 export class AIMessageProcessor implements IAIMessageProcessor {
@@ -329,32 +329,69 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       }
       console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Progress indicator emitted`);
 
-      // Build welcome prompt
+      // Check if this topic uses a hardcoded welcome message
+      const hardcodedWelcome = this.getHardcodedWelcome(topicId);
+      console.log(`[AIMessageProcessor] getHardcodedWelcome("${topicId}") returned:`, hardcodedWelcome ? 'HARDCODED MESSAGE' : 'null');
+      if (hardcodedWelcome) {
+        console.log(`[AIMessageProcessor] Using hardcoded welcome for topic: ${topicId}`);
+
+        // Emit the hardcoded message
+        const messageId = `welcome-${Date.now()}`;
+        if (this.platform) {
+          this.platform.emitMessageUpdate(topicId, messageId, hardcodedWelcome, 'complete');
+        }
+
+        // Store the hardcoded message in ONE.core
+        try {
+          const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+          const aiPersonId = await this.getAIPersonIdForModel(modelId);
+          if (aiPersonId && topicRoom) {
+            await topicRoom.sendMessage(hardcodedWelcome, aiPersonId, aiPersonId);
+            console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Hardcoded welcome message stored`);
+
+            // Add to cache
+            if (this.promptBuilder) {
+              const messageObj = {
+                data: {
+                  text: hardcodedWelcome,
+                  sender: aiPersonId
+                },
+                timestamp: Date.now()
+              };
+              this.promptBuilder.addMessageToCache(topicId, messageObj);
+            }
+          }
+        } catch (storeError) {
+          console.error('[AIMessageProcessor] Failed to store hardcoded welcome:', storeError);
+        }
+
+        console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: ✅ Hardcoded welcome complete for topic: ${topicId}`);
+        return;
+      }
+
+      // Build welcome prompt for generated messages
       const welcomePrompt = this.buildWelcomePrompt(topicId);
       console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Welcome prompt built`);
 
       // Use simple system prompt for welcome messages (no structured output instructions)
+      // Combine base prompt with specific welcome instructions
       const simpleSystemPrompt = 'You are LAMA, a helpful local AI assistant. Respond naturally and warmly.';
+      const combinedSystemPrompt = `${simpleSystemPrompt}\n\n${welcomePrompt}`;
 
       const history = [
         {
           role: 'system' as const,
-          content: simpleSystemPrompt,
-        },
-        {
-          role: 'user' as const,
-          content: welcomePrompt,
+          content: combinedSystemPrompt,
         },
       ];
 
       // Generate welcome message
       const messageId = `welcome-${Date.now()}`;
       let fullResponse = '';
-      let displayBuffer = ''; // Buffer for parsed display text
       console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling LLM...`);
 
-      // Use regular chat (not chatWithAnalysis) to avoid structured output conflicts
-      let thinkingBuffer = ''; // Buffer for thinking section
+      // Use regular chat (not chatWithAnalysis) - simple streaming with no special parsing
+      // IMPORTANT: Disable MCP tools for welcome messages to avoid confusing the LLM
       const response = await this.llmManager?.chat(
         history,
         modelId,
@@ -362,63 +399,37 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           onStream: (chunk: string) => {
             fullResponse += chunk;
 
-            // Parse and extract BOTH [THINKING] and [RESPONSE] sections in real-time
-            // Use greedy matching to get the LAST occurrence (in case LLM includes examples)
-
-            // Extract thinking section - match from last [THINKING] to last [/THINKING]
-            const thinkingMatch = fullResponse.match(/\[THINKING\]\s*([\s\S]*)\[\/THINKING\]/);
-            if (thinkingMatch) {
-              thinkingBuffer = thinkingMatch[1].trim();
-            }
-
-            // Extract response section - match from last [RESPONSE] to end (may not have closing tag yet)
-            const responseMatch = fullResponse.match(/\[RESPONSE\]\s*([\s\S]*)(?:\[\/RESPONSE\]|$)/);
-            if (responseMatch) {
-              displayBuffer = responseMatch[1].trim();
-            }
-
-            // Send streaming updates with both thinking and response
-            if (this.platform && (thinkingBuffer || displayBuffer)) {
+            // Send streaming updates directly (no parsing needed)
+            if (this.platform) {
               this.platform.emitMessageUpdate(
                 topicId,
                 messageId,
-                {
-                  thinking: thinkingBuffer || undefined,
-                  response: displayBuffer,
-                  raw: fullResponse,
-                },
+                fullResponse,
                 'streaming'
               );
             }
           },
+          disableTools: true, // Disable MCP tools for welcome messages
         }
       );
 
       console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: LLM response received`);
 
-      // Parse structured response: extract both [THINKING] and [RESPONSE] sections
-      // Use greedy matching to get the LAST occurrence (in case LLM includes examples)
-      const finalThinkingMatch = response.match(/\[THINKING\]\s*([\s\S]*)\[\/THINKING\]/);
-      const finalResponseMatch = response.match(/\[RESPONSE\]\s*([\s\S]*)(?:\[\/RESPONSE\]|$)/);
+      // Extract content from structured response if needed
+      const finalResponse = typeof response === 'object' && response.content
+        ? response.content
+        : response;
 
-      const finalThinking = finalThinkingMatch ? finalThinkingMatch[1].trim() : '';
-      const finalResponse = finalResponseMatch ? finalResponseMatch[1].trim() : response;
+      // Log full response for debugging
+      console.log(`[AIMessageProcessor] Welcome response (raw):`, response);
+      console.log(`[AIMessageProcessor] Welcome response (extracted):`, finalResponse);
 
-      // Log full response with thinking for debugging
-      console.log(`[AIMessageProcessor] Full welcome response:`, response);
-      console.log(`[AIMessageProcessor] Extracted thinking:`, finalThinking);
-      console.log(`[AIMessageProcessor] Extracted response:`, finalResponse);
-
-      // Emit completion with both thinking and response
+      // Emit completion
       if (this.platform) {
         this.platform.emitMessageUpdate(
           topicId,
           messageId,
-          {
-            thinking: finalThinking || undefined,
-            response: finalResponse,
-            raw: response,
-          },
+          finalResponse,
           'complete'
         );
       }
@@ -452,9 +463,15 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           console.warn(`[AIMessageProcessor] ⚠️ Could not store welcome message - aiPersonId: ${aiPersonId ? 'EXISTS' : 'NULL'}, topicRoom: ${topicRoom ? 'EXISTS' : 'NULL'}`);
         }
       } catch (storeError) {
-        console.error('[AIMessageProcessor] ❌ Failed to store welcome message in ONE.core:');
-        console.error('[AIMessageProcessor] Error details:', storeError);
-        console.error('[AIMessageProcessor] Error stack:', storeError instanceof Error ? storeError.stack : 'No stack trace');
+        // Expected error: Channel doesn't exist yet until user sends first message
+        const errorMessage = storeError instanceof Error ? storeError.message : String(storeError);
+        if (errorMessage.includes('channel does not exist')) {
+          console.log('[AIMessageProcessor] ℹ️  Channel not created yet - welcome message will be added after first user message');
+        } else {
+          console.error('[AIMessageProcessor] ❌ Failed to store welcome message in ONE.core:');
+          console.error('[AIMessageProcessor] Error details:', storeError);
+          console.error('[AIMessageProcessor] Error stack:', storeError instanceof Error ? storeError.stack : 'No stack trace');
+        }
         // Don't throw - the message was generated and emitted, storage is secondary
       }
 
@@ -472,6 +489,16 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   /**
    * Build welcome prompt based on topic ID
    */
+  /**
+   * Get hardcoded welcome message for topics that don't need AI generation
+   * NOTE: "hi" topic welcome is handled by the app layer (lama.cube)
+   */
+  private getHardcodedWelcome(topicId: string): string | null {
+    // No hardcoded welcomes in infrastructure layer
+    // App-specific welcome messages belong in lama.cube
+    return null;
+  }
+
   private buildWelcomePrompt(topicId: string): string {
     if (topicId === 'hi') {
       return 'Please introduce yourself briefly and warmly as LAMA, a local AI assistant.';

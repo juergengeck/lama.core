@@ -225,9 +225,17 @@ export class AIAssistantHandler {
         }
       }
 
-      // Do NOT auto-select - let user choose
-      if (!this.topicManager.getDefaultModel()) {
-        console.log(`[AIAssistantHandler] No default model set - user must select one`);
+      // Removed: Auto-selection disabled - user must select model via UI
+      // if (!this.topicManager.getDefaultModel() && models.length > 0) {
+      //   const firstModel = models[0];
+      //   console.log(`[AIAssistantHandler] Auto-selecting first available model: ${firstModel.id}`);
+      //   await this.setDefaultModel(firstModel.id);
+      // }
+
+      if (this.topicManager.getDefaultModel()) {
+        console.log(`[AIAssistantHandler] Default model configured: ${this.topicManager.getDefaultModel()}`);
+      } else {
+        console.log(`[AIAssistantHandler] No default model set - user will be prompted to select one`);
       }
 
       this.initialized = true;
@@ -364,10 +372,16 @@ export class AIAssistantHandler {
       await this.deps.settingsPersistence.setDefaultModelId(modelId);
     }
 
-    // Create chats - throws if fails
-    await this.createDefaultChats();
+    // Wait for topics to be created so they appear in conversation list immediately
+    // (Welcome messages still generate in background via callbacks)
+    try {
+      await this.createDefaultChats();
+      console.log(`[AIAssistantHandler] ✅ Default chats created, topics are ready`);
+    } catch (err) {
+      console.error('[AIAssistantHandler] ❌ Failed to create default chats:', err);
+    }
 
-    console.log(`[AIAssistantHandler] ✅ Default model set and chats created: ${modelId}`);
+    console.log(`[AIAssistantHandler] ✅ Default model set: ${modelId}`);
   }
 
   /**
