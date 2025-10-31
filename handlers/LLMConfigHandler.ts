@@ -95,6 +95,7 @@ export interface DeleteOllamaConfigResponse {
  */
 export class LLMConfigHandler {
   private nodeOneCore: any;
+  private aiAssistantModel: any;
   private testOllamaConnection: (baseUrl: string, authToken?: string) => Promise<TestConnectionResponse>;
   private fetchOllamaModels: (baseUrl: string, authToken?: string) => Promise<any[]>;
   private encryptToken: (token: string) => string;
@@ -104,6 +105,7 @@ export class LLMConfigHandler {
 
   constructor(
     nodeOneCore: any,
+    aiAssistantModel: any,
     ollamaValidator: {
       testOllamaConnection: (baseUrl: string, authToken?: string) => Promise<TestConnectionResponse>;
       fetchOllamaModels: (baseUrl: string, authToken?: string) => Promise<any[]>;
@@ -116,6 +118,7 @@ export class LLMConfigHandler {
     }
   ) {
     this.nodeOneCore = nodeOneCore;
+    this.aiAssistantModel = aiAssistantModel;
     this.testOllamaConnection = ollamaValidator.testOllamaConnection;
     this.fetchOllamaModels = ollamaValidator.fetchOllamaModels;
     this.encryptToken = configManager.encryptToken;
@@ -249,8 +252,11 @@ export class LLMConfigHandler {
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
       console.log('[LLMConfigHandler] Posted LLM config to lama channel');
 
-      // If setting as active, deactivate other configs
-      if (request.setAsActive) {
+      // If setting as active, set it as the default model in AIAssistantModel
+      if (request.setAsActive && this.aiAssistantModel) {
+        console.log(`[LLMConfigHandler] Setting ${request.modelName} as default model`);
+        await this.aiAssistantModel.setDefaultModel(request.modelName);
+        console.log(`[LLMConfigHandler] Successfully set ${request.modelName} as default model`);
         // TODO: Implement deactivation of other configs
         // This would require iterating through existing LLM objects and setting active=false
       }
