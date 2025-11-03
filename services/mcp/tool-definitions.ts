@@ -197,6 +197,261 @@ export const aiAssistantTools: ToolDefinitionWithCategory[] = [
 ];
 
 /**
+ * Memory Tools
+ * Tools for storing and retrieving assembly objects with styling and signatures
+ */
+export const memoryTools: ToolDefinitionWithCategory[] = [
+  // Chat-Memory Integration Tools
+  {
+    name: 'enable_chat_memories',
+    category: 'memory',
+    description: 'Enable automatic subject extraction and memory creation for a chat topic',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topicId: {
+          type: 'string',
+          description: 'Chat topic ID to enable memories for'
+        },
+        autoExtract: {
+          type: 'boolean',
+          description: 'Automatically extract subjects from new messages',
+          default: true
+        },
+        keywords: {
+          type: 'array',
+          description: 'Additional keywords to track'
+        }
+      },
+      required: ['topicId']
+    }
+  },
+  {
+    name: 'disable_chat_memories',
+    category: 'memory',
+    description: 'Disable memory extraction for a chat topic',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topicId: {
+          type: 'string',
+          description: 'Chat topic ID to disable memories for'
+        }
+      },
+      required: ['topicId']
+    }
+  },
+  {
+    name: 'toggle_chat_memories',
+    category: 'memory',
+    description: 'Toggle memory extraction on/off for a chat topic',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topicId: {
+          type: 'string',
+          description: 'Chat topic ID to toggle memories for'
+        }
+      },
+      required: ['topicId']
+    }
+  },
+  {
+    name: 'extract_chat_subjects',
+    category: 'memory',
+    description: 'Extract subjects from chat messages and store as memories',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topicId: {
+          type: 'string',
+          description: 'Chat topic ID to extract from'
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of recent messages to analyze',
+          default: 50
+        }
+      },
+      required: ['topicId']
+    }
+  },
+  {
+    name: 'find_chat_memories',
+    category: 'memory',
+    description: 'Find related memories for a chat based on keywords',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topicId: {
+          type: 'string',
+          description: 'Chat topic ID'
+        },
+        keywords: {
+          type: 'array',
+          description: 'Keywords to search for'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of memories to return',
+          default: 10
+        }
+      },
+      required: ['topicId', 'keywords']
+    }
+  },
+  {
+    name: 'get_chat_memory_status',
+    category: 'memory',
+    description: 'Get memory extraction status for a chat topic',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topicId: {
+          type: 'string',
+          description: 'Chat topic ID'
+        }
+      },
+      required: ['topicId']
+    }
+  },
+  // Subject Storage Tools
+  {
+    name: 'store_subject',
+    category: 'memory',
+    description: 'Store a subject assembly in memory with optional styling and cryptographic signature',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Unique identifier for the subject'
+        },
+        name: {
+          type: 'string',
+          description: 'Subject name/title'
+        },
+        description: {
+          type: 'string',
+          description: 'Detailed description of the subject'
+        },
+        metadata: {
+          type: 'object',
+          description: 'Key-value metadata pairs'
+        },
+        sign: {
+          type: 'boolean',
+          description: 'Sign with verifiable credentials',
+          default: false
+        },
+        theme: {
+          type: 'string',
+          description: 'HTML theme for styling (light, dark, auto)',
+          default: 'auto'
+        }
+      },
+      required: ['id', 'name']
+    }
+  },
+  {
+    name: 'retrieve_subject',
+    category: 'memory',
+    description: 'Retrieve a subject assembly from memory by ID hash',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        idHash: {
+          type: 'string',
+          description: 'The ID hash of the subject to retrieve'
+        },
+        verifySignature: {
+          type: 'boolean',
+          description: 'Verify cryptographic signature if present',
+          default: false
+        }
+      },
+      required: ['idHash']
+    }
+  },
+  {
+    name: 'list_subjects',
+    category: 'memory',
+    description: 'List all subjects stored in memory',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
+  {
+    name: 'update_subject',
+    category: 'memory',
+    description: 'Update an existing subject assembly',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        idHash: {
+          type: 'string',
+          description: 'The ID hash of the subject to update'
+        },
+        name: {
+          type: 'string',
+          description: 'Updated subject name'
+        },
+        description: {
+          type: 'string',
+          description: 'Updated description'
+        },
+        metadata: {
+          type: 'object',
+          description: 'Updated metadata'
+        },
+        sign: {
+          type: 'boolean',
+          description: 'Sign the updated version',
+          default: false
+        },
+        theme: {
+          type: 'string',
+          description: 'HTML theme (light, dark, auto)',
+          default: 'auto'
+        }
+      },
+      required: ['idHash']
+    }
+  },
+  {
+    name: 'delete_subject',
+    category: 'memory',
+    description: 'Delete a subject assembly from memory storage',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        idHash: {
+          type: 'string',
+          description: 'The ID hash of the subject to delete'
+        }
+      },
+      required: ['idHash']
+    }
+  },
+  {
+    name: 'export_subject_html',
+    category: 'memory',
+    description: 'Export a subject as styled HTML for viewing in browser',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        idHash: {
+          type: 'string',
+          description: 'The ID hash of the subject to export'
+        }
+      },
+      required: ['idHash']
+    }
+  }
+];
+
+/**
  * All available tool definitions
  */
 export const allTools: ToolDefinitionWithCategory[] = [
@@ -204,7 +459,8 @@ export const allTools: ToolDefinitionWithCategory[] = [
   ...contactTools,
   ...connectionTools,
   ...llmTools,
-  ...aiAssistantTools
+  ...aiAssistantTools,
+  ...memoryTools
 ];
 
 /**

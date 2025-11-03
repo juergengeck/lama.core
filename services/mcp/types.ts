@@ -88,6 +88,8 @@ export interface MCPToolDependencies {
   leuteModel?: any;
   topicModel?: any;
   connectionsModel?: any;
+  memoryHandler?: any;
+  chatMemoryHandler?: any;
 }
 
 /**

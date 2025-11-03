@@ -169,9 +169,10 @@ export class AIContactManager implements IAIContactManager {
         const someoneResult: any = await this.deps.storeVersionedObject(newSomeone);
         const someoneIdHash = typeof someoneResult === 'object' && someoneResult?.idHash ? someoneResult.idHash : someoneResult;
 
-        // Add to LeuteModel using addProfile (not addOther)
-        await (this.leuteModel as any).addProfile(profileIdHash);
-        console.log(`[AIContactManager] Created and added Someone to contacts: ${someoneIdHash.toString().substring(0, 8)}...`);
+        // NOTE: Do NOT call addProfile() here - it would try to create another Someone
+        // The Person/Profile/Someone structure is already complete
+        console.log(`[AIContactManager] Created Someone: ${someoneIdHash.toString().substring(0, 8)}...`);
+        console.log(`[AIContactManager] AI contact creation complete - Person/Profile/Someone structure ready`);
       }
 
       // Cache the AI contact

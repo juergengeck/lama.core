@@ -9,6 +9,9 @@
  */
 
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Keyword } from '../one-ai/types/Keyword.js';
+import type { Subject } from '../one-ai/types/Subject.js';
 
 export interface GetKeywordDetailsRequest {
   keyword: string;
@@ -18,8 +21,8 @@ export interface GetKeywordDetailsRequest {
 export interface GetKeywordDetailsResponse {
   success: boolean;
   data?: {
-    keyword: any;
-    subjects: any[];
+    keyword: Keyword | null;
+    subjects: Subject[];
     accessStates: any[];
   };
   error?: string;
@@ -57,7 +60,7 @@ export interface AggregatedKeyword {
   score: number;
   extractedAt: string;
   lastSeen: string;
-  subjects: any[];
+  subjects: SHA256IdHash<Subject>[];
 
   // Aggregated statistics
   topicCount: number;

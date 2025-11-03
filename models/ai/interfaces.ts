@@ -82,6 +82,9 @@ export interface IAIMessageProcessor {
   /** Check if a person/profile ID is an AI contact */
   isAIContact(personId: SHA256IdHash<Person> | string): boolean;
 
+  /** Set AI assistant handler (circular dependency resolution) */
+  setAIAssistant(assistant: any): void;
+
   /** Set prompt builder (circular dependency resolution) */
   setPromptBuilder(builder: IAIPromptBuilder): void;
 

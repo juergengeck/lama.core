@@ -1,4 +1,7 @@
 import type { ChannelManager } from '@refinio/one.models/lib/models/index.js';
+import type { Subject } from '../types/Subject.js';
+import type { Keyword } from '../types/Keyword.js';
+
 /**
  * TopicAnalysisRoom - Extension of TopicRoom for topic analysis functionality
  * Provides methods to retrieve Keywords, Subjects, and Summaries from a topic
@@ -18,16 +21,13 @@ export default class TopicAnalysisRoom {
      * Retrieve all keywords for this topic
      * Gets all keywords from channels matching this topicId
      */
-    async retrieveAllKeywords(): Promise<any> {
+    async retrieveAllKeywords(): Promise<Keyword[]> {
         // Get channel infos to retrieve keyword objects
         const channelInfos = await this.channelManager.getMatchingChannelInfos({
             channelId: this.topicId
         });
 
-        console.log(`[TopicAnalysisRoom] 🔍 getMatchingChannelInfos for "${this.topicId}" returned ${channelInfos.length} channels:`, channelInfos.map((ch: any) => ({id: ch.id, owner: ch.owner?.substring(0,8)})));
-
         if (!channelInfos || channelInfos.length === 0) {
-            console.log(`[TopicAnalysisRoom] No channels found for topic ${this.topicId}, returning empty keywords`);
             return [];
         }
 
@@ -38,7 +38,6 @@ export default class TopicAnalysisRoom {
                 keywords.push(entry.data);
             }
         }
-        console.log(`[TopicAnalysisRoom] Found ${keywords.length} keyword objects in channels for topic ${this.topicId}`);
 
         keywords.sort((a, b) => {
             if (a.score !== b.score) {
@@ -53,12 +52,10 @@ export default class TopicAnalysisRoom {
     /**
      * Retrieve all subjects for this topic
      */
-    async retrieveAllSubjects(): Promise<any> {
+    async retrieveAllSubjects(): Promise<Subject[]> {
         const channelInfos = await this.channelManager.getMatchingChannelInfos({
             channelId: this.topicId
         });
-
-        console.log(`[TopicAnalysisRoom] 🔍 retrieveAllSubjects for "${this.topicId}" - got ${channelInfos.length} channels:`, channelInfos.map((ch: any) => ({id: ch.id, owner: ch.owner?.substring(0,8)})));
 
         if (!channelInfos || channelInfos.length === 0) {
             throw new Error(`No channels found for topic: ${this.topicId}`);
@@ -67,16 +64,12 @@ export default class TopicAnalysisRoom {
         const allSubjects = [];
         for await (const entry of this.channelManager.multiChannelObjectIterator(channelInfos)) {
             if (entry.data && entry.data.$type$ === 'Subject') {
-                console.log(`[TopicAnalysisRoom] 🔍 Found Subject: id="${entry.data.id}", topic="${entry.data.topic}"`);
                 if (entry.data.topic === this.topicId) {
                     allSubjects.push(entry.data);
-                } else {
-                    console.log(`[TopicAnalysisRoom] ⚠️  FILTERING OUT Subject with wrong topic: expected "${this.topicId}", got "${entry.data.topic}"`);
                 }
             }
         }
 
-        console.log(`[TopicAnalysisRoom] 🔍 After filtering: ${allSubjects.length} subjects for topic "${this.topicId}"`);
         return allSubjects;
     }
 

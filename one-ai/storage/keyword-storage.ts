@@ -4,7 +4,10 @@
  */
 
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { createKeyword, normalizeKeywordTerm, getWeight } from '../models/Keyword.js';
+import type { Keyword } from '../types/Keyword.js';
+import type { Subject } from '../types/Subject.js';
 
 class KeywordStorage {
   public nodeOneCore: any;
@@ -17,7 +20,7 @@ class KeywordStorage {
   /**
    * Store a keyword using ONE.core versioned storage
    */
-  async store(keyword: any): Promise<any> {
+  async store(keyword: Keyword): Promise<{ keyword: Keyword; hash: string; idHash: SHA256IdHash<Keyword> }> {
     if (!this.nodeOneCore?.initialized) {
       throw new Error('ONE.core not initialized');
     }
@@ -26,13 +29,13 @@ class KeywordStorage {
     const result = await storeVersionedObject(keyword);
 
     console.log(`[KeywordStorage] Stored keyword "${keyword.term}" with hash ${result.hash}`);
-    return { keyword, hash: result.hash, idHash: result.idHash };
+    return { keyword, hash: result.hash, idHash: result.idHash as SHA256IdHash<Keyword> };
   }
 
   /**
    * Retrieve a keyword by ID hash using ONE.core versioned storage
    */
-  async get(keywordIdHash: any): Promise<any> {
+  async get(keywordIdHash: SHA256IdHash<Keyword>): Promise<Keyword | null> {
     if (!this.nodeOneCore?.initialized) {
       throw new Error('ONE.core not initialized');
     }
@@ -52,7 +55,7 @@ class KeywordStorage {
   /**
    * Find keyword by text
    */
-  async findByText(text: any): Promise<any> {
+  async findByText(text: string): Promise<Keyword | null> {
     const normalized = normalizeKeywordTerm(text);
 
     // Query using ChannelManager or iterate through stored keywords
@@ -64,11 +67,12 @@ class KeywordStorage {
   /**
    * Get or create keyword
    */
-  async getOrCreate(text: any): Promise<any> {
+  async getOrCreate(text: string): Promise<Keyword> {
     let keyword = await this.findByText(text);
 
     if (!keyword) {
-      keyword = await createKeyword(text);
+      const result = await createKeyword(text);
+      keyword = result.obj as Keyword;
       await this.store(keyword);
     }
 
@@ -78,7 +82,7 @@ class KeywordStorage {
   /**
    * Update keyword frequency
    */
-  async incrementFrequency(text: any): Promise<any> {
+  async incrementFrequency(text: string): Promise<Keyword> {
     const keyword = await this.getOrCreate(text);
     keyword.frequency++;
     keyword.lastSeen = Date.now();
@@ -89,7 +93,7 @@ class KeywordStorage {
   /**
    * Get keywords for subjects
    */
-  async getForSubjects(subjectIds: any): Promise<any> {
+  async getForSubjects(subjectIds: SHA256IdHash<Subject>[]): Promise<Keyword[]> {
     // This needs to be implemented with proper ONE.core querying
     // For now, return empty array
     console.log(`[KeywordStorage] Getting keywords for subjects:`, subjectIds);
@@ -99,7 +103,7 @@ class KeywordStorage {
   /**
    * Get top keywords by frequency
    */
-  async getTopKeywords(limit = 20, minFrequency = 2): Promise<unknown> {
+  async getTopKeywords(limit = 20, minFrequency = 2): Promise<Keyword[]> {
     // This needs to be implemented with proper ONE.core querying
     // For now, return empty array
     console.log(`[KeywordStorage] Getting top keywords: limit=${limit}, minFrequency=${minFrequency}`);
@@ -109,7 +113,7 @@ class KeywordStorage {
   /**
    * Search keywords by partial match
    */
-  async search(query: string, limit = 10): Promise<unknown> {
+  async search(query: string, limit = 10): Promise<Keyword[]> {
     const normalized = query.toLowerCase();
     // This needs to be implemented with proper ONE.core querying
     // For now, return empty array
@@ -120,7 +124,7 @@ class KeywordStorage {
   /**
    * Merge two keywords
    */
-  async merge(keyword1IdHash: any, keyword2IdHash: any): Promise<any> {
+  async merge(keyword1IdHash: SHA256IdHash<Keyword>, keyword2IdHash: SHA256IdHash<Keyword>): Promise<Keyword> {
     const kw1 = await this.get(keyword1IdHash);
     const kw2 = await this.get(keyword2IdHash);
 
@@ -151,11 +155,12 @@ class KeywordStorage {
   /**
    * Delete keyword (by marking as deleted)
    */
-  async delete(keywordIdHash: any): Promise<any> {
+  async delete(keywordIdHash: SHA256IdHash<Keyword>): Promise<void> {
     const keyword = await this.get(keywordIdHash);
     if (keyword) {
-      keyword.deleted = true;
-      await this.store(keyword);
+      // Mark as deleted by setting frequency to 0 (Keyword interface doesn't have deleted property)
+      const deletedKeyword: Keyword = { ...keyword, frequency: 0 };
+      await this.store(deletedKeyword);
       console.log(`[KeywordStorage] Marked keyword as deleted: ${keywordIdHash}`);
     }
   }

@@ -1,9 +1,11 @@
 /**
- * LM Studio Integration Service for Main Process
+ * LM Studio Integration Service (Platform-Agnostic)
  * Handles communication with LM Studio via OpenAI-compatible API
+ * Works in both Node.js and browser environments using native fetch
  */
 
-import fetch from 'node-fetch'
+// Use native fetch (Node.js 18+ and all browsers)
+// No imports needed - fetch is global
 
 const LM_STUDIO_BASE_URL = 'http://localhost:1234/v1'
 

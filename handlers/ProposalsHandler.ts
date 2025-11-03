@@ -14,11 +14,13 @@ import {
 } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Subject } from '../one-ai/types/Subject.js';
+import type { Keyword } from '../one-ai/types/Keyword.js';
 
 // Re-export types for consumers
 export interface Proposal {
-  pastSubject: SHA256IdHash<any>;
-  currentSubject?: SHA256IdHash<any>;
+  pastSubject: SHA256IdHash<Subject>;
+  currentSubject?: SHA256IdHash<Subject>;
   matchedKeywords: string[];
   relevanceScore: number;
   sourceTopicId: string;
@@ -39,7 +41,7 @@ export interface ProposalConfig {
 // Request/Response interfaces
 export interface GetForTopicRequest {
   topicId: string;
-  currentSubjects?: SHA256IdHash<any>[];
+  currentSubjects?: SHA256IdHash<Subject>[];
   forceRefresh?: boolean;
 }
 
@@ -81,7 +83,7 @@ export interface DismissResponse {
 export interface ShareRequest {
   proposalId: string;
   topicId: string;
-  pastSubjectIdHash: SHA256IdHash<any>;
+  pastSubjectIdHash: SHA256IdHash<Subject>;
   includeMessages?: boolean;
 }
 
@@ -144,12 +146,6 @@ export class ProposalsHandler {
   async getForTopic(request: GetForTopicRequest): Promise<GetForTopicResponse> {
     const startTime = Date.now();
 
-    console.log('[ProposalsHandler] 🎯 getForTopic called:', {
-      topicId: request.topicId,
-      hasCurrentSubjects: !!request.currentSubjects,
-      forceRefresh: request.forceRefresh
-    });
-
     try {
       if (!request.topicId) {
         throw new Error('TOPIC_NOT_FOUND: topicId is required');
@@ -158,10 +154,7 @@ export class ProposalsHandler {
       // Get current subjects if not provided
       let subjectIdHashes = request.currentSubjects;
       if (!subjectIdHashes || subjectIdHashes.length === 0) {
-        console.log('[ProposalsHandler] No subjects provided, querying TopicAnalysisModel...');
-
         if (!this.topicAnalysisModel) {
-          console.log('[ProposalsHandler] ℹ️  TopicAnalysisModel not initialized');
           return {
             proposals: [],
             count: 0,
@@ -171,11 +164,9 @@ export class ProposalsHandler {
         }
 
         try {
-          const subjects = (await this.topicAnalysisModel.getSubjects(request.topicId)) as any[];
-          console.log('[ProposalsHandler] Retrieved subjects:', subjects?.length || 0);
+          const subjects = await this.topicAnalysisModel.getSubjects(request.topicId);
 
           if (!subjects || subjects.length === 0) {
-            console.log('[ProposalsHandler] ℹ️  No subjects found for topic:', request.topicId);
             return {
               proposals: [],
               count: 0,
@@ -388,7 +379,7 @@ export class ProposalsHandler {
       const pastSubject = result.obj;
 
       // Get subject name and keywords
-      const subjectName = pastSubject.id || pastSubject.description || 'Unknown Subject';
+      const subjectName = pastSubject.id || 'Unknown Subject';
       const keywords: string[] = [];
 
       // Retrieve keyword terms from ONE.core

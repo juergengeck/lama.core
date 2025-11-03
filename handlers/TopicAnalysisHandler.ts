@@ -10,6 +10,8 @@
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
+import type { Subject } from '../one-ai/types/Subject.js';
+import type { Keyword } from '../one-ai/types/Keyword.js';
 
 // Service types (will be properly typed via ambient registry)
 type TopicAnalysisModel = any;
@@ -24,8 +26,8 @@ export interface AnalyzeMessagesRequest {
 export interface AnalyzeMessagesResponse {
   success: boolean;
   data?: {
-    subjects: any[];
-    keywords: any[];
+    subjects: Subject[];
+    keywords: Keyword[];
     summary: any;
   };
   error?: string;
@@ -39,7 +41,7 @@ export interface GetSubjectsRequest {
 export interface GetSubjectsResponse {
   success: boolean;
   data?: {
-    subjects: any[];
+    subjects: Subject[];
   };
   error?: string;
 }
@@ -68,8 +70,8 @@ export interface RestartContextResponse {
   data?: {
     context: string;
     summary: any;
-    subjects: any[];
-    keywords: any[];
+    subjects: Subject[];
+    keywords: Keyword[];
   };
   error?: string;
 }
@@ -97,7 +99,7 @@ export interface ExtractKeywordsRequest {
 export interface ExtractKeywordsResponse {
   success: boolean;
   data?: {
-    keywords: any[];
+    keywords: Keyword[];
   };
   error?: string;
 }
@@ -152,7 +154,7 @@ export interface GetKeywordsRequest {
 export interface GetKeywordsResponse {
   success: boolean;
   data?: {
-    keywords: any[];
+    keywords: Keyword[];
   };
   error?: string;
 }
@@ -393,8 +395,6 @@ ${String(conversationText).substring(0, 3000)}`;
    * Get all subjects for a topic with keyword resolution
    */
   async getSubjects(request: GetSubjectsRequest): Promise<GetSubjectsResponse> {
-    console.log('[TopicAnalysisHandler] Getting subjects for topic:', request.topicId);
-
     try {
       if (!this.topicAnalysisModel) {
         return {
@@ -404,19 +404,10 @@ ${String(conversationText).substring(0, 3000)}`;
         };
       }
 
-      const subjects: any = await this.topicAnalysisModel.getSubjects(request.topicId as SHA256IdHash<any>);
-
-      console.log('[TopicAnalysisHandler] Retrieved subjects:', {
-        topicId: request.topicId,
-        totalSubjects: subjects.length,
-        subjects: subjects.map((s: any) => ({
-          keywords: s.keywords,
-          combination: s.keywordCombination
-        }))
-      });
+      const subjects = await this.topicAnalysisModel.getSubjects(request.topicId as SHA256IdHash<any>);
 
       // Get all keywords to resolve ID hashes to terms
-      const allKeywords: any = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
+      const allKeywords = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
 
       // Create a map of keyword ID hash -> keyword term
       const keywordHashToTerm = new Map<string, string>();
@@ -684,13 +675,17 @@ ${String(conversationText).substring(0, 3000)}`;
           }
         });
 
-        const keywords = Array.from(wordMap.entries())
+        const keywords: Keyword[] = Array.from(wordMap.entries())
           .sort((a, b) => b[1] - a[1])
           .slice(0, request.limit || 10)
           .map(([word, freq]) => ({
+            $type$: 'Keyword' as const,
             term: word,
             frequency: freq,
-            score: freq / words.length
+            score: freq / words.length,
+            subjects: [],
+            createdAt: Date.now(),
+            lastSeen: Date.now()
           }));
 
         return {
@@ -734,10 +729,16 @@ Return format: ["keyword1", "keyword2", ...]`;
         extractedKeywords = String(response).match(/"([^"]+)"/g)?.map(k => k.replace(/"/g, '')) || [];
       }
 
-      const keywords: any[] = extractedKeywords.slice(0, limit).map((term, index) => ({
+      // Return keyword terms as strings, not full Keyword objects
+      // The client will need to resolve these to full objects if needed
+      const keywords: Keyword[] = extractedKeywords.slice(0, limit).map((term, index) => ({
+        $type$: 'Keyword' as const,
         term,
         frequency: limit - index,
-        score: (limit - index) / limit
+        score: (limit - index) / limit,
+        subjects: [],
+        createdAt: Date.now(),
+        lastSeen: Date.now()
       }));
 
       return {
@@ -987,8 +988,10 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
       }
 
       const keywords: any = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
+      console.log('[TopicAnalysisHandler] Model returned', keywords?.length || 0, 'keywords');
 
       const limitedKeywords = request.limit ? keywords.slice(0, request.limit) : keywords;
+      console.log('[TopicAnalysisHandler] Returning', limitedKeywords?.length || 0, 'keywords (limited)');
 
       return {
         success: true,

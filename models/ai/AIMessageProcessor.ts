@@ -27,6 +27,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   // Circular dependencies - injected via setters
   private promptBuilder?: IAIPromptBuilder;
   private taskManager?: IAITaskManager;
+  private aiAssistant?: any; // AIAssistantHandler (circular dependency)
 
   // Message queues (topicId → queued messages)
   private pendingMessageQueues: Map<string, MessageQueueEntry[]>;
@@ -60,6 +61,14 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     this.personCache.onError((error) => {
       console.error('[AIMessageProcessor] Person cache error:', error);
     });
+  }
+
+  /**
+   * Set AI assistant handler (circular dependency resolution)
+   * CRITICAL: MessageProcessor should call through AIAssistantHandler, not llmManager directly
+   */
+  setAIAssistant(assistant: any): void {
+    this.aiAssistant = assistant;
   }
 
   /**
@@ -189,8 +198,11 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       }
 
       // Get AI response with analysis in a single call
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling llmManager.chatWithAnalysis()`)
-      const result: any = await this.llmManager?.chatWithAnalysis(
+      // CRITICAL: Call through aiAssistant handler (if set) instead of llmManager directly
+      // This allows handler to add middleware, logging, etc.
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling chatWithAnalysis()`)
+      const chatInterface = this.aiAssistant || this.llmManager;
+      const result: any = await chatInterface?.chatWithAnalysis(
         history,
         modelId,
         {

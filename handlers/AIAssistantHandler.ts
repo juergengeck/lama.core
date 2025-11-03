@@ -136,6 +136,9 @@ export class AIAssistantHandler {
       deps.platform,
       deps.topicAnalysisModel
     );
+
+    // CRITICAL: Inject self into messageProcessor so it calls through us, not llmManager directly
+    this.messageProcessor.setAIAssistant(this);
   }
 
   /**
@@ -428,6 +431,69 @@ export class AIAssistantHandler {
     }
 
     await this.messageProcessor.handleNewTopic(topicId, modelId);
+  }
+
+  /**
+   * Chat with LLM (simple streaming)
+   * This is the ONLY way AIMessageProcessor should talk to LLMs
+   *
+   * @param history - Conversation history
+   * @param modelId - LLM model ID
+   * @param options - Streaming and tool options
+   * @param topicId - Optional topic ID for MCP configuration check
+   * @returns LLM response
+   */
+  async chat(
+    history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    modelId: string,
+    options?: {
+      onStream?: (chunk: string) => void;
+      disableTools?: boolean;
+    },
+    topicId?: string
+  ): Promise<any> {
+    if (!this.initialized) {
+      throw new Error('[AIAssistantHandler] Handler not initialized - call init() first');
+    }
+
+    if (!this.deps.llmManager) {
+      throw new Error('[AIAssistantHandler] LLM Manager not available');
+    }
+
+    // All LLM calls go through here - we can add middleware, logging, etc.
+    // Pass topicId through to LLM manager for MCP configuration check
+    const optionsWithTopic = topicId ? { ...options, topicId } : options;
+    return await this.deps.llmManager.chat(history, modelId, optionsWithTopic);
+  }
+
+  /**
+   * Chat with LLM and get analysis (response + subjects/keywords)
+   * This is the ONLY way AIMessageProcessor should get analyzed responses
+   *
+   * @param history - Conversation history
+   * @param modelId - LLM model ID
+   * @param options - Streaming and analysis options
+   * @param topicId - Topic ID for analysis context
+   * @returns {response, analysis} with subjects and keywords
+   */
+  async chatWithAnalysis(
+    history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    modelId: string,
+    options?: {
+      onStream?: (chunk: string) => void;
+    },
+    topicId?: string
+  ): Promise<any> {
+    if (!this.initialized) {
+      throw new Error('[AIAssistantHandler] Handler not initialized - call init() first');
+    }
+
+    if (!this.deps.llmManager) {
+      throw new Error('[AIAssistantHandler] LLM Manager not available');
+    }
+
+    // All analyzed LLM calls go through here
+    return await this.deps.llmManager.chatWithAnalysis(history, modelId, options, topicId);
   }
 
   /**

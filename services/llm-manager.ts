@@ -7,6 +7,9 @@
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import type { LLMPlatform } from './llm-platform.js';
 import { LLM_RESPONSE_SCHEMA } from '../schemas/llm-response.schema.js';
+import { chatWithOllama, getLocalOllamaModels, parseOllamaModel, cancelAllOllamaRequests } from './ollama.js';
+import { chatWithClaude } from './claude.js';
+import * as lmstudio from './lmstudio.js';
 
 class LLMManager {
   name: any;
@@ -149,7 +152,6 @@ class LLMManager {
 
     try {
       // Cancel any pending Ollama requests from before restart
-      const { cancelAllOllamaRequests } = await import('./ollama.js')
       cancelAllOllamaRequests()
       console.log('[LLMManager] Cleared any pending Ollama requests')
 
@@ -187,7 +189,6 @@ class LLMManager {
   async registerModels(): Promise<any> {
     // Check for LM Studio availability (optional)
     try {
-      const lmstudio: any = await import('./lmstudio.js');
       const isLMStudioAvailable: any = await lmstudio.isLMStudioRunning()
 
       if (isLMStudioAvailable) {
@@ -248,7 +249,6 @@ class LLMManager {
 
   async discoverOllamaModels(): Promise<any> {
     try {
-      const { getLocalOllamaModels, parseOllamaModel } = await import('./ollama.js')
       const ollamaModels: any = await getLocalOllamaModels()
 
       if (ollamaModels.length > 0) {
@@ -716,8 +716,6 @@ class LLMManager {
   }
 
   async chatWithOllama(model: any, messages: any, options: any = {}): Promise<unknown> {
-    const { chatWithOllama } = await import('./ollama.js')
-
     return await chatWithOllama(
       model.parameters.modelName,
       messages,
@@ -909,8 +907,6 @@ class LLMManager {
   }
 
   async chatWithLMStudio(model: any, messages: any, options: any = {}): Promise<any> {
-    const lmstudio: any = await import('./lmstudio.js')
-    
     // Handle streaming if requested
     if (model.parameters.stream) {
       const stream = lmstudio.streamChatWithLMStudio(
@@ -943,8 +939,6 @@ class LLMManager {
   }
 
   async chatWithClaude(model: any, messages: any, options: any = {}): Promise<any> {
-    const { chatWithClaude } = await import('./claude.js')
-
     // Platform layer must provide API key - lama.core is platform-agnostic
     const apiKey = options.apiKey
     if (!apiKey) {

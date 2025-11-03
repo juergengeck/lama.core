@@ -6,6 +6,7 @@
  */
 
 import { SubjectService } from '../services/SubjectService.js';
+import type { Subject } from '../one-ai/types/Subject.js';
 
 // Request/Response types
 export interface CreateSubjectRequest {
@@ -17,7 +18,7 @@ export interface CreateSubjectRequest {
 
 export interface CreateSubjectResponse {
   success: boolean;
-  subject?: any;
+  subject?: Subject;
   error?: string;
 }
 
@@ -41,7 +42,7 @@ export interface GetForContentRequest {
 
 export interface GetForContentResponse {
   success: boolean;
-  subjects?: any[];
+  subjects?: Subject[];
   error?: string;
 }
 
@@ -49,7 +50,7 @@ export interface GetAllSubjectsRequest {}
 
 export interface GetAllSubjectsResponse {
   success: boolean;
-  subjects?: any[];
+  subjects?: Subject[];
   error?: string;
 }
 
@@ -60,7 +61,7 @@ export interface SearchSubjectsRequest {
 
 export interface SearchSubjectsResponse {
   success: boolean;
-  results?: any[];
+  results?: Subject[];
   error?: string;
 }
 
@@ -83,7 +84,7 @@ export interface ExtractSubjectsRequest {
 
 export interface ExtractSubjectsResponse {
   success: boolean;
-  subjects?: any[];
+  subjects?: Subject[];
   error?: string;
 }
 
@@ -173,7 +174,7 @@ export class SubjectsHandler {
   async search(request: SearchSubjectsRequest): Promise<SearchSubjectsResponse> {
     try {
       // Search functionality not yet implemented in SubjectService
-      const results: any[] = [];
+      const results: Subject[] = [];
       return { success: true, results };
     } catch (error) {
       console.error('[SubjectsHandler] Error searching subjects:', error);
@@ -199,7 +200,7 @@ export class SubjectsHandler {
    */
   async extract(request: ExtractSubjectsRequest): Promise<ExtractSubjectsResponse> {
     try {
-      const subjects = this.subjectService.extractSubjectsFromText(request.text);
+      const subjects = this.subjectService.extractSubjectsFromText(request.text) as Subject[];
       return { success: true, subjects };
     } catch (error) {
       console.error('[SubjectsHandler] Error extracting subjects:', error);

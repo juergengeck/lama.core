@@ -33,7 +33,8 @@ export class AIMessageListener {
     private deps: AIMessageListenerDeps;
     private unsubscribe: (() => void) | null = null;
     private debounceTimers: Map<string, any> = new Map();
-    private readonly DEBOUNCE_MS = 800;
+    private readonly DEBOUNCE_MS = 0; // NO DELAYS - fail fast, process immediately
+    private processedMessages: Map<string, Set<string>> = new Map(); // topicId -> Set of message hashes
 
     constructor(deps: AIMessageListenerDeps) {
         this.deps = deps;
@@ -58,13 +59,6 @@ export class AIMessageListener {
             timeOfEarliestChange,
             data
         ) => {
-            console.log('[AIMessageListener] Channel update received:', {
-                channelId,
-                channelOwner: channelOwner?.substring(0, 8),
-                isOurChannel: channelOwner === this.deps.ownerId,
-                dataLength: data?.length
-            });
-
             // Debounce frequent updates
             const existingTimer = this.debounceTimers.get(channelId);
             if (existingTimer) {
@@ -81,9 +75,7 @@ export class AIMessageListener {
                     return;
                 }
 
-                console.log(`[AIMessageListener] AI topic update: ${channelId}`);
-
-                try {
+                try{
                     await this.handleChannelUpdate(channelId);
                 } catch (error) {
                     console.error(`[AIMessageListener] Error processing channel update:`, error);
@@ -111,6 +103,9 @@ export class AIMessageListener {
             clearTimeout(timer);
         }
         this.debounceTimers.clear();
+
+        // Clear processed messages tracking
+        this.processedMessages.clear();
     }
 
     /**
@@ -164,6 +159,29 @@ export class AIMessageListener {
             if (!messageText || !messageText.trim()) {
                 console.log(`[AIMessageListener] Empty message - skipping`);
                 return;
+            }
+
+            // Create a unique identifier for this message (timestamp + sender + text hash)
+            const messageIdentifier = `${lastMessage.creationTime}-${messageSender}-${messageText.substring(0, 50)}`;
+
+            // Check if we've already processed this message
+            if (!this.processedMessages.has(channelId)) {
+                this.processedMessages.set(channelId, new Set());
+            }
+            const topicProcessedMessages = this.processedMessages.get(channelId)!;
+
+            if (topicProcessedMessages.has(messageIdentifier)) {
+                console.log(`[AIMessageListener] Already processed this message - skipping duplicate`);
+                return;
+            }
+
+            // Mark message as processed
+            topicProcessedMessages.add(messageIdentifier);
+
+            // Clean up old entries (keep only last 100 per topic)
+            if (topicProcessedMessages.size > 100) {
+                const entries = Array.from(topicProcessedMessages);
+                entries.slice(0, entries.length - 100).forEach(entry => topicProcessedMessages.delete(entry));
             }
 
             console.log(`[AIMessageListener] Processing user message: "${messageText}"`);

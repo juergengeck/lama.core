@@ -4,8 +4,10 @@
  */
 
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
-
+import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { createSubject } from '../models/Subject.js';
+import type { Subject } from '../types/Subject.js';
+import type { Keyword } from '../types/Keyword.js';
 
 class SubjectStorage {
   public nodeOneCore: any;
@@ -18,16 +20,14 @@ class SubjectStorage {
   /**
    * Store a subject using ONE.core versioned object storage
    */
-  async store(subject: any): Promise<any> {
+  async store(subject: Subject): Promise<{ subject: Subject; hash: string; idHash: SHA256IdHash<Subject> }> {
     if (!this.nodeOneCore?.initialized) {
       throw new Error('ONE.core not initialized');
     }
 
-    const objectData = subject.toObject();
-
     // Store using ONE.core's versioned object storage
     // This will work with the SubjectRecipe we defined
-    const result = await storeVersionedObject(objectData);
+    const result = await storeVersionedObject(subject);
 
     console.log(`[SubjectStorage] Stored subject ${subject.id} with hash ${result.hash}`);
     return { subject, hash: result.hash, idHash: result.idHash };
@@ -36,7 +36,7 @@ class SubjectStorage {
   /**
    * Retrieve a subject by ID hash using ONE.core versioned storage
    */
-  async get(subjectIdHash: any): Promise<any> {
+  async get(subjectIdHash: SHA256IdHash<Subject>): Promise<Subject | null> {
     if (!this.nodeOneCore?.initialized) {
       throw new Error('ONE.core not initialized');
     }
@@ -56,7 +56,7 @@ class SubjectStorage {
   /**
    * Get all subjects for a topic
    */
-  async getByTopic(topicId: any, includeArchived = false): Promise<unknown> {
+  async getByTopic(topicId: string, includeArchived = false): Promise<Subject[]> {
     if (!this.nodeOneCore?.initialized) {
       throw new Error('ONE.core not initialized');
     }
@@ -70,7 +70,7 @@ class SubjectStorage {
 
     for (const key of allKeys) {
       if (key.includes(topicId)) {
-        const subject = await this.get(key.replace(this.storagePrefix, ''));
+        const subject = await this.get(key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>);
         if (subject && subject.topic === topicId) {
           if (includeArchived || !subject.archived) {
             subjects.push(subject);
@@ -85,14 +85,14 @@ class SubjectStorage {
   /**
    * Update a subject
    */
-  async update(subject: any): Promise<any> {
+  async update(subject: Subject): Promise<{ subject: Subject; hash: string; idHash: SHA256IdHash<Subject> }> {
     return this.store(subject); // Store handles both create and update
   }
 
   /**
    * Delete a subject
    */
-  async delete(subjectId: any): Promise<any> {
+  async delete(subjectId: string): Promise<boolean> {
     if (!this.nodeOneCore?.initialized) {
       throw new Error('ONE.core not initialized');
     }
@@ -112,7 +112,7 @@ class SubjectStorage {
   /**
    * Batch store multiple subjects
    */
-  async storeMany(subjects: any): Promise<any> {
+  async storeMany(subjects: Subject[]): Promise<Array<{ subject: Subject; hash: string; idHash: SHA256IdHash<Subject> }>> {
     const results = [];
 
     for (const subject of subjects) {
@@ -130,10 +130,10 @@ class SubjectStorage {
   /**
    * Archive a subject
    */
-  async archive(subjectId: any): Promise<any> {
+  async archive(subjectId: SHA256IdHash<Subject>): Promise<boolean> {
     const subject = await this.get(subjectId);
     if (subject) {
-      subject.archive();
+      subject.archived = true;
       await this.update(subject);
       return true;
     }
@@ -143,7 +143,7 @@ class SubjectStorage {
   /**
    * Merge two subjects
    */
-  async merge(subjectId1: any, subjectId2: any, newKeywords = []): Promise<unknown> {
+  async merge(subjectId1: SHA256IdHash<Subject>, subjectId2: SHA256IdHash<Subject>, newKeywords: SHA256IdHash<Keyword>[] = []): Promise<{ mergedSubject: Subject; archivedSubjects: string[] }> {
     const subject1 = await this.get(subjectId1);
     const subject2 = await this.get(subjectId2);
 
@@ -156,10 +156,16 @@ class SubjectStorage {
     }
 
     // Create merged subject
-    const merged = subject1.merge(subject2);
+    const merged: Subject = {
+      ...subject1,
+      messageCount: subject1.messageCount + subject2.messageCount,
+      timeRanges: [...subject1.timeRanges, ...subject2.timeRanges],
+      lastSeenAt: Math.max(subject1.lastSeenAt, subject2.lastSeenAt)
+    };
+
     if (newKeywords.length > 0) {
-      merged.keywords = newKeywords.sort();
-      merged.id = merged.generateId(merged.topic, newKeywords);
+      merged.keywords = newKeywords.sort() as SHA256IdHash<Keyword>[];
+      merged.id = newKeywords.map(k => k.toString()).join('+');
     }
 
     // Store merged subject
@@ -178,8 +184,7 @@ class SubjectStorage {
   /**
    * Find subjects by keywords
    */
-  async findByKeywords(keywords: any, topicId = null): Promise<unknown> {
-    const normalizedKeywords: any[] = keywords.map((k: any) => k.toLowerCase());
+  async findByKeywords(keywords: SHA256IdHash<Keyword>[], topicId: string | null = null): Promise<Subject[]> {
     const subjects = [];
 
     const prefix = topicId ? `${this.storagePrefix}${topicId}:` : this.storagePrefix;
@@ -187,8 +192,8 @@ class SubjectStorage {
     const allKeys: string[] = []; // await this.nodeOneCore.listObjects(prefix);
 
     for (const key of allKeys) {
-      const subject = await this.get(key.replace(this.storagePrefix, ''));
-      if (subject && subject.matchesKeywords(normalizedKeywords)) {
+      const subject = await this.get(key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>);
+      if (subject && subject.keywords.some(k => keywords.includes(k))) {
         subjects.push(subject);
       }
     }
@@ -199,15 +204,15 @@ class SubjectStorage {
   /**
    * Clean up old archived subjects
    */
-  async cleanup(daysToKeep = 30): Promise<unknown> {
+  async cleanup(daysToKeep = 30): Promise<number> {
     const cutoffTime = Date.now() - (daysToKeep * 24 * 60 * 60 * 1000);
     // TODO: Implement proper querying using ChannelManager
     const allKeys: string[] = []; // await this.nodeOneCore.listObjects(this.storagePrefix);
     let deletedCount = 0;
 
     for (const key of allKeys) {
-      const subject = await this.get(key.replace(this.storagePrefix, ''));
-      if (subject && subject.archived && subject.timestamp < cutoffTime) {
+      const subject = await this.get(key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>);
+      if (subject && subject.archived && subject.lastSeenAt < cutoffTime) {
         await this.delete(subject.id);
         deletedCount++;
       }
@@ -220,7 +225,14 @@ class SubjectStorage {
   /**
    * Get storage statistics
    */
-  async getStats(topicId = null): Promise<unknown> {
+  async getStats(topicId: string | null = null): Promise<{
+    totalSubjects: number;
+    activeSubjects: number;
+    archivedSubjects: number;
+    totalMessages: number;
+    uniqueKeywords: number;
+    averageMessagesPerSubject: number;
+  }> {
     const subjects = topicId
       ? await this.getByTopic(topicId, true)
       : await this.getAll();
@@ -243,13 +255,13 @@ class SubjectStorage {
   /**
    * Get all subjects (for admin/debug purposes)
    */
-  async getAll(): Promise<any> {
+  async getAll(): Promise<Subject[]> {
     const subjects = [];
     // TODO: Implement proper querying using ChannelManager
     const allKeys: string[] = []; // await this.nodeOneCore.listObjects(this.storagePrefix);
 
     for (const key of allKeys) {
-      const subject = await this.get(key.replace(this.storagePrefix, ''));
+      const subject = await this.get(key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>);
       if (subject) {
         subjects.push(subject);
       }

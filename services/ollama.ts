@@ -121,9 +121,10 @@ async function chatWithOllama(
       model: modelName,
       messages: formattedMessages,
       stream: useStreaming,
+      keep_alive: -1,  // Keep model loaded indefinitely (prevents 15-20s reload delays)
       options: {
         temperature: options.temperature || 0.7,
-        num_predict: options.max_tokens || -1,  // -1 = unlimited, let model stop naturally via EOS
+        num_predict: options.max_tokens || 2048,  // Reasonable default instead of unlimited
         top_k: 40,
         top_p: 0.95
       }
@@ -139,13 +140,16 @@ async function chatWithOllama(
       console.log('[Ollama] ==============================================');
     }
 
+    const requestBodyStr = JSON.stringify(requestBody);
     console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Sending fetch to ${baseUrl}/api/chat`)
+    console.log(`[Ollama-${requestId}] 📦 Request size: ${requestBodyStr.length} bytes, ${formattedMessages.length} messages`)
+    console.log(`[Ollama-${requestId}] 📝 Request preview: ${requestBodyStr.substring(0, 500)}...`)
 
     const response: any = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers,
       signal: controller.signal,
-      body: JSON.stringify(requestBody)
+      body: requestBodyStr
     })
 
     console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Response received (status: ${response.status})`)
@@ -198,9 +202,6 @@ async function chatWithOllama(
           try {
             const json = JSON.parse(line)
 
-            // DEBUG: Log the actual structure we receive
-            console.log('[Ollama] Received JSON:', JSON.stringify(json, null, 2))
-
             // Handle different response formats:
             // 1. Regular models: json.message.content
             // 2. Reasoning models: json.message.thinking (store separately, NEVER show)
@@ -233,21 +234,16 @@ async function chatWithOllama(
             // Accumulate content for display
             if (content) {
               fullResponse += content
-              console.log('[Ollama] Extracted content, length:', content.length)
 
               // Stream to callback if provided (ONLY stream content, not thinking)
               if ((options as any).onStream) {
-                console.log('[Ollama] ✅ Calling onStream callback with content length:', content.length)
                 ;(options as any).onStream(content, false)
-              } else {
-                console.warn('[Ollama] ⚠️  No onStream callback provided!')
               }
             }
 
             // Accumulate thinking separately (don't stream it)
             if (thinking) {
               fullThinking += thinking
-              console.log('[Ollama] Accumulated thinking, total length:', fullThinking.length)
             }
 
             if (!content && !thinking && !json.done) {

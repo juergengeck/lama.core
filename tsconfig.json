@@ -21,6 +21,6 @@
       "@anthropic-ai/*": ["../lama.browser/node_modules/@anthropic-ai/*"]
     }
   },
-  "include": ["handlers/**/*.ts", "models/**/*.ts", "one-ai/**/*.ts", "services/**/*.ts", "recipes/**/*.ts", "*.d.ts"],
+  "include": ["handlers/**/*.ts", "models/**/*.ts", "one-ai/**/*.ts", "services/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "*.d.ts"],
   "exclude": ["node_modules", "**/*.js", "packages/**", "dist/**"]
 }

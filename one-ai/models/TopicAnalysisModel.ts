@@ -9,6 +9,8 @@ import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import TopicAnalysisRoom from './TopicAnalysisRoom.js';
+import type { Subject } from '../types/Subject.js';
+import type { Keyword } from '../types/Keyword.js';
 
 export default class TopicAnalysisModel extends Model {
   public channelManager: any;
@@ -173,10 +175,19 @@ export default class TopicAnalysisModel extends Model {
     async addKeyword(topicId: any, term: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
-        // Check if keyword already exists
-        const room = new TopicAnalysisRoom(topicId, this.channelManager);
-        const existingKeywords: any = await (room as any).retrieveAllKeywords();
-        const existing = existingKeywords.find((k: any) => k.term === term.toLowerCase().trim());
+        const normalizedTerm = term.toLowerCase().trim();
+
+        // Fetch existing keyword directly by ID hash (term is the ID)
+        const { calculateIdHashOfObj, getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+        const keywordIdHash = await calculateIdHashOfObj({ $type$: 'Keyword', term: normalizedTerm });
+
+        let existing;
+        try {
+            existing = await getObjectByIdHash(keywordIdHash);
+        } catch (error) {
+            // Keyword doesn't exist yet
+            existing = null;
+        }
 
         if (existing) {
             // Update frequency
@@ -217,11 +228,19 @@ export default class TopicAnalysisModel extends Model {
             throw new Error('Subject ID hash is required - keywords must be linked to subjects');
         }
 
-        // Check if keyword already exists
-        const room = new TopicAnalysisRoom(topicId, this.channelManager);
-        const existingKeywords: any = await (room as any).retrieveAllKeywords();
         const normalizedTerm = term.toLowerCase().trim();
-        const existing = existingKeywords.find((k: any) => k.term === normalizedTerm);
+
+        // Fetch existing keyword directly by ID hash (term is the ID)
+        const { calculateIdHashOfObj, getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+        const keywordIdHash = await calculateIdHashOfObj({ $type$: 'Keyword', term: normalizedTerm });
+
+        let existing;
+        try {
+            existing = await getObjectByIdHash(keywordIdHash);
+        } catch (error) {
+            // Keyword doesn't exist yet
+            existing = null;
+        }
 
         if (existing) {
             // Update frequency and link to subject if not already linked
@@ -324,32 +343,23 @@ export default class TopicAnalysisModel extends Model {
     /**
      * Get all subjects for a topic
      */
-    async getSubjects(topicId: any, queryOptions = {}): Promise<unknown> {
+    async getSubjects(topicId: any, queryOptions = {}): Promise<Subject[]> {
         this.state.assertCurrentState('Initialised');
 
         // Check cache
         const cached = this.subjectsCache.get(topicId);
         if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-            console.log('[TopicAnalysisModel] ⚡ Returning cached subjects:', {
-                topicId,
-                subjectCount: cached.data.length
-            });
             return cached.data;
         }
 
         // Use TopicAnalysisRoom to retrieve subjects
         const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
-        const subjects: any = await (analysisRoom as any).retrieveAllSubjects();
+        const subjects: Subject[] = await analysisRoom.retrieveAllSubjects();
 
         // Cache the result
         this.subjectsCache.set(topicId, {
             data: subjects,
             timestamp: Date.now()
-        });
-
-        console.log('[TopicAnalysisModel] Retrieved subjects:', {
-            topicId,
-            subjectCount: subjects.length
         });
 
         return subjects;
@@ -358,27 +368,43 @@ export default class TopicAnalysisModel extends Model {
     /**
      * Get all keywords for a topic
      */
-    async getKeywords(topicId: any, queryOptions = {}): Promise<unknown> {
+    async getKeywords(topicId: any, queryOptions = {}): Promise<Keyword[]> {
         this.state.assertCurrentState('Initialised');
-
-        console.log('[TopicAnalysisModel] getKeywords called for:', topicId);
 
         // Check cache
         const cached = this.keywordsCache.get(topicId);
         if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-            console.log('[TopicAnalysisModel] ⚡ Returning cached keywords:', {
-                topicId,
-                keywordCount: cached.data.length
-            });
             return cached.data;
         }
 
-        // Use TopicAnalysisRoom to retrieve keywords
-        console.log('[TopicAnalysisModel] Creating TopicAnalysisRoom for:', topicId);
+        // WORKAROUND: Extract keywords from subjects instead of direct channel query
+        // retrieveAllKeywords() hangs on multiChannelObjectIterator - likely malformed Keyword object
         const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
-        console.log('[TopicAnalysisModel] Calling retrieveAllKeywords...');
-        const keywords: any = await (analysisRoom as any).retrieveAllKeywords();
-        console.log('[TopicAnalysisModel] retrieveAllKeywords returned:', keywords?.length || 0, 'keywords');
+        const subjects = await analysisRoom.retrieveAllSubjects();
+
+        // Collect unique keyword ID hashes from all subjects
+        const keywordIdSet = new Set<string>();
+        for (const subject of subjects) {
+            if (subject.keywords && Array.isArray(subject.keywords)) {
+                for (const keywordId of subject.keywords) {
+                    keywordIdSet.add(keywordId);
+                }
+            }
+        }
+
+        // Fetch actual keyword objects by ID hash
+        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+        const keywords: Keyword[] = [];
+        for (const keywordId of keywordIdSet) {
+            try {
+                const keyword = await getObjectByIdHash(keywordId as any);
+                if (keyword && keyword.$type$ === 'Keyword') {
+                    keywords.push(keyword as Keyword);
+                }
+            } catch (error) {
+                console.error(`[TopicAnalysisModel] Failed to fetch keyword ${keywordId}:`, error);
+            }
+        }
 
         // Cache the result
         this.keywordsCache.set(topicId, {
@@ -386,12 +412,27 @@ export default class TopicAnalysisModel extends Model {
             timestamp: Date.now()
         });
 
-        console.log('[TopicAnalysisModel] Retrieved keywords:', {
-            topicId,
-            keywordCount: keywords.length
+        return keywords;
+    }
+
+    /**
+     * Get all topic IDs
+     * Used for cross-topic analysis and proposal generation
+     */
+    async getAllTopics(): Promise<string[]> {
+        this.state.assertCurrentState('Initialised');
+
+        console.log('[TopicAnalysisModel] getAllTopics called');
+
+        // Get all topics from TopicModel
+        const allTopics = await this.topicModel.getTopics();
+
+        console.log('[TopicAnalysisModel] Found topics:', {
+            topicCount: allTopics?.length || 0
         });
 
-        return keywords;
+        // Return just the topic IDs
+        return (allTopics || []).map((topic: any) => topic.id);
     }
 
     /**

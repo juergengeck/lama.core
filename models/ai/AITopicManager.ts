@@ -191,13 +191,7 @@ export class AITopicManager implements IAITopicManager {
     const hiExists = await this.checkAndRegisterExistingTopic('hi', aiContactManager);
     const lamaExists = await this.checkAndRegisterExistingTopic('lama', aiContactManager);
 
-    // If both exist, we're done
-    if (hiExists && lamaExists) {
-      console.log('[AITopicManager] Both Hi and LAMA already exist and are registered');
-      return;
-    }
-
-    // SECOND: Create missing topics (requires default model)
+    // SECOND: Create missing topics OR generate welcome messages for existing empty topics (requires default model)
     if (!this.defaultModelId) {
       throw new Error('No default model set - cannot create default chats');
     }
@@ -212,16 +206,21 @@ export class AITopicManager implements IAITopicManager {
       throw new Error(`Could not create AI contact for model: ${this.defaultModelId}`);
     }
 
-    // Create Hi if it doesn't exist
-    if (!hiExists) {
-      await this.ensureHiChat(this.defaultModelId, aiPersonId, onTopicCreated);
-    }
+    // Create Hi or ensure it has a welcome message (Hi always needs to be ensured for welcome message)
+    await this.ensureHiChat(this.defaultModelId, aiPersonId, onTopicCreated);
 
-    // Create LAMA if it doesn't exist (uses private model variant)
-    if (!lamaExists) {
+    // Create LAMA or ensure it has a welcome message (LAMA always needs to be ensured)
+    {
       const privateModelId = this.defaultModelId + '-private';
+
       // Register the private variant with llmManager
-      this.llmManager.registerPrivateVariant(this.defaultModelId);
+      try {
+        this.llmManager.registerPrivateVariant(this.defaultModelId);
+      } catch (error) {
+        console.error('[AITopicManager] Failed to register private model variant:', error);
+        throw new Error(`Failed to register private model variant for ${this.defaultModelId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
       // For private model, use the base model's display name
       const privateDisplayName = `${displayName} (Private)`;
       const privateAiPersonId = await aiContactManager.ensureAIContactForModel(privateModelId, privateDisplayName);
@@ -229,7 +228,7 @@ export class AITopicManager implements IAITopicManager {
         throw new Error(`Could not create AI contact for private model: ${privateModelId}`);
       }
       await this.ensureLamaChat(privateModelId, privateAiPersonId, onTopicCreated);
-    }
+    } // End LAMA creation block
   }
 
   /**
@@ -246,8 +245,8 @@ export class AITopicManager implements IAITopicManager {
         // Verify topic is actually in storage (not just in collection cache)
         try {
           await this.topicModel.enterTopicRoom(topicId);
-        } catch {
-          console.log(`[AITopicManager] Topic '${topicId}' in collection but not in storage - will recreate`);
+        } catch (error) {
+          console.warn(`[AITopicManager] Topic '${topicId}' in collection but not in storage - will recreate`, error);
           return false;
         }
 
@@ -277,8 +276,9 @@ export class AITopicManager implements IAITopicManager {
           return true;
         }
       }
-    } catch {
-      // Topic doesn't exist
+    } catch (error) {
+      // Topic doesn't exist or error during check
+      console.log(`[AITopicManager] Topic '${topicId}' does not exist or check failed:`, error instanceof Error ? error.message : String(error));
     }
     return false;
   }

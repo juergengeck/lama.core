@@ -672,4 +672,93 @@ export class LLMConfigHandler {
       };
     }
   }
+
+  /**
+   * Update API key for an LLM
+   */
+  async updateApiKey(request: {
+    llmId: string;
+    apiKey: string;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+    errorCode?: string;
+  }> {
+    console.log('[LLMConfigHandler] Updating API key for LLM:', request.llmId);
+
+    try {
+      if (!this.nodeOneCore) {
+        return {
+          success: false,
+          error: 'ONE.core not initialized',
+          errorCode: 'STORAGE_ERROR',
+        };
+      }
+
+      // Check encryption availability
+      if (!this.isEncryptionAvailable()) {
+        return {
+          success: false,
+          error: 'API key encryption not available on this system',
+          errorCode: 'ENCRYPTION_ERROR',
+        };
+      }
+
+      // Load the LLM object
+      const llmIdHash = ensureIdHash(request.llmId);
+      let llmObject: any = null;
+
+      const iterator = this.nodeOneCore.channelManager.objectIteratorWithType('LLM', {
+        channelId: 'lama',
+      });
+
+      for await (const obj of iterator) {
+        if (obj && obj.data && obj.data.id === llmIdHash) {
+          llmObject = obj.data;
+          break;
+        }
+      }
+
+      if (!llmObject) {
+        return {
+          success: false,
+          error: 'LLM configuration not found',
+          errorCode: 'NOT_FOUND',
+        };
+      }
+
+      // Encrypt API key
+      let encryptedApiKey: string;
+      try {
+        encryptedApiKey = this.encryptToken(request.apiKey);
+      } catch (error: any) {
+        return {
+          success: false,
+          error: `API key encryption failed: ${error.message}`,
+          errorCode: 'ENCRYPTION_ERROR',
+        };
+      }
+
+      // Update the API key
+      llmObject.encryptedApiKey = encryptedApiKey;
+      llmObject.modified = Date.now();
+
+      // Store updated object
+      await storeVersionedObject(llmObject);
+      await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
+
+      console.log('[LLMConfigHandler] API key updated successfully');
+
+      return {
+        success: true,
+      };
+    } catch (error: any) {
+      console.error('[LLMConfigHandler] Update API key error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to update API key',
+        errorCode: 'STORAGE_ERROR',
+      };
+    }
+  }
 }
