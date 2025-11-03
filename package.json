@@ -26,6 +26,10 @@
     "@refinio/one.models": "*"
   },
   "devDependencies": {
+    "@types/chai-as-promised": "^8.0.2",
+    "@types/passport-http": "^0.3.11",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.7.2"
   }
 }

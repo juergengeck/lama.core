@@ -27,6 +27,8 @@ import { AIPromptBuilder } from '../models/ai/AIPromptBuilder.js';
 import { AIMessageProcessor } from '../models/ai/AIMessageProcessor.js';
 import type { LLMPlatform } from '../services/llm-platform.js';
 import type { LLMModelInfo } from '../models/ai/types.js';
+import { LLMAnalysisService } from '../services/analysis-service.js';
+import type { AnalysisContent, AnalysisContext } from '../services/analysis-service.js';
 
 /**
  * Platform-agnostic settings persistence interface
@@ -79,6 +81,9 @@ export interface AIAssistantHandlerDependencies {
   /** Optional: LLM config handler for browser platform */
   llmConfigHandler?: any;
 
+  /** Optional: MCP manager for memory context (Node.js only) */
+  mcpManager?: any;
+
   /** Storage functions for AIContactManager (to avoid module duplication in Vite worker) */
   storageDeps: AIContactManagerDeps;
 }
@@ -93,6 +98,7 @@ export class AIAssistantHandler {
   private taskManager: AITaskManager;
   private promptBuilder: AIPromptBuilder;
   private messageProcessor: AIMessageProcessor;
+  private analysisService: LLMAnalysisService;
 
   // Dependencies
   private deps: AIAssistantHandlerDependencies;
@@ -136,6 +142,9 @@ export class AIAssistantHandler {
       deps.platform,
       deps.topicAnalysisModel
     );
+
+    // Initialize analysis service (abstract, reusable for chat/memory/files)
+    this.analysisService = new LLMAnalysisService(deps.llmManager, deps.mcpManager);
 
     // CRITICAL: Inject self into messageProcessor so it calls through us, not llmManager directly
     this.messageProcessor.setAIAssistant(this);
@@ -492,8 +501,73 @@ export class AIAssistantHandler {
       throw new Error('[AIAssistantHandler] LLM Manager not available');
     }
 
-    // All analyzed LLM calls go through here
-    return await this.deps.llmManager.chatWithAnalysis(history, modelId, options, topicId);
+    const startTime = Date.now();
+    console.log(`[AIAssistantHandler] chatWithAnalysis starting for model: ${modelId}`);
+
+    // OPTION 1: Stream response first, then analyze in background
+    // Step 1: Stream the response (fast UX)
+    let fullResponse = '';
+    const rawResponse = await this.deps.llmManager.chat(history, modelId, {
+      ...options,
+      onStream: (chunk: string) => {
+        fullResponse += chunk;
+        options?.onStream?.(chunk);
+      }
+    });
+
+    // Handle both string and object responses (with thinking metadata)
+    if (typeof rawResponse === 'object' && (rawResponse as any)._hasThinking) {
+      fullResponse = (rawResponse as any).content;
+      console.log('[AIAssistantHandler] Response includes thinking metadata');
+    } else if (typeof rawResponse === 'string') {
+      fullResponse = rawResponse;
+    } else {
+      fullResponse = String(rawResponse || '');
+    }
+
+    console.log(`[AIAssistantHandler] Response streaming complete (${Date.now() - startTime}ms), starting analysis`);
+
+    // Step 2: Analyze in background using abstract service (includes memory context)
+    let analysis: any;
+    try {
+      const analysisContent: AnalysisContent = {
+        type: 'chat',
+        messages: [
+          ...history,
+          { role: 'assistant', content: fullResponse }
+        ]
+      };
+
+      const analysisContext: AnalysisContext = {
+        modelId,  // AnalysisService will pick best model
+        temperature: 0,
+        topicId,
+        disableTools: true
+      };
+
+      // AnalysisService automatically:
+      // 1. Fetches existing subjects from memory via MCP
+      // 2. Includes them in prompt for consistency
+      // 3. Returns structured analysis
+      const result = await this.analysisService.analyze(analysisContent, analysisContext);
+
+      analysis = {
+        subjects: result.subjects,
+        summaryUpdate: result.summary,
+        keywords: result.keywords
+      };
+
+      console.log(`[AIAssistantHandler] Analysis complete (${Date.now() - startTime}ms total)`);
+    } catch (error) {
+      console.warn('[AIAssistantHandler] Analysis failed:', error);
+      analysis = { subjects: [], summaryUpdate: '', keywords: [] };
+    }
+
+    return {
+      response: fullResponse,
+      analysis,
+      topicId
+    };
   }
 
   /**
