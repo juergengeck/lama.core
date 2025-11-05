@@ -60,7 +60,8 @@ export interface AnalysisService {
 export class LLMAnalysisService implements AnalysisService {
   constructor(
     private llmManager: any,
-    private mcpManager?: any  // Optional MCP for memory context
+    private mcpManager?: any,  // Optional MCP for memory context
+    private onProgress?: (message: string) => void  // Optional progress callback
   ) {}
 
   /**
@@ -68,43 +69,70 @@ export class LLMAnalysisService implements AnalysisService {
    */
   async analyze(content: AnalysisContent, context?: AnalysisContext): Promise<Analysis> {
     const startTime = Date.now();
+    const MAX_RETRIES = 2; // Only try 2 models before giving up
 
-    try {
-      // Fetch existing subjects from memory if available
-      const existingSubjects = await this.getExistingSubjects(context);
+    let lastError: Error | undefined;
+    let attempts = 0;
+    const failedModels: string[] = []; // Track failed models
 
-      // Build analysis prompt based on content type
-      const prompt = this.buildPrompt(content, existingSubjects, context);
+    while (attempts < MAX_RETRIES) {
+      try {
+        attempts++;
 
-      // Call LLM with structured output
-      const modelId = context?.modelId || this.getDefaultAnalysisModel();
-      const LLM_RESPONSE_SCHEMA = await this.getResponseSchema();
+        // Fetch existing subjects from memory if available
+        const existingSubjects = await this.getExistingSubjects(context);
 
-      const analysisJson = await this.llmManager.chat(prompt, modelId, {
-        format: LLM_RESPONSE_SCHEMA,
-        temperature: context?.temperature ?? 0,
-        disableTools: context?.disableTools ?? true
-      }) as string;
+        // Build analysis prompt based on content type
+        const prompt = this.buildPrompt(content, existingSubjects, context);
 
-      // Parse structured response
-      let cleanJson = analysisJson.trim();
-      if (cleanJson.startsWith('```')) {
-        cleanJson = cleanJson.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+        // Call LLM with structured output - get a DIFFERENT model on each retry
+        const modelId = context?.modelId || this.getDefaultAnalysisModel(failedModels);
+        const LLM_RESPONSE_SCHEMA = await this.getResponseSchema();
+
+        console.log(`[AnalysisService] Attempt ${attempts}/${MAX_RETRIES} with model: ${modelId}`);
+
+        // Notify user we're analyzing (if this is taking a while)
+        if (attempts > 1) {
+          this.onProgress?.(`⏳ Analyzing conversation (attempt ${attempts})...`);
+        }
+
+        const analysisJson = await this.llmManager.chat(prompt, modelId, {
+          format: LLM_RESPONSE_SCHEMA,
+          temperature: context?.temperature ?? 0,
+          disableTools: context?.disableTools ?? true
+        }) as string;
+
+        // Parse structured response
+        let cleanJson = analysisJson.trim();
+        if (cleanJson.startsWith('```')) {
+          cleanJson = cleanJson.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+        }
+        const parsed = JSON.parse(cleanJson);
+
+        // Convert to standard Analysis format
+        const analysis = this.parseAnalysisResponse(parsed);
+
+        console.log(`[AnalysisService] Analysis complete in ${Date.now() - startTime}ms`);
+        console.log(`[AnalysisService] - Found ${analysis.subjects.length} subjects`);
+        console.log(`[AnalysisService] - Total keywords: ${analysis.keywords.length}`);
+
+        return analysis;
+      } catch (error: any) {
+        lastError = error;
+        const modelId = context?.modelId || this.getDefaultAnalysisModel(failedModels);
+        failedModels.push(modelId); // Track this failed model
+        console.warn(`[AnalysisService] Attempt ${attempts} failed with ${modelId}:`, error?.message || error);
+
+        // If we've exhausted retries, throw
+        if (attempts >= MAX_RETRIES) {
+          break;
+        }
+        // Otherwise loop and try next model
       }
-      const parsed = JSON.parse(cleanJson);
-
-      // Convert to standard Analysis format
-      const analysis = this.parseAnalysisResponse(parsed);
-
-      console.log(`[AnalysisService] Analysis complete in ${Date.now() - startTime}ms`);
-      console.log(`[AnalysisService] - Found ${analysis.subjects.length} subjects`);
-      console.log(`[AnalysisService] - Total keywords: ${analysis.keywords.length}`);
-
-      return analysis;
-    } catch (error) {
-      console.error('[AnalysisService] Analysis failed:', error);
-      throw new Error(`Analysis failed: ${(error as Error).message}`);
     }
+
+    console.error(`[AnalysisService] All ${attempts} attempts failed, giving up`);
+    throw new Error(`Analysis failed after ${attempts} attempts: ${lastError?.message || 'Unknown error'}`);
   }
 
   /**
@@ -306,13 +334,55 @@ export class LLMAnalysisService implements AnalysisService {
   }
 
   /**
-   * Get default model for analysis (prefer qwen2.5:7b)
+   * Get default model for analysis
+   * Try models and let them fail/cache if structured output isn't supported
+   * @param excludeModels - Model IDs to exclude (already failed)
    */
-  private getDefaultAnalysisModel(): string {
-    // Prefer qwen2.5:7b for structured analysis, fallback to first available
+  private getDefaultAnalysisModel(excludeModels: string[] = []): string {
     const availableModels = this.llmManager.getModels();
-    const qwen = availableModels.find((m: any) => m.id === 'qwen2.5:7b');
-    return qwen?.id || availableModels[0]?.id || 'llama3.2:latest';
+
+    if (availableModels.length === 0) {
+      throw new Error('No models available for analysis');
+    }
+
+    // Filter out:
+    // 1. Models already tested and known to fail structured output
+    // 2. Vision models (they typically don't support structured output)
+    // 3. Models that have already failed in this attempt
+    const untested = availableModels.filter((m: any) => {
+      // Skip excluded models (already failed this attempt)
+      if (excludeModels.includes(m.id)) {
+        console.log(`[AnalysisService] Skipping previously failed model: ${m.id}`);
+        return false;
+      }
+
+      // Skip models that failed structured output test
+      if (m.structuredOutputTested === false) {
+        return false;
+      }
+
+      // Skip vision models (they don't support structured output)
+      const isVisionModel = m.id.includes('-vl') ||
+                           m.id.includes('vision') ||
+                           m.name?.toLowerCase().includes('vision');
+      if (isVisionModel) {
+        console.log(`[AnalysisService] Skipping vision model for analysis: ${m.id}`);
+        return false;
+      }
+
+      return true;
+    });
+
+    if (untested.length === 0) {
+      throw new Error(
+        'All available models have been tested and do not support structured output. ' +
+        'Analysis features require JSON schema support. ' +
+        'Available models (all incompatible): ' + availableModels.map((m: any) => m.id).join(', ')
+      );
+    }
+
+    // Return first untested model (LLMManager will test and cache the result)
+    return untested[0].id;
   }
 
   /**

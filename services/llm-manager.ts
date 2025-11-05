@@ -7,9 +7,11 @@
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import type { LLMPlatform } from './llm-platform.js';
 import { LLM_RESPONSE_SCHEMA } from '../schemas/llm-response.schema.js';
-import { chatWithOllama, getLocalOllamaModels, parseOllamaModel, cancelAllOllamaRequests } from './ollama.js';
+import { chatWithOllama, getLocalOllamaModels, parseOllamaModel, cancelAllOllamaRequests, cancelStreamingForTopic } from './ollama.js';
 import { chatWithClaude } from './claude.js';
 import * as lmstudio from './lmstudio.js';
+import { SystemPromptBuilder } from './system-prompt-builder.js';
+import type { SystemPromptContext } from './system-prompt-builder.js';
 
 class LLMManager {
   name: any;
@@ -33,8 +35,16 @@ class LLMManager {
   platform?: LLMPlatform; // Optional platform abstraction
   mcpManager?: any; // Optional MCP manager (Electron only)
   forwardLog?: (level: string, message: string) => void; // Optional log forwarding
+  systemPromptBuilder: SystemPromptBuilder; // System prompt builder for composable context injection
 
-  constructor(platform?: LLMPlatform, mcpManager?: any, forwardLog?: (level: string, message: string) => void) {
+  constructor(
+    platform?: LLMPlatform,
+    mcpManager?: any,
+    forwardLog?: (level: string, message: string) => void,
+    userSettingsManager?: any,
+    topicAnalysisModel?: any,
+    channelManager?: any
+  ) {
     this.platform = platform
     this.mcpManager = mcpManager
     this.forwardLog = forwardLog
@@ -45,7 +55,33 @@ class LLMManager {
     this.isInitialized = false
     this.ollamaConfig = null
 
+    // Initialize system prompt builder
+    this.systemPromptBuilder = new SystemPromptBuilder(
+      mcpManager,
+      userSettingsManager,
+      topicAnalysisModel,
+      channelManager
+    )
+
     // Methods are already bound as class methods, no need for explicit binding
+}
+
+  /**
+   * Update SystemPromptBuilder dependencies (called after ONE.core is initialized)
+   */
+  updateSystemPromptDependencies(
+    userSettingsManager?: any,
+    topicAnalysisModel?: any,
+    channelManager?: any
+  ): void {
+    console.log('[LLMManager] Updating SystemPromptBuilder dependencies')
+    this.systemPromptBuilder = new SystemPromptBuilder(
+      this.mcpManager,
+      userSettingsManager,
+      topicAnalysisModel,
+      channelManager
+    )
+    console.log('[LLMManager] ✅ SystemPromptBuilder dependencies updated')
 }
 
   /**
@@ -257,13 +293,16 @@ class LLMManager {
         for (const rawModel of ollamaModels) {
           const parsedModel = parseOllamaModel(rawModel)
 
+          // All Ollama models get base capabilities
+          const capabilities = ['chat', 'completion'];
+
           // Register the base model
           this.models.set(parsedModel.id, {
             id: parsedModel.id,
             name: parsedModel.displayName,
             provider: 'ollama',
             description: `${parsedModel.description} (${parsedModel.size})`,
-            capabilities: ['chat', 'completion'],
+            capabilities,
             contextLength: 8192,
             size: parsedModel.sizeBytes, // Numeric size in bytes for sorting/display
             parameters: {
@@ -339,7 +378,7 @@ class LLMManager {
             name: displayName,
             provider: 'anthropic',
             description: `Claude model: ${model.id}`,
-            capabilities: ['chat', 'analysis', 'reasoning'],
+            capabilities: ['chat', 'analysis', 'reasoning', 'structured_output'],
             contextLength: model.max_tokens || 200000,
             parameters: {
               temperature: 0.7,
@@ -458,6 +497,18 @@ class LLMManager {
 
     console.log(`[LLMManager] Chat with ${(model as any).id} (${messages.length} messages), ${this.mcpTools.size} MCP tools available`)
 
+    // Check if structured output is requested
+    if ((options as any)?.format) {
+      // Check cached capability
+      if ((model as any).structuredOutputTested === false) {
+        throw new Error(
+          `Model ${effectiveModelId} does not support structured output (previously tested and failed). ` +
+          `Try a different model or disable analysis features.`
+        );
+      }
+      // If not tested yet, we'll try and cache the result
+    }
+
     // Check if tools should be disabled for this call
     const shouldDisableTools = (options as any)?.disableTools === true
     if (shouldDisableTools) {
@@ -467,7 +518,7 @@ class LLMManager {
     }
 
     // Add tool descriptions to system message (unless explicitly disabled)
-    const enhancedMessages = shouldDisableTools ? messages : this.enhanceMessagesWithTools(messages)
+    const enhancedMessages = shouldDisableTools ? messages : await this.enhanceMessagesWithContext(messages, {})
     console.log(`[LLMManager] ENHANCEMENT ${shouldDisableTools ? 'SKIPPED' : 'COMPLETE'}`)
 
     let response
@@ -500,7 +551,12 @@ class LLMManager {
     return this.mcpManager?.getToolDescriptions() || null
   }
 
-  enhanceMessagesWithTools(messages: any): any {
+
+  /**
+   * Enhance messages with composable system prompt context
+   * Uses SystemPromptBuilder for flexible context injection
+   */
+  async enhanceMessagesWithContext(messages: any[], context?: SystemPromptContext): Promise<any[]> {
     // Check if this is a simple welcome message request
     const isWelcomeMessage = messages.some((m: any) =>
       m.content && (
@@ -509,61 +565,104 @@ class LLMManager {
       )
     )
 
-    // Skip tool enhancement for welcome messages
+    // Skip enhancement for welcome messages
     if (isWelcomeMessage) {
-      console.log(`[LLMManager] Skipping tool enhancement for welcome message`)
+      console.log(`[LLMManager] Skipping context enhancement for welcome message`)
       return messages
     }
 
-    const logMsg1 = `[LLMManager] ============= ENHANCING MESSAGES =============`
-    const logMsg2 = `[LLMManager] MCP Tools size: ${this.mcpTools.size}`
-    const toolDescriptions = this.getToolDescriptions()
-
-    // Check for null/undefined BEFORE accessing .length
-    if (!toolDescriptions) {
-      const logMsg5 = `[LLMManager] NO TOOL DESCRIPTIONS - returning original messages`
-      console.log(logMsg1)
-      console.log(logMsg2)
-      console.log(logMsg5)
-      this.forwardLog?.('log', logMsg1)
-      this.forwardLog?.('log', logMsg2)
-      this.forwardLog?.('warn', logMsg5)
-      return messages
-    }
-
-    const logMsg3 = `[LLMManager] Tool descriptions length: ${toolDescriptions.length}`
-    const logMsg4 = `[LLMManager] ============================================`
+    const logMsg1 = `[LLMManager] ============= ENHANCING MESSAGES WITH SYSTEM PROMPT =============`
+    const logMsg2 = `[LLMManager] Topic ID: ${context?.topicId || 'none'}`
+    const logMsg3 = `[LLMManager] Current subjects: ${context?.currentSubjects?.join(', ') || 'none'}`
 
     console.log(logMsg1)
     console.log(logMsg2)
     console.log(logMsg3)
-    console.log(logMsg4)
 
-    // Forward to renderer (optional)
     this.forwardLog?.('log', logMsg1)
     this.forwardLog?.('log', logMsg2)
     this.forwardLog?.('log', logMsg3)
-    this.forwardLog?.('log', logMsg4)
 
-    const enhanced = [...messages]
-    const systemIndex = enhanced.findIndex(m => m.role === 'system')
+    try {
+      const enhanced = await this.systemPromptBuilder.enhanceMessages(messages, context)
 
-    if (systemIndex >= 0) {
-      enhanced[systemIndex] = {
-        ...enhanced[systemIndex],
-        content: enhanced[systemIndex].content + toolDescriptions
+      console.log(`[LLMManager] Enhanced messages count: ${enhanced.length}`)
+      console.log(`[LLMManager] First message role: ${enhanced[0]?.role}, content length: ${enhanced[0]?.content?.length}`)
+      console.log(`[LLMManager] System message preview: ${enhanced[0]?.content?.substring(0, 300)}...`)
+
+      return enhanced
+    } catch (error) {
+      console.error('[LLMManager] Failed to enhance messages:', error)
+      this.forwardLog?.('error', `Failed to enhance messages: ${(error as Error).message}`)
+      return messages // Return original on error
+    }
+  }
+
+  /**
+   * Extract complete JSON object from text using brace counting
+   * Handles nested objects/arrays robustly
+   */
+  private extractJsonFromText(text: string): string | null {
+    // Try to find JSON with "tool" and "parameters" keys
+    const toolIndex = text.indexOf('"tool"')
+    if (toolIndex === -1) return null
+
+    // Search backwards from "tool" to find the opening brace
+    let startIdx = -1
+    for (let i = toolIndex - 1; i >= 0; i--) {
+      const char = text[i]
+      if (char === '{') {
+        startIdx = i
+        break
       }
-      console.log(`[LLMManager] Enhanced existing system message with tools`)
-    } else {
-      enhanced.unshift({
-        role: 'system',
-        content: 'You are a private AI assistant with access to all of the owner\'s conversations and filesystem tools. You can help with any topic across all chats.' + toolDescriptions
-      })
-      console.log(`[LLMManager] Added new system message with tools`)
+      // Stop if we hit characters that can't be part of JSON structure
+      if (char !== ' ' && char !== '\n' && char !== '\t' && char !== '\r' && char !== ',') {
+        break
+      }
     }
 
-    console.log(`[LLMManager] Enhanced messages count: ${enhanced.length}, first message preview: ${enhanced[0]?.content?.substring(0, 200)}...`)
-    return enhanced
+    if (startIdx === -1) return null
+
+    // Count braces to find matching closing brace
+    let depth = 0
+    let inString = false
+    let escape = false
+
+    for (let i = startIdx; i < text.length; i++) {
+      const char = text[i]
+
+      // Handle escape sequences in strings
+      if (escape) {
+        escape = false
+        continue
+      }
+
+      if (char === '\\' && inString) {
+        escape = true
+        continue
+      }
+
+      // Track string boundaries (JSON strings use double quotes)
+      if (char === '"' && !escape) {
+        inString = !inString
+        continue
+      }
+
+      // Only count braces outside of strings
+      if (!inString) {
+        if (char === '{') {
+          depth++
+        } else if (char === '}') {
+          depth--
+          // Found matching closing brace
+          if (depth === 0) {
+            return text.substring(startIdx, i + 1)
+          }
+        }
+      }
+    }
+
+    return null
   }
 
   async processToolCalls(response: any, context?: any): Promise<any> {
@@ -588,11 +687,15 @@ class LLMManager {
 
     // Check for tool calls in response - try both with and without backticks
     let toolCallMatch = responseText?.match(/```json\s*({[\s\S]*?})\s*```/)
+    let toolCallJson = null
+
     if (!toolCallMatch) {
-      // Try without backticks for plain JSON response (anywhere in the response)
-      toolCallMatch = responseText?.match(/(\{[^}]*"tool"[^}]*"parameters"[^}]*\})/)
-      if (toolCallMatch) {
-        console.log('[LLMManager] Found plain JSON tool call')
+      // Try to extract plain JSON with robust brace counting
+      toolCallJson = this.extractJsonFromText(responseText)
+      if (toolCallJson) {
+        console.log('[LLMManager] Found plain JSON tool call using brace counting')
+        // Create a match-like array for compatibility with existing code
+        toolCallMatch = [toolCallJson, toolCallJson] as RegExpMatchArray
       }
     }
 
@@ -601,7 +704,7 @@ class LLMManager {
       return response || ''
     }
 
-    console.log('[LLMManager] Found potential tool call:', toolCallMatch[0])
+    console.log('[LLMManager] Found potential tool call:', toolCallMatch[1])
 
     try {
       const toolCall = JSON.parse(toolCallMatch[1])
@@ -704,28 +807,52 @@ class LLMManager {
           // Fallback to JSON for complex objects
           formattedResult = JSON.stringify(result, null, 2)
         }
-        
+
         // Return the elegantly formatted result
-        return response.replace(toolCallMatch[0], formattedResult)
+        // Handle both string responses and object responses (with thinking)
+        if (hasThinking && typeof response === 'object') {
+          // For responses with thinking, replace in the content field
+          return {
+            ...response,
+            content: responseText.replace(toolCallMatch[0], formattedResult)
+          };
+        } else {
+          // For plain string responses, replace directly
+          return responseText.replace(toolCallMatch[0], formattedResult);
+        }
       }
     } catch (error) {
       console.error('[LLMManager] Tool execution failed:', error)
     }
-    
+
     return response || ''
   }
 
   async chatWithOllama(model: any, messages: any, options: any = {}): Promise<unknown> {
-    return await chatWithOllama(
-      model.parameters.modelName,
-      messages,
-      {
-        temperature: model.parameters.temperature,
-        max_tokens: model.parameters.maxTokens,
-        onStream: options.onStream,
-        format: options.format  // Pass through structured output schema
+    try {
+      return await chatWithOllama(
+        model.parameters.modelName,
+        messages,
+        {
+          temperature: model.parameters.temperature,
+          max_tokens: model.parameters.maxTokens,
+          onStream: options.onStream,
+          format: options.format  // Pass through structured output schema
+        }
+      )
+    } catch (error: any) {
+      // If structured output was requested and failed, cache this
+      if (options.format && error.message?.includes('generated no response')) {
+        model.structuredOutputTested = false;
+        console.log(`[LLMManager] Model ${model.id} does not support structured output - cached for future calls`);
+        throw new Error(
+          `Model ${model.id} does not support structured output. ` +
+          `The model failed to generate a response with JSON schema constraints. ` +
+          `Try a different model or disable analysis features.`
+        );
       }
-    )
+      throw error;
+    }
   }
   
   async chatWithLMStudio(model: any, messages: any, options: any = {}): Promise<any> {
@@ -788,6 +915,16 @@ class LLMManager {
   async loadSettings(): Promise<any> {
     // Runtime settings only - no default model concept here
     console.log('[LLMManager] Loaded runtime settings')
+  }
+
+  /**
+   * Stop streaming for a specific topic
+   * @param topicId The topic ID to stop streaming for
+   * @returns true if a stream was cancelled, false if no active stream found
+   */
+  stopStreaming(topicId: string): boolean {
+    console.log(`[LLMManager] Stopping streaming for topic: ${topicId}`)
+    return cancelStreamingForTopic(topicId)
   }
 
   getStoredApiKey(provider: any): any {

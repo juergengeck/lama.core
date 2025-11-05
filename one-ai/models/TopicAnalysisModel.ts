@@ -178,8 +178,9 @@ export default class TopicAnalysisModel extends Model {
         const normalizedTerm = term.toLowerCase().trim();
 
         // Fetch existing keyword directly by ID hash (term is the ID)
-        const { calculateIdHashOfObj, getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
-        const keywordIdHash = await calculateIdHashOfObj({ $type$: 'Keyword', term: normalizedTerm });
+        const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+        const keywordIdHash = await calculateIdHashOfObj({ $type$: 'Keyword', term: normalizedTerm } as any);
 
         let existing;
         try {
@@ -231,8 +232,9 @@ export default class TopicAnalysisModel extends Model {
         const normalizedTerm = term.toLowerCase().trim();
 
         // Fetch existing keyword directly by ID hash (term is the ID)
-        const { calculateIdHashOfObj, getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
-        const keywordIdHash = await calculateIdHashOfObj({ $type$: 'Keyword', term: normalizedTerm });
+        const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+        const keywordIdHash = await calculateIdHashOfObj({ $type$: 'Keyword', term: normalizedTerm } as any);
 
         let existing;
         try {
@@ -397,7 +399,7 @@ export default class TopicAnalysisModel extends Model {
         const keywords: Keyword[] = [];
         for (const keywordId of keywordIdSet) {
             try {
-                const keyword = await getObjectByIdHash(keywordId as any);
+                const keyword = await getObjectByIdHash(keywordId as any) as any;
                 if (keyword && keyword.$type$ === 'Keyword') {
                     keywords.push(keyword as Keyword);
                 }

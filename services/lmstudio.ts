@@ -126,31 +126,46 @@ async function* streamChatWithLMStudio(modelName: any, messages: any, options: L
     if (!response.ok) {
       throw new Error(`LM Studio API error: ${response.status}`)
     }
-    
-    const reader = response.body
+
+    if (!response.body) {
+      throw new Error('Response body is null')
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
     let buffer = ''
-    
-    for await (const chunk of reader) {
-      buffer += chunk.toString()
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6)
-          if (data === '[DONE]') {
-            return
-          }
-          try {
-            const parsed = JSON.parse(data)
-            if (parsed.choices?.[0]?.delta?.content) {
-              yield parsed.choices[0].delta.content
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) {
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+            if (data === '[DONE]') {
+              return
             }
-          } catch (e: any) {
-            console.error('[LMStudio] Failed to parse streaming data:', e)
+            try {
+              const parsed = JSON.parse(data)
+              if (parsed.choices?.[0]?.delta?.content) {
+                yield parsed.choices[0].delta.content
+              }
+            } catch (e: any) {
+              console.error('[LMStudio] Failed to parse streaming data:', e)
+            }
           }
         }
       }
+    } finally {
+      reader.releaseLock()
     }
   } catch (error) {
     console.error('[LMStudio] Stream error:', error)

@@ -8,7 +8,11 @@
 // No imports needed - fetch and AbortController are global
 
 // Track active requests with AbortControllers
+// Map: requestId -> { controller, topicId }
 const activeRequests = new Map()
+
+// Map topicId to requestIds for quick lookup
+const topicToRequests = new Map()
 
 // Generate unique request ID
 let requestCounter = 0
@@ -21,15 +25,47 @@ function getRequestId(): any {
  */
 export function cancelAllOllamaRequests(): any {
   console.log(`[Ollama] Cancelling ${activeRequests.size} active requests`)
-  for (const [id, controller] of activeRequests) {
+  for (const [id, data] of activeRequests) {
     try {
-      controller.abort()
+      data.controller.abort()
       console.log(`[Ollama] Cancelled request ${id}`)
     } catch (error) {
       console.error(`[Ollama] Error cancelling request ${id}:`, error)
     }
   }
   activeRequests.clear()
+  topicToRequests.clear()
+}
+
+/**
+ * Cancel streaming for a specific topic
+ */
+export function cancelStreamingForTopic(topicId: string): boolean {
+  console.log(`[Ollama] Cancelling streaming for topic: ${topicId}`)
+  const requestIds = topicToRequests.get(topicId)
+
+  if (!requestIds || requestIds.size === 0) {
+    console.log(`[Ollama] No active requests found for topic: ${topicId}`)
+    return false
+  }
+
+  let cancelled = false
+  for (const requestId of requestIds) {
+    const data = activeRequests.get(requestId)
+    if (data) {
+      try {
+        data.controller.abort()
+        console.log(`[Ollama] Cancelled request ${requestId} for topic ${topicId}`)
+        activeRequests.delete(requestId)
+        cancelled = true
+      } catch (error) {
+        console.error(`[Ollama] Error cancelling request ${requestId}:`, error)
+      }
+    }
+  }
+
+  topicToRequests.delete(topicId)
+  return cancelled
 }
 
 /**
@@ -90,10 +126,20 @@ async function chatWithOllama(
 ): Promise<any> {
   const requestId = getRequestId()
   const controller = new AbortController()
+  const topicId = options.topicId // Extract topicId from options if provided
 
-  // Track this request
-  activeRequests.set(requestId, controller)
-  console.log(`[Ollama] Starting request ${requestId} to ${baseUrl}`)
+  // Track this request with its controller and topicId
+  activeRequests.set(requestId, { controller, topicId })
+
+  // Track by topicId for quick cancellation
+  if (topicId) {
+    if (!topicToRequests.has(topicId)) {
+      topicToRequests.set(topicId, new Set())
+    }
+    topicToRequests.get(topicId).add(requestId)
+  }
+
+  console.log(`[Ollama] Starting request ${requestId} to ${baseUrl}${topicId ? ` (topic: ${topicId})` : ''}`)
 
   try {
     const t0 = Date.now()
@@ -321,6 +367,15 @@ async function chatWithOllama(
 
     // Clean up request tracking
     activeRequests.delete(requestId)
+    if (topicId) {
+      const requestSet = topicToRequests.get(topicId)
+      if (requestSet) {
+        requestSet.delete(requestId)
+        if (requestSet.size === 0) {
+          topicToRequests.delete(topicId)
+        }
+      }
+    }
     console.log(`[Ollama] Completed request ${requestId}`)
 
     // Return structured response with thinking as metadata
@@ -338,7 +393,16 @@ async function chatWithOllama(
     
     // Clean up on error
     activeRequests.delete(requestId)
-    
+    if (topicId) {
+      const requestSet = topicToRequests.get(topicId)
+      if (requestSet) {
+        requestSet.delete(requestId)
+        if (requestSet.size === 0) {
+          topicToRequests.delete(topicId)
+        }
+      }
+    }
+
     // Handle abort
     if (error.name === 'AbortError') {
       console.log(`[Ollama] Request ${requestId} was aborted`)

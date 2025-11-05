@@ -110,12 +110,9 @@ export async function initializeCoreModels(
         console.log('[CoreInitializer] ✅ TopicAnalysisModel initialized');
     }
 
-    // Step 7: Chat handlers
-    onProgress?.({ stage: 'chat', percent: 90, message: 'Initializing chat handlers...' });
-    if (deps.chatHandler?.init) {
-        await deps.chatHandler.init();
-        console.log('[CoreInitializer] ✅ ChatHandler initialized');
-    }
+    // Step 7: Chat handlers (no init method - ChatHandler is stateless)
+    onProgress?.({ stage: 'chat', percent: 90, message: 'Chat handlers ready...' });
+    console.log('[CoreInitializer] ✅ ChatHandler ready (stateless)');
 
     onProgress?.({ stage: 'complete', percent: 100, message: 'Initialization complete' });
     console.log('[CoreInitializer] ✅ All core models initialized');
@@ -128,7 +125,7 @@ export async function shutdownCoreModels(deps: CoreDependencies): Promise<void> 
     console.log('[CoreInitializer] Shutting down core models...');
 
     const shutdownSteps = [
-        { name: 'ChatHandler', fn: () => deps.chatHandler?.shutdown?.() },
+        // ChatHandler is stateless - no shutdown needed
         { name: 'TopicAnalysisModel', fn: () => deps.topicAnalysisModel?.shutdown?.() },
         { name: 'AIAssistantHandler', fn: () => deps.aiAssistantModel?.shutdown?.() },
         { name: 'LLMManager', fn: () => deps.llmManager?.shutdown?.() },

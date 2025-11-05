@@ -530,6 +530,17 @@ export class AIAssistantHandler {
     // Step 2: Analyze in background using abstract service (includes memory context)
     let analysis: any;
     try {
+      // Create analysis service with progress callback that streams to user
+      const progressCallback = (message: string) => {
+        console.log(`[AIAssistantHandler] Analysis progress: ${message}`);
+        options?.onStream?.(message); // Stream progress to user
+      };
+      const analysisService = new (this.analysisService.constructor as any)(
+        this.deps.llmManager,
+        this.deps.mcpManager,
+        progressCallback
+      );
+
       const analysisContent: AnalysisContent = {
         type: 'chat',
         messages: [
@@ -539,7 +550,7 @@ export class AIAssistantHandler {
       };
 
       const analysisContext: AnalysisContext = {
-        modelId,  // AnalysisService will pick best model
+        // Don't specify modelId - let AnalysisService auto-select a model that supports structured output
         temperature: 0,
         topicId,
         disableTools: true
@@ -549,7 +560,7 @@ export class AIAssistantHandler {
       // 1. Fetches existing subjects from memory via MCP
       // 2. Includes them in prompt for consistency
       // 3. Returns structured analysis
-      const result = await this.analysisService.analyze(analysisContent, analysisContext);
+      const result = await analysisService.analyze(analysisContent, analysisContext);
 
       analysis = {
         subjects: result.subjects,
@@ -558,8 +569,9 @@ export class AIAssistantHandler {
       };
 
       console.log(`[AIAssistantHandler] Analysis complete (${Date.now() - startTime}ms total)`);
-    } catch (error) {
-      console.warn('[AIAssistantHandler] Analysis failed:', error);
+    } catch (error: any) {
+      console.warn('[AIAssistantHandler] Analysis failed:', error?.message || error);
+      // Return empty analysis - don't block the response
       analysis = { subjects: [], summaryUpdate: '', keywords: [] };
     }
 

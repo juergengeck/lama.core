@@ -149,7 +149,13 @@ export class ProposalEngine {
 
     // Get all past subjects from all topics (excluding current topic)
     const allTopics = await this.topicAnalysisModel.getAllTopics();
-    console.log('[ProposalEngine] Found', allTopics?.length || 0, 'total topics');
+
+    // CRITICAL: Explicitly include "lama" memory topic for MCP-stored memories
+    if (!allTopics.includes('lama')) {
+      allTopics.push('lama');
+    }
+
+    console.log('[ProposalEngine] Found', allTopics?.length || 0, 'total topics (including memories)');
 
     const proposals: UnrankedProposal[] = [];
 
@@ -160,7 +166,16 @@ export class ProposalEngine {
       }
 
       try {
+        const isMemoryTopic = pastTopicId === 'lama';
+        if (isMemoryTopic) {
+          console.log('[ProposalEngine] Processing MEMORY topic (lama)');
+        }
+
         const pastSubjects = await this.topicAnalysisModel.getSubjects(pastTopicId);
+
+        if (isMemoryTopic) {
+          console.log('[ProposalEngine] Found', pastSubjects?.length || 0, 'subjects in MEMORY topic');
+        }
 
         for (const pastSubject of pastSubjects || []) {
           // Get past subject keywords

@@ -12,9 +12,10 @@
  * - Scan existing conversations for AI participants
  */
 
-import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Person, Group } from '@refinio/one.core/lib/recipes.js';
+import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
 import { getIdObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -253,16 +254,19 @@ export class AITopicManager implements IAITopicManager {
         // Topic exists in storage - try to determine its model from group members
         const group = await getIdObject((topic as any).group) as Group;
 
-        // CRITICAL: OLD one.core structure has 'person' array directly on Group
-        if (group.person) {
-          for (const memberId of group.person) {
-            const modelId = aiContactManager.getModelIdForPersonId(memberId);
+        // NEW one.core structure: Group.hashGroup → HashGroup.person
+        if (group.hashGroup) {
+          const hashGroup = await getObject(group.hashGroup as SHA256Hash<HashGroup>) as HashGroup<Person>;
+          if (hashGroup.person) {
+            for (const memberId of hashGroup.person) {
+              const modelId = aiContactManager.getModelIdForPersonId(memberId);
 
-            if (modelId) {
-              // Found the AI participant - register the topic
-              this.registerAITopic(topicId, modelId);
-              console.log(`[AITopicManager] Registered existing topic '${topicId}' with model: ${modelId}`);
-              return true;
+              if (modelId) {
+                // Found the AI participant - register the topic
+                this.registerAITopic(topicId, modelId);
+                console.log(`[AITopicManager] Registered existing topic '${topicId}' with model: ${modelId}`);
+                return true;
+              }
             }
           }
         }
@@ -419,15 +423,19 @@ export class AITopicManager implements IAITopicManager {
 
           // Check if topic has a group (3+ participants including AI)
           if ((topic as any).group) {
-            const group = await getIdObject((topic as any).group);
+            const group = await getIdObject((topic as any).group) as Group;
 
-            if ((group as any).members) {
-              for (const memberId of (group as any).members) {
-                const modelId = aiContactManager.getModelIdForPersonId(memberId);
-                if (modelId) {
-                  aiModelId = modelId;
-                  console.log(`[AITopicManager] Found AI participant in ${topicId} (via Group): ${modelId}`);
-                  break;
+            // NEW one.core structure: Group.hashGroup → HashGroup.person
+            if (group.hashGroup) {
+              const hashGroup = await getObject(group.hashGroup as SHA256Hash<HashGroup>) as HashGroup<Person>;
+              if (hashGroup.person) {
+                for (const memberId of hashGroup.person) {
+                  const modelId = aiContactManager.getModelIdForPersonId(memberId);
+                  if (modelId) {
+                    aiModelId = modelId;
+                    console.log(`[AITopicManager] Found AI participant in ${topicId} (via Group): ${modelId}`);
+                    break;
+                  }
                 }
               }
             }
