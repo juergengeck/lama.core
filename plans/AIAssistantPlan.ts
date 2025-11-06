@@ -1,17 +1,17 @@
 /**
- * AIAssistantHandler
+ * AIAssistantPlan
  *
  * Main orchestrator for AI assistant operations. Platform-agnostic business logic
  * that receives dependencies via constructor injection and delegates to specialized
  * components.
  *
- * This handler follows the two-phase initialization pattern to resolve circular
+ * This plan follows the two-phase initialization pattern to resolve circular
  * dependencies between AIPromptBuilder and AIMessageProcessor.
  *
  * Responsibilities:
  * - Initialize all AI assistant components
  * - Coordinate operations across components
- * - Provide unified API for IPC handlers
+ * - Provide unified API for IPC plans
  * - Maintain default model selection
  */
 
@@ -39,9 +39,9 @@ export interface AISettingsPersistence {
 }
 
 /**
- * Dependencies required by AIAssistantHandler
+ * Dependencies required by AIAssistantPlan
  */
-export interface AIAssistantHandlerDependencies {
+export interface AIAssistantPlanDependencies {
   /** ONE.core instance (NodeOneCore in Electron, similar in browser) */
   oneCore: any;
 
@@ -78,8 +78,8 @@ export interface AIAssistantHandlerDependencies {
   /** Optional: Settings persistence for default model and other preferences */
   settingsPersistence?: AISettingsPersistence;
 
-  /** Optional: LLM config handler for browser platform */
-  llmConfigHandler?: any;
+  /** Optional: LLM config plan for browser platform */
+  llmConfigPlan?: any;
 
   /** Optional: MCP manager for memory context (Node.js only) */
   mcpManager?: any;
@@ -89,9 +89,9 @@ export interface AIAssistantHandlerDependencies {
 }
 
 /**
- * AIAssistantHandler public interface
+ * AIAssistantPlan public interface
  */
-export class AIAssistantHandler {
+export class AIAssistantPlan {
   // Component instances
   private contactManager: AIContactManager;
   private topicManager: AITopicManager;
@@ -101,12 +101,12 @@ export class AIAssistantHandler {
   private analysisService: LLMAnalysisService;
 
   // Dependencies
-  private deps: AIAssistantHandlerDependencies;
+  private deps: AIAssistantPlanDependencies;
 
   // Initialization state
   private initialized = false;
 
-  constructor(deps: AIAssistantHandlerDependencies) {
+  constructor(deps: AIAssistantPlanDependencies) {
     this.deps = deps;
 
     // Phase 1: Construct components with non-circular dependencies
@@ -155,9 +155,9 @@ export class AIAssistantHandler {
    * @private
    */
   private async _loadDefaultModelFromPersistence(models: LLMModelInfo[]): Promise<string | null> {
-    // Try browser-specific llmConfigHandler first (if available)
-    if (this.deps.llmConfigHandler) {
-      const config = await this.deps.llmConfigHandler.getConfig({});
+    // Try browser-specific llmConfigPlan first (if available)
+    if (this.deps.llmConfigPlan) {
+      const config = await this.deps.llmConfigPlan.getConfig({});
       if (config?.success && config.config?.modelName) {
         return config.config.modelName;
       }
@@ -175,16 +175,16 @@ export class AIAssistantHandler {
   }
 
   /**
-   * Initialize the AI handler and all components
+   * Initialize the AI plan and all components
    * Performs two-phase initialization to resolve circular dependencies
    */
   async init(): Promise<void> {
     if (this.initialized) {
-      console.log('[AIAssistantHandler] Already initialized');
+      console.log('[AIAssistantPlan] Already initialized');
       return;
     }
 
-    console.log('[AIAssistantHandler] Initializing...');
+    console.log('[AIAssistantPlan] Initializing...');
 
     try {
       // Phase 2: Resolve circular dependencies via setters
@@ -199,11 +199,11 @@ export class AIAssistantHandler {
 
       // Get available models from LLM manager
       const models: LLMModelInfo[] = this.deps.llmManager?.getAvailableModels() || [];
-      console.log(`[AIAssistantHandler] Found ${models.length} available models`);
+      console.log(`[AIAssistantPlan] Found ${models.length} available models`);
 
       // Load existing AI contacts
       const contactCount = await this.contactManager.loadExistingAIContacts(models);
-      console.log(`[AIAssistantHandler] Loaded ${contactCount} existing AI contacts`);
+      console.log(`[AIAssistantPlan] Loaded ${contactCount} existing AI contacts`);
 
       // Update model info with personIds
       for (const model of models) {
@@ -215,11 +215,11 @@ export class AIAssistantHandler {
 
       // Set available models in message processor (AFTER personIds are populated)
       this.messageProcessor.setAvailableLLMModels(models);
-      console.log(`[AIAssistantHandler] Updated message processor with ${models.length} models (with personIds)`);
+      console.log(`[AIAssistantPlan] Updated message processor with ${models.length} models (with personIds)`);
 
       // Scan existing conversations for AI participants
       const topicCount = await this.topicManager.scanExistingConversations(this.contactManager);
-      console.log(`[AIAssistantHandler] Scanned ${topicCount} existing AI topics`);
+      console.log(`[AIAssistantPlan] Scanned ${topicCount} existing AI topics`);
 
       // Load saved default model from persistence (unified for browser + Electron)
       if (models.length > 0) {
@@ -228,11 +228,11 @@ export class AIAssistantHandler {
           // Verify the saved model exists in available models
           const modelExists = models.some(m => m.id === savedDefaultModel);
           if (modelExists) {
-            // Use the handler's setDefaultModel which creates default chats
+            // Use the plan's setDefaultModel which creates default chats
             await this.setDefaultModel(savedDefaultModel);
-            console.log(`[AIAssistantHandler] Restored saved default model: ${savedDefaultModel}`);
+            console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel}`);
           } else {
-            console.log(`[AIAssistantHandler] Saved model ${savedDefaultModel} not available`);
+            console.log(`[AIAssistantPlan] Saved model ${savedDefaultModel} not available`);
           }
         }
       }
@@ -240,20 +240,20 @@ export class AIAssistantHandler {
       // Removed: Auto-selection disabled - user must select model via UI
       // if (!this.topicManager.getDefaultModel() && models.length > 0) {
       //   const firstModel = models[0];
-      //   console.log(`[AIAssistantHandler] Auto-selecting first available model: ${firstModel.id}`);
+      //   console.log(`[AIAssistantPlan] Auto-selecting first available model: ${firstModel.id}`);
       //   await this.setDefaultModel(firstModel.id);
       // }
 
       if (this.topicManager.getDefaultModel()) {
-        console.log(`[AIAssistantHandler] Default model configured: ${this.topicManager.getDefaultModel()}`);
+        console.log(`[AIAssistantPlan] Default model configured: ${this.topicManager.getDefaultModel()}`);
       } else {
-        console.log(`[AIAssistantHandler] No default model set - user will be prompted to select one`);
+        console.log(`[AIAssistantPlan] No default model set - user will be prompted to select one`);
       }
 
       this.initialized = true;
-      console.log('[AIAssistantHandler] ✅ Initialization complete');
+      console.log('[AIAssistantPlan] ✅ Initialization complete');
     } catch (error) {
-      console.error('[AIAssistantHandler] Initialization failed:', error);
+      console.error('[AIAssistantPlan] Initialization failed:', error);
       throw error;
     }
   }
@@ -263,14 +263,14 @@ export class AIAssistantHandler {
    * Called when user selects a default model
    */
   private async createDefaultChats(): Promise<void> {
-    console.log('[AIAssistantHandler] Creating default AI chats...');
+    console.log('[AIAssistantPlan] Creating default AI chats...');
 
     const defaultModel = this.topicManager.getDefaultModel();
     if (!defaultModel) {
       throw new Error('Cannot create default chats - no default model set');
     }
 
-    console.log(`[AIAssistantHandler] Using default model: ${defaultModel}`);
+    console.log(`[AIAssistantPlan] Using default model: ${defaultModel}`);
 
     await this.topicManager.ensureDefaultChats(
       this.contactManager,
@@ -293,14 +293,14 @@ export class AIAssistantHandler {
     }
 
     this.messageProcessor.setAvailableLLMModels(updatedModels);
-    console.log(`[AIAssistantHandler] ✅ Default chats created with ${updatedModels.length} models`);
+    console.log(`[AIAssistantPlan] ✅ Default chats created with ${updatedModels.length} models`);
   }
 
   /**
    * Scan existing conversations for AI participants and register them
    */
   async scanExistingConversations(): Promise<void> {
-    console.log('[AIAssistantHandler] Scanning existing conversations...');
+    console.log('[AIAssistantPlan] Scanning existing conversations...');
     await this.topicManager.scanExistingConversations(this.contactManager);
   }
 
@@ -313,7 +313,7 @@ export class AIAssistantHandler {
     senderId: SHA256IdHash<Person>
   ): Promise<string | null> {
     if (!this.initialized) {
-      throw new Error('[AIAssistantHandler] Handler not initialized - call init() first');
+      throw new Error('[AIAssistantPlan] Plan not initialized - call init() first');
     }
 
     return await this.messageProcessor.processMessage(topicId, message, senderId);
@@ -356,7 +356,7 @@ export class AIAssistantHandler {
     const model = models.find((m: any) => m.id === modelId);
 
     if (!model) {
-      throw new Error(`[AIAssistantHandler] Model ${modelId} not found in available models`);
+      throw new Error(`[AIAssistantPlan] Model ${modelId} not found in available models`);
     }
 
     return await this.contactManager.ensureAIContactForModel(modelId, model.displayName || model.name);
@@ -367,7 +367,7 @@ export class AIAssistantHandler {
    * Called when user selects a model in ModelOnboarding
    */
   async setDefaultModel(modelId: string): Promise<void> {
-    console.log(`[AIAssistantHandler] Setting default model: ${modelId}`);
+    console.log(`[AIAssistantPlan] Setting default model: ${modelId}`);
 
     // Verify model exists
     const models = this.deps.llmManager?.getAvailableModels() || [];
@@ -388,12 +388,12 @@ export class AIAssistantHandler {
     // (Welcome messages still generate in background via callbacks)
     try {
       await this.createDefaultChats();
-      console.log(`[AIAssistantHandler] ✅ Default chats created, topics are ready`);
+      console.log(`[AIAssistantPlan] ✅ Default chats created, topics are ready`);
     } catch (err) {
-      console.error('[AIAssistantHandler] ❌ Failed to create default chats:', err);
+      console.error('[AIAssistantPlan] ❌ Failed to create default chats:', err);
     }
 
-    console.log(`[AIAssistantHandler] ✅ Default model set: ${modelId}`);
+    console.log(`[AIAssistantPlan] ✅ Default model set: ${modelId}`);
   }
 
   /**
@@ -436,7 +436,7 @@ export class AIAssistantHandler {
   async handleNewTopic(topicId: string): Promise<void> {
     const modelId = this.topicManager.getModelIdForTopic(topicId);
     if (!modelId) {
-      throw new Error(`[AIAssistantHandler] No model ID for topic: ${topicId}`);
+      throw new Error(`[AIAssistantPlan] No model ID for topic: ${topicId}`);
     }
 
     await this.messageProcessor.handleNewTopic(topicId, modelId);
@@ -462,11 +462,11 @@ export class AIAssistantHandler {
     topicId?: string
   ): Promise<any> {
     if (!this.initialized) {
-      throw new Error('[AIAssistantHandler] Handler not initialized - call init() first');
+      throw new Error('[AIAssistantPlan] Plan not initialized - call init() first');
     }
 
     if (!this.deps.llmManager) {
-      throw new Error('[AIAssistantHandler] LLM Manager not available');
+      throw new Error('[AIAssistantPlan] LLM Manager not available');
     }
 
     // All LLM calls go through here - we can add middleware, logging, etc.
@@ -495,15 +495,15 @@ export class AIAssistantHandler {
     topicId?: string
   ): Promise<any> {
     if (!this.initialized) {
-      throw new Error('[AIAssistantHandler] Handler not initialized - call init() first');
+      throw new Error('[AIAssistantPlan] Plan not initialized - call init() first');
     }
 
     if (!this.deps.llmManager) {
-      throw new Error('[AIAssistantHandler] LLM Manager not available');
+      throw new Error('[AIAssistantPlan] LLM Manager not available');
     }
 
     const startTime = Date.now();
-    console.log(`[AIAssistantHandler] chatWithAnalysis starting for model: ${modelId}`);
+    console.log(`[AIAssistantPlan] chatWithAnalysis starting for model: ${modelId}`);
 
     // Emit thinking status: preparing to call LLM
     if (topicId && this.deps.platform?.emitThinkingStatus) {
@@ -543,14 +543,14 @@ export class AIAssistantHandler {
     if (typeof rawResponse === 'object' && (rawResponse as any)._hasThinking) {
       fullResponse = (rawResponse as any).content;
       fullThinking = (rawResponse as any).thinking || '';
-      console.log('[AIAssistantHandler] Response includes thinking metadata (length:', fullThinking.length, 'chars)');
+      console.log('[AIAssistantPlan] Response includes thinking metadata (length:', fullThinking.length, 'chars)');
     } else if (typeof rawResponse === 'string') {
       fullResponse = rawResponse;
     } else {
       fullResponse = String(rawResponse || '');
     }
 
-    console.log(`[AIAssistantHandler] Response streaming complete (${Date.now() - startTime}ms), starting background analysis`);
+    console.log(`[AIAssistantPlan] Response streaming complete (${Date.now() - startTime}ms), starting background analysis`);
 
     // Return immediately - don't block on analysis
     const immediateResult = {
@@ -563,11 +563,11 @@ export class AIAssistantHandler {
     // Step 2: Analyze in background (non-blocking)
     setImmediate(async () => {
       try {
-        console.log(`[AIAssistantHandler] Background analysis starting for topic: ${topicId}`);
+        console.log(`[AIAssistantPlan] Background analysis starting for topic: ${topicId}`);
 
         // Create analysis service with progress callback
         const progressCallback = (message: string) => {
-          console.log(`[AIAssistantHandler] Analysis progress: ${message}`);
+          console.log(`[AIAssistantPlan] Analysis progress: ${message}`);
         };
         const analysisService = new (this.analysisService.constructor as any)(
           this.deps.llmManager,
@@ -596,12 +596,12 @@ export class AIAssistantHandler {
         // 3. Returns structured analysis
         const result = await analysisService.analyze(analysisContent, analysisContext);
 
-        console.log(`[AIAssistantHandler] Background analysis complete (${Date.now() - startTime}ms total)`);
-        console.log(`[AIAssistantHandler] Analysis results: ${result.subjects?.length || 0} subjects, ${result.keywords?.length || 0} keywords`);
+        console.log(`[AIAssistantPlan] Background analysis complete (${Date.now() - startTime}ms total)`);
+        console.log(`[AIAssistantPlan] Analysis results: ${result.subjects?.length || 0} subjects, ${result.keywords?.length || 0} keywords`);
 
         // Analysis complete - could emit event here if needed for UI updates
       } catch (error: any) {
-        console.warn('[AIAssistantHandler] Background analysis failed:', error?.message || error);
+        console.warn('[AIAssistantPlan] Background analysis failed:', error?.message || error);
       }
     });
 
@@ -609,10 +609,10 @@ export class AIAssistantHandler {
   }
 
   /**
-   * Shutdown the AI handler and clean up resources
+   * Shutdown the AI plan and clean up resources
    */
   async shutdown(): Promise<void> {
-    console.log('[AIAssistantHandler] Shutting down...');
+    console.log('[AIAssistantPlan] Shutting down...');
     this.initialized = false;
   }
 
@@ -667,7 +667,7 @@ export class AIAssistantHandler {
 
   /**
    * Get all AI contacts with their model information
-   * Returns array of {modelId, name, personId} for compatibility with chat handler
+   * Returns array of {modelId, name, personId} for compatibility with chat plan
    */
   getAllContacts(): Array<{ modelId: string; name: string; personId: string | null }> {
     const models = this.deps.llmManager.getAvailableModels();

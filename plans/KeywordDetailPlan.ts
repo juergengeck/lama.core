@@ -1,7 +1,7 @@
 /**
- * Keyword Detail Handler (Pure Business Logic)
+ * Keyword Detail Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for keyword detail operations including access control.
+ * Transport-agnostic plan for keyword detail operations including access control.
  * Can be used from both Electron IPC and Web Worker contexts.
  * Pattern based on refinio.api handler architecture.
  *
@@ -87,7 +87,7 @@ export interface GetAllKeywordsResponse {
 }
 
 /**
- * KeywordDetailHandler - Pure business logic for keyword detail operations
+ * KeywordDetailPlan - Pure business logic for keyword detail operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
@@ -95,7 +95,7 @@ export interface GetAllKeywordsResponse {
  * - keywordAccessStorage: Access state storage operations
  * - keywordEnrichment: Keyword enrichment service
  */
-export class KeywordDetailHandler {
+export class KeywordDetailPlan {
   private nodeOneCore: any;
   private topicAnalysisModel: any;
   private keywordAccessStorage: any;
@@ -139,7 +139,7 @@ export class KeywordDetailHandler {
    */
   async getKeywordDetails(request: GetKeywordDetailsRequest): Promise<GetKeywordDetailsResponse> {
     const startTime = Date.now();
-    console.log('[KeywordDetailHandler] ⏱️ Getting keyword details:', request);
+    console.log('[KeywordDetailPlan] ⏱️ Getting keyword details:', request);
 
     try {
       // Validate inputs
@@ -154,7 +154,7 @@ export class KeywordDetailHandler {
       const cacheKey = `${normalizedKeyword}:${request.topicId || 'all'}`;
       const cached = this.detailsCache.get(cacheKey);
       if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-        console.log('[KeywordDetailHandler] ⚡ Returning cached data for:', cacheKey, `(${Date.now() - startTime}ms)`);
+        console.log('[KeywordDetailPlan] ⚡ Returning cached data for:', cacheKey, `(${Date.now() - startTime}ms)`);
         return { success: true, data: cached.data };
       }
 
@@ -166,13 +166,13 @@ export class KeywordDetailHandler {
       // Initialize model
       let t = Date.now();
       await this.ensureModelInitialized();
-      console.log('[KeywordDetailHandler] ⏱️ Model init:', `${Date.now() - t}ms`);
+      console.log('[KeywordDetailPlan] ⏱️ Model init:', `${Date.now() - t}ms`);
       const channelManager = this.nodeOneCore.channelManager;
 
       // Get the specific keyword using ID hash lookup (O(1))
       t = Date.now();
       const keywordObj = await this.topicAnalysisModel.getKeywordByTerm(request.topicId, normalizedKeyword);
-      console.log('[KeywordDetailHandler] ⏱️ getKeywordByTerm:', `${Date.now() - t}ms`);
+      console.log('[KeywordDetailPlan] ⏱️ getKeywordByTerm:', `${Date.now() - t}ms`);
 
       if (!keywordObj) {
         throw new Error(`Keyword not found: ${request.keyword}`);
@@ -181,8 +181,8 @@ export class KeywordDetailHandler {
       // Get subject ID hashes from keyword.subjects array
       t = Date.now();
       const subjectIdHashes = keywordObj.subjects || [];
-      console.log('[KeywordDetailHandler] ⏱️ Got subject ID hashes from keyword:', `${Date.now() - t}ms`, `(${subjectIdHashes.length} subjects)`);
-      console.log('[KeywordDetailHandler] 🔍 DEBUG keyword.subjects:', JSON.stringify(subjectIdHashes, null, 2));
+      console.log('[KeywordDetailPlan] ⏱️ Got subject ID hashes from keyword:', `${Date.now() - t}ms`, `(${subjectIdHashes.length} subjects)`);
+      console.log('[KeywordDetailPlan] 🔍 DEBUG keyword.subjects:', JSON.stringify(subjectIdHashes, null, 2));
 
       // Load ONLY the subjects referenced by this keyword using their ID hashes
       t = Date.now();
@@ -190,19 +190,19 @@ export class KeywordDetailHandler {
 
       for (const subjectIdHash of subjectIdHashes) {
         try {
-          console.log('[KeywordDetailHandler] 🔍 Attempting to load subject with ID hash:', subjectIdHash);
+          console.log('[KeywordDetailPlan] 🔍 Attempting to load subject with ID hash:', subjectIdHash);
           const result = await getObjectByIdHash(subjectIdHash);
-          console.log('[KeywordDetailHandler] 🔍 getObjectByIdHash returned:', result ? `obj: ${result.obj?.$type$}` : 'null');
+          console.log('[KeywordDetailPlan] 🔍 getObjectByIdHash returned:', result ? `obj: ${result.obj?.$type$}` : 'null');
           if (result?.obj) {
             subjects.push(result.obj);
           } else {
-            console.warn('[KeywordDetailHandler] ⚠️  Subject not found for ID hash:', subjectIdHash);
+            console.warn('[KeywordDetailPlan] ⚠️  Subject not found for ID hash:', subjectIdHash);
           }
         } catch (error) {
-          console.warn('[KeywordDetailHandler] ❌ Could not load subject with ID hash:', subjectIdHash, error);
+          console.warn('[KeywordDetailPlan] ❌ Could not load subject with ID hash:', subjectIdHash, error);
         }
       }
-      console.log('[KeywordDetailHandler] ⏱️ Loaded specific subjects:', `${Date.now() - t}ms`, `(${subjects.length} loaded)`);
+      console.log('[KeywordDetailPlan] ⏱️ Loaded specific subjects:', `${Date.now() - t}ms`, `(${subjects.length} loaded)`);
 
       // Enrich keyword with topic references
       t = Date.now();
@@ -211,7 +211,7 @@ export class KeywordDetailHandler {
         subjects,
         channelManager
       );
-      console.log('[KeywordDetailHandler] ⏱️ enrichKeywordWithTopicReferences:', `${Date.now() - t}ms`);
+      console.log('[KeywordDetailPlan] ⏱️ enrichKeywordWithTopicReferences:', `${Date.now() - t}ms`);
 
       // Enrich subjects with metadata
       t = Date.now();
@@ -219,12 +219,12 @@ export class KeywordDetailHandler {
         subjects,
         subjects  // We only have the subjects for this keyword now
       );
-      console.log('[KeywordDetailHandler] ⏱️ enrichSubjectsWithMetadata:', `${Date.now() - t}ms`);
+      console.log('[KeywordDetailPlan] ⏱️ enrichSubjectsWithMetadata:', `${Date.now() - t}ms`);
 
       // Sort subjects by relevanceScore descending
       t = Date.now();
       const sortedSubjects = this.keywordEnrichment.sortByRelevance(enrichedSubjects);
-      console.log('[KeywordDetailHandler] ⏱️ sortByRelevance:', `${Date.now() - t}ms`);
+      console.log('[KeywordDetailPlan] ⏱️ sortByRelevance:', `${Date.now() - t}ms`);
 
       // Get access states for this keyword
       t = Date.now();
@@ -232,7 +232,7 @@ export class KeywordDetailHandler {
         channelManager,
         normalizedKeyword
       );
-      console.log('[KeywordDetailHandler] ⏱️ getAccessStatesByKeyword:', `${Date.now() - t}ms`);
+      console.log('[KeywordDetailPlan] ⏱️ getAccessStatesByKeyword:', `${Date.now() - t}ms`);
 
       const result = {
         keyword: enrichedKeyword,
@@ -246,7 +246,7 @@ export class KeywordDetailHandler {
         timestamp: Date.now()
       });
 
-      console.log('[KeywordDetailHandler] ⏱️ TOTAL TIME:', `${Date.now() - startTime}ms`, {
+      console.log('[KeywordDetailPlan] ⏱️ TOTAL TIME:', `${Date.now() - startTime}ms`, {
         keyword: normalizedKeyword,
         subjectCount: sortedSubjects.length,
         accessStateCount: accessStates.length
@@ -257,7 +257,7 @@ export class KeywordDetailHandler {
         data: result
       };
     } catch (error) {
-      console.error('[KeywordDetailHandler] ❌ Error getting keyword details:', error, `(${Date.now() - startTime}ms)`);
+      console.error('[KeywordDetailPlan] ❌ Error getting keyword details:', error, `(${Date.now() - startTime}ms)`);
       return {
         success: false,
         error: (error as Error).message,
@@ -274,7 +274,7 @@ export class KeywordDetailHandler {
    * Update or create access state for a keyword and principal
    */
   async updateKeywordAccessState(request: UpdateKeywordAccessStateRequest): Promise<UpdateKeywordAccessStateResponse> {
-    console.log('[KeywordDetailHandler] Updating access state:', request);
+    console.log('[KeywordDetailPlan] Updating access state:', request);
 
     try {
       // Validate inputs
@@ -342,7 +342,7 @@ export class KeywordDetailHandler {
         request.principalId
       );
 
-      console.log('[KeywordDetailHandler] Access state updated:', {
+      console.log('[KeywordDetailPlan] Access state updated:', {
         keywordTerm,
         principalId: request.principalId,
         created: result.created
@@ -356,7 +356,7 @@ export class KeywordDetailHandler {
         }
       };
     } catch (error) {
-      console.error('[KeywordDetailHandler] Error updating access state:', error);
+      console.error('[KeywordDetailPlan] Error updating access state:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -380,7 +380,7 @@ export class KeywordDetailHandler {
       offset = 0
     } = request;
 
-    console.log('[KeywordDetailHandler] Getting all keywords:', { sortBy, limit, offset });
+    console.log('[KeywordDetailPlan] Getting all keywords:', { sortBy, limit, offset });
 
     try {
       // Validate inputs
@@ -406,15 +406,15 @@ export class KeywordDetailHandler {
         ? allSubjects
         : allSubjects.filter((s: any) => !s.archived);
 
-      console.log('[KeywordDetailHandler] Loaded subjects:', filteredSubjects.length);
+      console.log('[KeywordDetailPlan] Loaded subjects:', filteredSubjects.length);
 
       // Get all keywords from all topics
       const allKeywords = await this.topicAnalysisModel.getAllKeywords();
-      console.log('[KeywordDetailHandler] Loaded keywords:', allKeywords.length);
+      console.log('[KeywordDetailPlan] Loaded keywords:', allKeywords.length);
 
       // Get all access states
       const allAccessStates = await this.keywordAccessStorage.getAllAccessStates(channelManager);
-      console.log('[KeywordDetailHandler] Loaded access states:', allAccessStates.length);
+      console.log('[KeywordDetailPlan] Loaded access states:', allAccessStates.length);
 
       // Aggregate keywords by term
       const keywordMap = new Map<string, AggregatedKeyword>();
@@ -515,7 +515,7 @@ export class KeywordDetailHandler {
       const totalCount = keywords.length;
       keywords = keywords.slice(offset, offset + limit);
 
-      console.log('[KeywordDetailHandler] Aggregated keywords:', {
+      console.log('[KeywordDetailPlan] Aggregated keywords:', {
         total: totalCount,
         returned: keywords.length,
         time: `${Date.now() - startTime}ms`
@@ -531,7 +531,7 @@ export class KeywordDetailHandler {
       };
 
     } catch (error) {
-      console.error('[KeywordDetailHandler] Error getting all keywords:', error);
+      console.error('[KeywordDetailPlan] Error getting all keywords:', error);
       return {
         success: false,
         error: (error as Error).message,

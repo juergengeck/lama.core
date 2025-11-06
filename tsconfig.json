@@ -18,9 +18,10 @@
     "baseUrl": ".",
     "paths": {
       "@refinio/*": ["./packages/*"],
-      "@anthropic-ai/*": ["../lama.browser/node_modules/@anthropic-ai/*"]
+      "@anthropic-ai/*": ["../lama.browser/node_modules/@anthropic-ai/*"],
+      "@chat/core/*": ["./packages/chat.core/*"]
     }
   },
-  "include": ["handlers/**/*.ts", "models/**/*.ts", "one-ai/**/*.ts", "services/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "*.d.ts"],
+  "include": ["ai/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "one-ai/**/*.ts", "services/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "*.d.ts"],
   "exclude": ["node_modules", "**/*.js", "packages/**", "dist/**"]
 }

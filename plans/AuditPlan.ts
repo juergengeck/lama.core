@@ -1,7 +1,7 @@
 /**
- * Audit Handler (Pure Business Logic)
+ * Audit Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for audit operations including:
+ * Transport-agnostic plan for audit operations including:
  * - QR code generation for attestations
  * - Creating and retrieving attestations
  * - Exporting topics with attestations
@@ -121,14 +121,14 @@ export interface GetAttestationStatusResponse {
 }
 
 /**
- * AuditHandler - Pure business logic for audit operations
+ * AuditPlan - Pure business logic for audit operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - qrGenerator: QR code generation service
  * - attestationManager: Attestation management service (may be null if not initialized)
  * - topicExporter: Topic export service (may be null if not initialized)
  */
-export class AuditHandler {
+export class AuditPlan {
   private qrGenerator: any;
   private attestationManager: any;
   private topicExporter: any;
@@ -147,7 +147,7 @@ export class AuditHandler {
    * Generate QR code for message/topic attestation
    */
   async generateQR(request: GenerateQRRequest): Promise<GenerateQRResponse> {
-    console.log('[AuditHandler] Generate QR:', request);
+    console.log('[AuditPlan] Generate QR:', request);
 
     try {
       const { messageHash, messageVersion, topicId, attestationType = 'message' } = request;
@@ -180,7 +180,7 @@ export class AuditHandler {
         metadata: result.metadata
       };
     } catch (error) {
-      console.error('[AuditHandler] Error generating QR:', error);
+      console.error('[AuditPlan] Error generating QR:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -192,7 +192,7 @@ export class AuditHandler {
    * Create attestation for a message
    */
   async createAttestation(request: CreateAttestationRequest): Promise<CreateAttestationResponse> {
-    console.log('[AuditHandler] Create attestation:', request);
+    console.log('[AuditPlan] Create attestation:', request);
 
     try {
       if (!this.attestationManager) {
@@ -208,7 +208,7 @@ export class AuditHandler {
         hash: result.hash
       };
     } catch (error) {
-      console.error('[AuditHandler] Error creating attestation:', error);
+      console.error('[AuditPlan] Error creating attestation:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -220,7 +220,7 @@ export class AuditHandler {
    * Get attestations for message/topic/auditor
    */
   async getAttestations(request: GetAttestationsRequest): Promise<GetAttestationsResponse> {
-    console.log('[AuditHandler] Get attestations:', request);
+    console.log('[AuditPlan] Get attestations:', request);
 
     try {
       if (!this.attestationManager) {
@@ -246,7 +246,7 @@ export class AuditHandler {
         attestations
       };
     } catch (error) {
-      console.error('[AuditHandler] Error getting attestations:', error);
+      console.error('[AuditPlan] Error getting attestations:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -259,7 +259,7 @@ export class AuditHandler {
    * Export topic with attestations
    */
   async exportTopic(request: ExportTopicRequest): Promise<ExportTopicResponse> {
-    console.log('[AuditHandler] Export topic:', request);
+    console.log('[AuditPlan] Export topic:', request);
 
     try {
       if (!this.topicExporter) {
@@ -275,7 +275,7 @@ export class AuditHandler {
         metadata: result.metadata
       };
     } catch (error) {
-      console.error('[AuditHandler] Error exporting topic:', error);
+      console.error('[AuditPlan] Error exporting topic:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -287,7 +287,7 @@ export class AuditHandler {
    * Verify attestation
    */
   async verifyAttestation(request: VerifyAttestationRequest): Promise<VerifyAttestationResponse> {
-    console.log('[AuditHandler] Verify attestation:', request);
+    console.log('[AuditPlan] Verify attestation:', request);
 
     try {
       if (!this.attestationManager) {
@@ -306,7 +306,7 @@ export class AuditHandler {
         verification
       };
     } catch (error) {
-      console.error('[AuditHandler] Error verifying attestation:', error);
+      console.error('[AuditPlan] Error verifying attestation:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -318,7 +318,7 @@ export class AuditHandler {
    * Generate batch QR codes for multiple messages
    */
   async generateBatchQR(request: GenerateBatchQRRequest): Promise<GenerateBatchQRResponse> {
-    console.log('[AuditHandler] Generate batch QR codes');
+    console.log('[AuditPlan] Generate batch QR codes');
 
     try {
       const { messages } = request;
@@ -330,7 +330,7 @@ export class AuditHandler {
       const results = await this.qrGenerator.generateBatchQRCodes(messages);
 
       const successCount = results.filter((r: any) => r.success).length;
-      console.log(`[AuditHandler] Generated ${successCount}/${messages.length} QR codes`);
+      console.log(`[AuditPlan] Generated ${successCount}/${messages.length} QR codes`);
 
       return {
         success: true,
@@ -342,7 +342,7 @@ export class AuditHandler {
         }
       };
     } catch (error) {
-      console.error('[AuditHandler] Error in batch QR generation:', error);
+      console.error('[AuditPlan] Error in batch QR generation:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -354,7 +354,7 @@ export class AuditHandler {
    * Parse scanned QR code
    */
   async parseQR(request: ParseQRRequest): Promise<ParseQRResponse> {
-    console.log('[AuditHandler] Parse QR code');
+    console.log('[AuditPlan] Parse QR code');
 
     try {
       const { qrText } = request;
@@ -370,7 +370,7 @@ export class AuditHandler {
         parsed
       };
     } catch (error) {
-      console.error('[AuditHandler] Error parsing QR:', error);
+      console.error('[AuditPlan] Error parsing QR:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -382,7 +382,7 @@ export class AuditHandler {
    * Get attestation status for UI display
    */
   async getAttestationStatus(request: GetAttestationStatusRequest): Promise<GetAttestationStatusResponse> {
-    console.log('[AuditHandler] Get attestation status');
+    console.log('[AuditPlan] Get attestation status');
 
     try {
       if (!this.attestationManager) {
@@ -430,7 +430,7 @@ export class AuditHandler {
         status
       };
     } catch (error) {
-      console.error('[AuditHandler] Error getting status:', error);
+      console.error('[AuditPlan] Error getting status:', error);
       return {
         success: false,
         error: (error as Error).message

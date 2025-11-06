@@ -1,7 +1,7 @@
 /**
- * Topic Analysis Handler (Pure Business Logic)
+ * Topic Analysis Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for topic analysis operations (subjects, keywords, summaries).
+ * Transport-agnostic plan for topic analysis operations (subjects, keywords, summaries).
  * Can be used from both Electron IPC and Web Worker contexts.
  */
 
@@ -160,9 +160,9 @@ export interface GetKeywordsResponse {
 }
 
 /**
- * TopicAnalysisHandler - Pure business logic for topic analysis
+ * TopicAnalysisPlan - Pure business logic for topic analysis
  */
-export class TopicAnalysisHandler {
+export class TopicAnalysisPlan {
   private topicAnalysisModel: TopicAnalysisModel | null = null;
   private topicModel: TopicModel | null = null;
   private llmManager: any = null;
@@ -199,7 +199,7 @@ export class TopicAnalysisHandler {
    * Analyze messages to extract subjects and keywords using LLM
    */
   async analyzeMessages(request: AnalyzeMessagesRequest): Promise<AnalyzeMessagesResponse> {
-    console.log('[TopicAnalysisHandler] Analyzing messages for topic:', request.topicId);
+    console.log('[TopicAnalysisPlan] Analyzing messages for topic:', request.topicId);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -219,7 +219,7 @@ export class TopicAnalysisHandler {
           }
           await topicRoom.leave();
         } catch (error) {
-          console.log('[TopicAnalysisHandler] Topic does not exist, skipping analysis:', request.topicId);
+          console.log('[TopicAnalysisPlan] Topic does not exist, skipping analysis:', request.topicId);
           return {
             success: true,
             data: {
@@ -262,7 +262,7 @@ export class TopicAnalysisHandler {
         .join('\n');
 
       // Extract keywords using LLM
-      console.log('[TopicAnalysisHandler] Extracting keywords with LLM using model:', modelId);
+      console.log('[TopicAnalysisPlan] Extracting keywords with LLM using model:', modelId);
       const keywordPrompt = `Analyze this conversation and extract the most important keywords (single words or short phrases).
 Return ONLY a JSON array of keywords, no explanation.
 Focus on: main topics, technical terms, product names, important concepts.
@@ -279,7 +279,7 @@ Return format: ["keyword1", "keyword2", ...]`;
       }], modelId);
 
       // Identify subjects using LLM (subjects contain keywords)
-      console.log('[TopicAnalysisHandler] Identifying subjects with LLM...');
+      console.log('[TopicAnalysisPlan] Identifying subjects with LLM...');
       const subjectPrompt = `Analyze this conversation and identify the main subjects/themes being discussed.
 For each subject, provide:
 1. A list of 2-3 keywords that define it
@@ -300,7 +300,7 @@ ${String(conversationText).substring(0, 3000)}`;
       try {
         subjects = JSON.parse(subjectResponse);
       } catch (e) {
-        console.warn('[TopicAnalysisHandler] Failed to parse subject JSON, extracting keywords for fallback');
+        console.warn('[TopicAnalysisPlan] Failed to parse subject JSON, extracting keywords for fallback');
         let fallbackKeywords: string[] = [];
         try {
           fallbackKeywords = JSON.parse(keywordResponse);
@@ -335,7 +335,7 @@ ${String(conversationText).substring(0, 3000)}`;
       }
 
       // Generate summary using LLM
-      console.log('[TopicAnalysisHandler] Generating summary with LLM...');
+      console.log('[TopicAnalysisPlan] Generating summary with LLM...');
       const summaryPrompt = `Create a concise summary of this conversation.
 Include: main topics discussed, key decisions or conclusions, important points.
 Keep it under 150 words.
@@ -362,7 +362,7 @@ ${String(conversationText).substring(0, 3000)}`;
       const createdSubjects: any = await this.topicAnalysisModel.getSubjects(request.topicId as SHA256IdHash<any>);
       const createdKeywords: any = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
 
-      console.log('[TopicAnalysisHandler] Analysis complete:', {
+      console.log('[TopicAnalysisPlan] Analysis complete:', {
         topicId: request.topicId,
         subjectsCreated: createdSubjects.length,
         keywordsCreated: createdKeywords.length,
@@ -378,7 +378,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error analyzing messages:', error);
+      console.error('[TopicAnalysisPlan] Error analyzing messages:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -428,7 +428,7 @@ ${String(conversationText).substring(0, 3000)}`;
         const resolvedKeywords = (subject.keywords || []).map((keywordHash: string) => {
           const term = keywordHashToTerm.get(keywordHash);
           if (!term) {
-            console.warn('[TopicAnalysisHandler] Could not resolve keyword hash:', keywordHash.substring(0, 16));
+            console.warn('[TopicAnalysisPlan] Could not resolve keyword hash:', keywordHash.substring(0, 16));
           }
           return term || keywordHash;
         });
@@ -450,7 +450,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error getting subjects:', error);
+      console.error('[TopicAnalysisPlan] Error getting subjects:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -463,7 +463,7 @@ ${String(conversationText).substring(0, 3000)}`;
    * Get summary for a topic with optional history
    */
   async getSummary(request: GetSummaryRequest): Promise<GetSummaryResponse> {
-    console.log('[TopicAnalysisHandler] Getting summary for topic:', request.topicId);
+    console.log('[TopicAnalysisPlan] Getting summary for topic:', request.topicId);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -490,7 +490,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error getting summary:', error);
+      console.error('[TopicAnalysisPlan] Error getting summary:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -503,7 +503,7 @@ ${String(conversationText).substring(0, 3000)}`;
    * Generate conversation restart context for LLM continuity
    */
   async getConversationRestartContext(request: RestartContextRequest): Promise<RestartContextResponse> {
-    console.log('[TopicAnalysisHandler] Getting conversation restart context for topic:', request.topicId);
+    console.log('[TopicAnalysisPlan] Getting conversation restart context for topic:', request.topicId);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -557,7 +557,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error getting restart context:', error);
+      console.error('[TopicAnalysisPlan] Error getting restart context:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -574,8 +574,8 @@ ${String(conversationText).substring(0, 3000)}`;
   /**
    * Update or create summary for a topic
    */
-  async updateSummary(request: UpdateSummaryRequest, chatHandlerGetMessages?: Function): Promise<UpdateSummaryResponse> {
-    console.log('[TopicAnalysisHandler] Updating summary for topic:', request.topicId);
+  async updateSummary(request: UpdateSummaryRequest, chatPlanGetMessages?: Function): Promise<UpdateSummaryResponse> {
+    console.log('[TopicAnalysisPlan] Updating summary for topic:', request.topicId);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -597,8 +597,8 @@ ${String(conversationText).substring(0, 3000)}`;
       }
 
       // If autoGenerate is true, use LLM to create a new summary
-      if (request.autoGenerate && !request.content && this.llmManager && modelId && chatHandlerGetMessages) {
-        const messagesResponse: any = await chatHandlerGetMessages({
+      if (request.autoGenerate && !request.content && this.llmManager && modelId && chatPlanGetMessages) {
+        const messagesResponse: any = await chatPlanGetMessages({
           conversationId: request.topicId,
           limit: 50
         });
@@ -640,7 +640,7 @@ ${String(conversationText).substring(0, 3000)}`;
         data: { summary: newSummary }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error updating summary:', error);
+      console.error('[TopicAnalysisPlan] Error updating summary:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -653,7 +653,7 @@ ${String(conversationText).substring(0, 3000)}`;
    * Extract keywords from text using LLM
    */
   async extractKeywords(request: ExtractKeywordsRequest): Promise<ExtractKeywordsResponse> {
-    console.log('[TopicAnalysisHandler] Extracting keywords from text');
+    console.log('[TopicAnalysisPlan] Extracting keywords from text');
 
     try {
       if (!this.topicAnalysisModel) {
@@ -746,7 +746,7 @@ Return format: ["keyword1", "keyword2", ...]`;
         data: { keywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error extracting keywords:', error);
+      console.error('[TopicAnalysisPlan] Error extracting keywords:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -759,7 +759,7 @@ Return format: ["keyword1", "keyword2", ...]`;
    * Merge two subjects into one
    */
   async mergeSubjects(request: MergeSubjectsRequest): Promise<MergeSubjectsResponse> {
-    console.log('[TopicAnalysisHandler] Merging subjects:', request.subjectId1, request.subjectId2);
+    console.log('[TopicAnalysisPlan] Merging subjects:', request.subjectId1, request.subjectId2);
 
     try {
       // This would need to be implemented in the model
@@ -769,7 +769,7 @@ Return format: ["keyword1", "keyword2", ...]`;
         data: { merged: true }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error merging subjects:', error);
+      console.error('[TopicAnalysisPlan] Error merging subjects:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -782,11 +782,11 @@ Return format: ["keyword1", "keyword2", ...]`;
    * Extract single-word keywords for real-time display using LLM
    */
   async extractRealtimeKeywords(request: RealtimeKeywordsRequest): Promise<RealtimeKeywordsResponse> {
-    console.log('[TopicAnalysisHandler] Extracting realtime keywords with LLM');
+    console.log('[TopicAnalysisPlan] Extracting realtime keywords with LLM');
 
     try {
       if (!this.llmManager) {
-        console.error('[TopicAnalysisHandler] LLM Manager not available');
+        console.error('[TopicAnalysisPlan] LLM Manager not available');
         return {
           success: false,
           error: 'LLM not available for keyword extraction',
@@ -847,7 +847,7 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
         data: { keywords: finalKeywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error extracting realtime keywords:', error);
+      console.error('[TopicAnalysisPlan] Error extracting realtime keywords:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -859,12 +859,12 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
   /**
    * Extract keywords from all messages in a conversation using LLM
    */
-  async extractConversationKeywords(request: ConversationKeywordsRequest, chatHandlerGetMessages?: Function): Promise<ConversationKeywordsResponse> {
-    console.log('[TopicAnalysisHandler] Extracting conversation keywords with LLM for topic:', request.topicId);
+  async extractConversationKeywords(request: ConversationKeywordsRequest, chatPlanGetMessages?: Function): Promise<ConversationKeywordsResponse> {
+    console.log('[TopicAnalysisPlan] Extracting conversation keywords with LLM for topic:', request.topicId);
 
     try {
       if (!this.llmManager) {
-        console.error('[TopicAnalysisHandler] LLM Manager not available');
+        console.error('[TopicAnalysisPlan] LLM Manager not available');
         return {
           success: false,
           error: 'LLM not available for keyword extraction',
@@ -878,7 +878,7 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
       }
 
       if (!modelId) {
-        console.error('[TopicAnalysisHandler] No AI model configured for topic:', request.topicId);
+        console.error('[TopicAnalysisPlan] No AI model configured for topic:', request.topicId);
         return {
           success: false,
           error: 'No AI model configured for this topic',
@@ -889,8 +889,8 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
       let messages = request.messages || [];
 
       // If no messages provided, get them from conversation
-      if (messages.length === 0 && chatHandlerGetMessages) {
-        const messagesResponse: any = await chatHandlerGetMessages({ conversationId: request.topicId });
+      if (messages.length === 0 && chatPlanGetMessages) {
+        const messagesResponse: any = await chatPlanGetMessages({ conversationId: request.topicId });
         messages = messagesResponse.messages || [];
       }
 
@@ -949,7 +949,7 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
           keywords = JSON.parse(jsonMatch[0]);
         }
       } catch (e) {
-        console.warn('[TopicAnalysisHandler] Failed to parse LLM response as JSON');
+        console.warn('[TopicAnalysisPlan] Failed to parse LLM response as JSON');
         keywords = response.toLowerCase().match(/\b[a-z]{4,}\b/g) || [];
       }
 
@@ -963,7 +963,7 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
         data: { keywords: keywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error extracting conversation keywords:', error);
+      console.error('[TopicAnalysisPlan] Error extracting conversation keywords:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -977,7 +977,7 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
    */
   async getKeywords(request: GetKeywordsRequest): Promise<GetKeywordsResponse> {
     try {
-      console.log('[TopicAnalysisHandler] Getting keywords for topic:', request.topicId, 'limit:', request.limit);
+      console.log('[TopicAnalysisPlan] Getting keywords for topic:', request.topicId, 'limit:', request.limit);
 
       if (!this.topicAnalysisModel) {
         return {
@@ -988,17 +988,17 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
       }
 
       const keywords: any = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
-      console.log('[TopicAnalysisHandler] Model returned', keywords?.length || 0, 'keywords');
+      console.log('[TopicAnalysisPlan] Model returned', keywords?.length || 0, 'keywords');
 
       const limitedKeywords = request.limit ? keywords.slice(0, request.limit) : keywords;
-      console.log('[TopicAnalysisHandler] Returning', limitedKeywords?.length || 0, 'keywords (limited)');
+      console.log('[TopicAnalysisPlan] Returning', limitedKeywords?.length || 0, 'keywords (limited)');
 
       return {
         success: true,
         data: { keywords: limitedKeywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisHandler] Error getting keywords:', error);
+      console.error('[TopicAnalysisPlan] Error getting keywords:', error);
       return {
         success: false,
         error: (error as Error).message,

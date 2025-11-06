@@ -7,8 +7,8 @@
  * Flow control is centralized here - no fallbacks, no mitigation, fail fast
  */
 
-import type { AIAssistantHandler } from '../handlers/AIAssistantHandler.js';
-import type { ChatHandler } from '@chat/core/handlers/ChatHandler.js';
+import type { AIAssistantPlan } from '../plans/AIAssistantPlan.js';
+import type { ChatPlan } from '@chat/core/plans/ChatPlan.js';
 
 export interface CoreDependencies {
     // ONE.core models (from connection.core or one.models)
@@ -21,10 +21,10 @@ export interface CoreDependencies {
     // LAMA-specific (platform must create these)
     llmManager: any;
     llmObjectManager: any;
-    aiAssistantModel: AIAssistantHandler;
+    aiAssistantModel: AIAssistantPlan;
 
-    // Chat handlers (platform must create these)
-    chatHandler: ChatHandler;
+    // Chat plans (platform must create these - from chat.core)
+    chatPlan: ChatPlan;
 
     // Optional dependencies
     topicAnalysisModel?: any;
@@ -47,12 +47,12 @@ export interface InitializationProgress {
  * 3. ChannelManager (message channels)
  * 4. TopicModel (conversations)
  * 5. ConnectionsModel (P2P/federation)
- * 6. Chat handlers
+ * 6. Chat plans
  *
  * Why this order:
  * - LLM cache MUST be populated before channelManager.init()
  * - channelManager.init() processes existing messages
- * - ChatHandler needs LLM cache to identify AI senders
+ * - ChatPlan needs LLM cache to identify AI senders
  */
 export async function initializeCoreModels(
     deps: CoreDependencies,
@@ -80,10 +80,10 @@ export async function initializeCoreModels(
         console.log('[CoreInitializer] ✅ LLMManager initialized');
     }
 
-    // Initialize AI Assistant Handler (populates LLM contact cache)
+    // Initialize AI Assistant Plan (populates LLM contact cache)
     if (deps.aiAssistantModel?.init) {
         await deps.aiAssistantModel.init();
-        console.log('[CoreInitializer] ✅ AIAssistantHandler initialized (LLM cache populated)');
+        console.log('[CoreInitializer] ✅ AIAssistantPlan initialized (LLM cache populated)');
     }
 
     // Step 3: ChannelManager (NOW safe to process existing messages)
@@ -110,9 +110,9 @@ export async function initializeCoreModels(
         console.log('[CoreInitializer] ✅ TopicAnalysisModel initialized');
     }
 
-    // Step 7: Chat handlers (no init method - ChatHandler is stateless)
-    onProgress?.({ stage: 'chat', percent: 90, message: 'Chat handlers ready...' });
-    console.log('[CoreInitializer] ✅ ChatHandler ready (stateless)');
+    // Step 7: Chat plans (no init method - ChatPlan is stateless)
+    onProgress?.({ stage: 'chat', percent: 90, message: 'Chat plans ready...' });
+    console.log('[CoreInitializer] ✅ ChatPlan ready (stateless)');
 
     onProgress?.({ stage: 'complete', percent: 100, message: 'Initialization complete' });
     console.log('[CoreInitializer] ✅ All core models initialized');
@@ -125,9 +125,9 @@ export async function shutdownCoreModels(deps: CoreDependencies): Promise<void> 
     console.log('[CoreInitializer] Shutting down core models...');
 
     const shutdownSteps = [
-        // ChatHandler is stateless - no shutdown needed
+        // ChatPlan is stateless - no shutdown needed
         { name: 'TopicAnalysisModel', fn: () => deps.topicAnalysisModel?.shutdown?.() },
-        { name: 'AIAssistantHandler', fn: () => deps.aiAssistantModel?.shutdown?.() },
+        { name: 'AIAssistantPlan', fn: () => deps.aiAssistantModel?.shutdown?.() },
         { name: 'LLMManager', fn: () => deps.llmManager?.shutdown?.() },
         { name: 'ConnectionsModel', fn: () => deps.connections?.shutdown?.() },
         { name: 'TopicModel', fn: () => deps.topicModel?.shutdown?.() },

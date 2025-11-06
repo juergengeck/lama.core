@@ -1,7 +1,7 @@
 /**
- * AI Handler (Pure Business Logic)
+ * AI Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for AI operations.
+ * Transport-agnostic plan for AI operations.
  * Can be used from both Electron IPC and Web Worker contexts.
  */
 
@@ -172,9 +172,9 @@ export interface DiscoverClaudeModelsResponse {
 }
 
 /**
- * AIHandler - Pure business logic for AI operations
+ * AIPlan - Pure business logic for AI operations
  */
-export class AIHandler {
+export class AIPlan {
   private llmManager: any = null;
   private aiAssistantModel: any = null;
   private topicModel: TopicModel | null = null;
@@ -219,7 +219,7 @@ export class AIHandler {
     request: ChatRequest,
     eventSender?: { send: (channel: string, data: any) => void }
   ): Promise<ChatResponse> {
-    console.log('[AIHandler] Chat request with', request.messages?.length || 0, 'messages, streaming:', request.stream, 'topicId:', request.topicId);
+    console.log('[AIPlan] Chat request with', request.messages?.length || 0, 'messages, streaming:', request.stream, 'topicId:', request.topicId);
 
     try {
       // Ensure LLM manager is initialized
@@ -249,7 +249,7 @@ export class AIHandler {
         if (result.analysis && this.nodeOneCore?.topicAnalysisModel && request.topicId) {
           setImmediate(async () => {
             try {
-              console.log('[AIHandler] Processing analysis in background for topic:', request.topicId);
+              console.log('[AIPlan] Processing analysis in background for topic:', request.topicId);
 
               // Process all subjects from analysis
               if (result.analysis.subjects && Array.isArray(result.analysis.subjects)) {
@@ -267,7 +267,7 @@ export class AIHandler {
                       0.8
                     );
 
-                    console.log(`[AIHandler] Created subject: ${subject.name} with ID: ${createdSubject.idHash}`);
+                    console.log(`[AIPlan] Created subject: ${subject.name} with ID: ${createdSubject.idHash}`);
 
                     // Store each keyword with reference to this subject
                     for (const keyword of (subject.keywords || [])) {
@@ -279,12 +279,12 @@ export class AIHandler {
                       );
                     }
 
-                    console.log(`[AIHandler] Stored ${subject.keywords?.length || 0} keywords for subject: ${subject.name}`);
+                    console.log(`[AIPlan] Stored ${subject.keywords?.length || 0} keywords for subject: ${subject.name}`);
                   }
                 }
               }
             } catch (error) {
-              console.error('[AIHandler] Error processing analysis:', error);
+              console.error('[AIPlan] Error processing analysis:', error);
             }
           });
         }
@@ -310,13 +310,13 @@ export class AIHandler {
         const chatResult: any = await (this.llmManager as any).chatWithAnalysis(request.messages, request.modelId);
         const response = chatResult.response;
         const responseStr = String(response || '');
-        console.log('[AIHandler] Got response:', responseStr.substring(0, 100) + '...');
+        console.log('[AIPlan] Got response:', responseStr.substring(0, 100) + '...');
 
         // Process analysis in background if available
         if (chatResult.analysis && this.nodeOneCore?.topicAnalysisModel && request.topicId) {
           setImmediate(async () => {
             try {
-              console.log('[AIHandler] Processing analysis in background for topic:', request.topicId);
+              console.log('[AIPlan] Processing analysis in background for topic:', request.topicId);
 
               // Process all subjects from analysis
               if (chatResult.analysis.subjects && Array.isArray(chatResult.analysis.subjects)) {
@@ -334,7 +334,7 @@ export class AIHandler {
                       0.8
                     );
 
-                    console.log(`[AIHandler] Created subject: ${subject.name} with ID: ${createdSubject.idHash}`);
+                    console.log(`[AIPlan] Created subject: ${subject.name} with ID: ${createdSubject.idHash}`);
 
                     // Store each keyword with reference to this subject
                     for (const keyword of (subject.keywords || [])) {
@@ -346,12 +346,12 @@ export class AIHandler {
                       );
                     }
 
-                    console.log(`[AIHandler] Stored ${subject.keywords?.length || 0} keywords for subject: ${subject.name}`);
+                    console.log(`[AIPlan] Stored ${subject.keywords?.length || 0} keywords for subject: ${subject.name}`);
                   }
                 }
               }
             } catch (error) {
-              console.error('[AIHandler] Error processing analysis:', error);
+              console.error('[AIPlan] Error processing analysis:', error);
             }
           });
         }
@@ -365,7 +365,7 @@ export class AIHandler {
         };
       }
     } catch (error) {
-      console.error('[AIHandler] Chat error:', error);
+      console.error('[AIPlan] Chat error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -377,7 +377,7 @@ export class AIHandler {
    * Get available AI models
    */
   async getModels(request: GetModelsRequest): Promise<GetModelsResponse> {
-    console.log('[AIHandler] Get models request');
+    console.log('[AIPlan] Get models request');
 
     try {
       if (!this.llmManager) {
@@ -416,7 +416,7 @@ export class AIHandler {
         }
       };
     } catch (error) {
-      console.error('[AIHandler] Get models error:', error);
+      console.error('[AIPlan] Get models error:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -435,10 +435,10 @@ export class AIHandler {
     request: SetDefaultModelRequest,
     eventSender?: { getAllWindows: () => Array<{ webContents: { send: (channel: string, data: any) => void } }> }
   ): Promise<SetDefaultModelResponse> {
-    console.log('[AIHandler] ==========================================');
-    console.log('[AIHandler] SET DEFAULT MODEL CALLED');
-    console.log('[AIHandler] Model ID:', request.modelId);
-    console.log('[AIHandler] ==========================================');
+    console.log('[AIPlan] ==========================================');
+    console.log('[AIPlan] SET DEFAULT MODEL CALLED');
+    console.log('[AIPlan] Model ID:', request.modelId);
+    console.log('[AIPlan] ==========================================');
 
     try {
       if (!this.llmManager) {
@@ -455,14 +455,14 @@ export class AIHandler {
       }
 
       // AI Assistant is the single source of truth for default model
-      console.log('[AIHandler] Creating AI contact for newly selected model:', request.modelId);
+      console.log('[AIPlan] Creating AI contact for newly selected model:', request.modelId);
       await this.nodeOneCore.aiAssistantModel.createAIContact(request.modelId, model.name);
 
       // Set default model through AI Assistant
       await this.nodeOneCore.aiAssistantModel.setDefaultModel(request.modelId);
 
       // Don't create chats here - wait for user to navigate to chat view
-      console.log('[AIHandler] Model set successfully, chats will be created when accessed');
+      console.log('[AIPlan] Model set successfully, chats will be created when accessed');
 
       // Notify all windows that the model has changed
       if (eventSender) {
@@ -477,7 +477,7 @@ export class AIHandler {
         modelName: model.name
       };
     } catch (error) {
-      console.error('[AIHandler] Set default model error:', error);
+      console.error('[AIPlan] Set default model error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -489,7 +489,7 @@ export class AIHandler {
    * Set API key for a provider
    */
   async setApiKey(request: SetApiKeyRequest): Promise<SetApiKeyResponse> {
-    console.log('[AIHandler] Set API key for:', request.provider);
+    console.log('[AIPlan] Set API key for:', request.provider);
 
     try {
       if (!this.llmManager) {
@@ -512,7 +512,7 @@ export class AIHandler {
         data: { provider: request.provider }
       };
     } catch (error) {
-      console.error('[AIHandler] Set API key error:', error);
+      console.error('[AIPlan] Set API key error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -524,7 +524,7 @@ export class AIHandler {
    * Get available MCP tools
    */
   async getTools(request: GetToolsRequest): Promise<GetToolsResponse> {
-    console.log('[AIHandler] Get MCP tools request');
+    console.log('[AIPlan] Get MCP tools request');
 
     try {
       if (!this.llmManager) {
@@ -549,7 +549,7 @@ export class AIHandler {
         }
       };
     } catch (error) {
-      console.error('[AIHandler] Get tools error:', error);
+      console.error('[AIPlan] Get tools error:', error);
       return {
         success: false,
         error: (error as Error).message,
@@ -565,7 +565,7 @@ export class AIHandler {
    * Execute an MCP tool
    */
   async executeTool(request: ExecuteToolRequest): Promise<ExecuteToolResponse> {
-    console.log('[AIHandler] Execute tool:', request.toolName);
+    console.log('[AIPlan] Execute tool:', request.toolName);
 
     try {
       if (!this.llmManager) {
@@ -581,7 +581,7 @@ export class AIHandler {
       // TODO: Pass mcpManager through constructor
       throw new Error('MCP Manager integration needs to be refactored - pass through constructor');
     } catch (error) {
-      console.error('[AIHandler] Tool execution error:', error);
+      console.error('[AIPlan] Tool execution error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -593,7 +593,7 @@ export class AIHandler {
    * Initialize LLM manager
    */
   async initializeLLM(request: InitializeLLMRequest): Promise<InitializeLLMResponse> {
-    console.log('[AIHandler] Initialize LLM request');
+    console.log('[AIPlan] Initialize LLM request');
 
     try {
       if (!this.llmManager) {
@@ -622,7 +622,7 @@ export class AIHandler {
         }
       };
     } catch (error) {
-      console.error('[AIHandler] Initialize error:', error);
+      console.error('[AIPlan] Initialize error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -634,7 +634,7 @@ export class AIHandler {
    * Debug MCP tools registration
    */
   async debugTools(request: DebugToolsRequest): Promise<DebugToolsResponse> {
-    console.log('[AIHandler] Debug tools request');
+    console.log('[AIPlan] Debug tools request');
 
     try {
       if (!this.llmManager) {
@@ -647,7 +647,7 @@ export class AIHandler {
         data: debugInfo
       };
     } catch (error) {
-      console.error('[AIHandler] Debug tools error:', error);
+      console.error('[AIPlan] Debug tools error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -662,7 +662,7 @@ export class AIHandler {
     request: GetOrCreateContactRequest,
     eventSender?: { getAllWindows: () => Array<{ webContents: { send: (channel: string) => void } }> }
   ): Promise<GetOrCreateContactResponse> {
-    console.log('[AIHandler] Get or create AI contact for model:', request.modelId);
+    console.log('[AIPlan] Get or create AI contact for model:', request.modelId);
 
     try {
       // Use the nodeOneCore instance
@@ -682,7 +682,7 @@ export class AIHandler {
         eventSender.getAllWindows().forEach(window => {
           window.webContents.send('contacts:updated');
         });
-        console.log('[AIHandler] Emitted contacts:updated event after creating AI contact');
+        console.log('[AIPlan] Emitted contacts:updated event after creating AI contact');
       }
 
       return {
@@ -693,7 +693,7 @@ export class AIHandler {
         }
       };
     } catch (error) {
-      console.error('[AIHandler] Get/create AI contact error:', error);
+      console.error('[AIPlan] Get/create AI contact error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -705,7 +705,7 @@ export class AIHandler {
    * Test an API key with the provider
    */
   async testApiKey(request: TestApiKeyRequest): Promise<TestApiKeyResponse> {
-    console.log(`[AIHandler] Testing ${request.provider} API key`);
+    console.log(`[AIPlan] Testing ${request.provider} API key`);
 
     try {
       if (!this.llmManager) {
@@ -734,7 +734,7 @@ export class AIHandler {
         data: { valid: isValid }
       };
     } catch (error) {
-      console.error('[AIHandler] Test API key error:', error);
+      console.error('[AIPlan] Test API key error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -748,20 +748,20 @@ export class AIHandler {
   async getDefaultModel(): Promise<GetDefaultModelResponse> {
     try {
       if (!this.nodeOneCore?.aiAssistantModel) {
-        console.log('[AIHandler] AI assistant model not available');
+        console.log('[AIPlan] AI assistant model not available');
         return { success: false, error: 'AI assistant model not available' };
       }
 
       // Use the new async method that loads from settings if needed
       const modelId = await this.nodeOneCore.aiAssistantModel.getDefaultModel();
-      console.log('[AIHandler] Default model ID:', modelId);
+      console.log('[AIPlan] Default model ID:', modelId);
 
       return {
         success: true,
         model: modelId || undefined
       };
     } catch (error) {
-      console.error('[AIHandler] Error getting default model:', error);
+      console.error('[AIPlan] Error getting default model:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -777,17 +777,17 @@ export class AIHandler {
   async ensureDefaultChats(request: EnsureDefaultChatsRequest): Promise<EnsureDefaultChatsResponse> {
     try {
       if (!this.nodeOneCore?.initialized) {
-        console.log('[AIHandler] Node not initialized');
+        console.log('[AIPlan] Node not initialized');
         return { success: false, error: 'Node not initialized' };
       }
 
       if (!this.nodeOneCore.aiAssistantModel) {
-        console.log('[AIHandler] AIAssistantModel not initialized');
+        console.log('[AIPlan] AIAssistantModel not initialized');
         return { success: false, error: 'AIAssistantModel not initialized' };
       }
 
       // DELEGATE to AIAssistantModel - it owns default chat creation
-      console.log('[AIHandler] Delegating default chat creation to AIAssistantModel');
+      console.log('[AIPlan] Delegating default chat creation to AIAssistantModel');
       await this.nodeOneCore.aiAssistantModel.ensureDefaultChats();
 
       return {
@@ -795,7 +795,7 @@ export class AIHandler {
         message: 'Default chats ensured by AIAssistantModel'
       };
     } catch (error) {
-      console.error('[AIHandler] Ensure default chats error:', error);
+      console.error('[AIPlan] Ensure default chats error:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -811,7 +811,7 @@ export class AIHandler {
     request: DiscoverClaudeModelsRequest,
     eventSender?: { getAllWindows: () => Array<{ webContents: { send: (channel: string) => void } }> }
   ): Promise<DiscoverClaudeModelsResponse> {
-    console.log('[AIHandler] Discovering Claude models from API...');
+    console.log('[AIPlan] Discovering Claude models from API...');
 
     try {
       if (!this.llmManager) {
@@ -835,18 +835,18 @@ export class AIHandler {
       const models = (this.llmManager as any).getModels();
       const claudeModels = models.filter((m: any) => m.provider === 'anthropic');
 
-      console.log(`[AIHandler] Discovered ${claudeModels.length} Claude models`);
+      console.log(`[AIPlan] Discovered ${claudeModels.length} Claude models`);
 
       // Automatically create AI contacts for all discovered Claude models
       if (this.nodeOneCore?.aiAssistantModel && claudeModels.length > 0) {
-        console.log('[AIHandler] Creating AI contacts for discovered Claude models...');
+        console.log('[AIPlan] Creating AI contacts for discovered Claude models...');
 
         for (const model of claudeModels) {
           try {
             await this.nodeOneCore.aiAssistantModel.ensureAIContactForModel(model.id);
-            console.log(`[AIHandler] Created AI contact for ${model.name}`);
+            console.log(`[AIPlan] Created AI contact for ${model.name}`);
           } catch (contactError) {
-            console.warn(`[AIHandler] Failed to create contact for ${model.name}:`, contactError);
+            console.warn(`[AIPlan] Failed to create contact for ${model.name}:`, contactError);
           }
         }
 
@@ -855,7 +855,7 @@ export class AIHandler {
           eventSender.getAllWindows().forEach(window => {
             window.webContents.send('contacts:updated');
           });
-          console.log('[AIHandler] Emitted contacts:updated event after creating Claude contacts');
+          console.log('[AIPlan] Emitted contacts:updated event after creating Claude contacts');
         }
       }
 
@@ -867,7 +867,7 @@ export class AIHandler {
         }
       };
     } catch (error) {
-      console.error('[AIHandler] Discover Claude models error:', error);
+      console.error('[AIPlan] Discover Claude models error:', error);
       return {
         success: false,
         error: (error as Error).message

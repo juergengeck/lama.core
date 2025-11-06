@@ -1,7 +1,7 @@
 /**
- * Proposals Handler (Pure Business Logic)
+ * Proposals Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for context-aware knowledge sharing (Feature 019).
+ * Transport-agnostic plan for context-aware knowledge sharing (Feature 019).
  * Generates proposals based on subject/keyword matching using Jaccard similarity.
  * Can be used from both Electron IPC and Web Worker contexts.
  *
@@ -108,7 +108,7 @@ const DEFAULT_CONFIG: ProposalConfig = {
 };
 
 /**
- * ProposalsHandler - Pure business logic for context-aware knowledge sharing
+ * ProposalsPlan - Pure business logic for context-aware knowledge sharing
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
@@ -117,7 +117,7 @@ const DEFAULT_CONFIG: ProposalConfig = {
  * - proposalRanker: Proposal ranking service
  * - proposalCache: LRU cache for proposals
  */
-export class ProposalsHandler {
+export class ProposalsPlan {
   private nodeOneCore: any;
   private topicAnalysisModel: any;
   private proposalEngine: any;
@@ -179,9 +179,9 @@ export class ProposalsHandler {
           subjectIdHashes = await Promise.all(
             subjects.map((subject) => calculateIdHashOfObj(subject as any))
           );
-          console.log('[ProposalsHandler] Calculated ID hashes for', subjectIdHashes.length, 'subjects');
+          console.log('[ProposalsPlan] Calculated ID hashes for', subjectIdHashes.length, 'subjects');
         } catch (error: any) {
-          console.error('[ProposalsHandler] Error querying subjects:', error);
+          console.error('[ProposalsPlan] Error querying subjects:', error);
           return {
             proposals: [],
             count: 0,
@@ -190,7 +190,7 @@ export class ProposalsHandler {
           };
         }
       } else {
-        console.log('[ProposalsHandler] Using provided subjects:', subjectIdHashes.length);
+        console.log('[ProposalsPlan] Using provided subjects:', subjectIdHashes.length);
       }
 
       // Check cache first (unless forceRefresh)
@@ -212,36 +212,36 @@ export class ProposalsHandler {
 
       // Get current user config
       const config = await this.getCurrentConfig();
-      console.log('[ProposalsHandler] Using config:', {
+      console.log('[ProposalsPlan] Using config:', {
         minJaccard: config.minJaccard,
         matchWeight: config.matchWeight,
         maxProposals: config.maxProposals
       });
 
       // Generate proposals using engine
-      console.log('[ProposalsHandler] Calling getProposalsForTopic...');
+      console.log('[ProposalsPlan] Calling getProposalsForTopic...');
       const proposals = await this.proposalEngine.getProposalsForTopic(
         request.topicId,
         subjectIdHashes,
         config
       );
-      console.log('[ProposalsHandler] ProposalEngine returned', proposals.length, 'proposals');
+      console.log('[ProposalsPlan] ProposalEngine returned', proposals.length, 'proposals');
 
       // Rank proposals
-      console.log('[ProposalsHandler] Ranking proposals...');
+      console.log('[ProposalsPlan] Ranking proposals...');
       const rankedProposals = this.proposalRanker.rankProposals(proposals, config);
-      console.log('[ProposalsHandler] Ranked proposals:', rankedProposals.length);
+      console.log('[ProposalsPlan] Ranked proposals:', rankedProposals.length);
 
       // Filter against dismissed proposals
       const filtered = rankedProposals.filter(
         (p: Proposal) => !this.dismissedProposals.has(`${request.topicId}:${p.pastSubject}`)
       );
-      console.log('[ProposalsHandler] Filtered proposals (after dismissals):', filtered.length);
+      console.log('[ProposalsPlan] Filtered proposals (after dismissals):', filtered.length);
 
       // Cache results
       this.proposalCache.set(request.topicId, subjectIdHashes, filtered);
 
-      console.log('[ProposalsHandler] ✅ Returning', filtered.length, 'proposals in', Date.now() - startTime, 'ms');
+      console.log('[ProposalsPlan] ✅ Returning', filtered.length, 'proposals in', Date.now() - startTime, 'ms');
       return {
         proposals: filtered,
         count: filtered.length,
@@ -249,8 +249,8 @@ export class ProposalsHandler {
         computeTimeMs: Date.now() - startTime,
       };
     } catch (error: any) {
-      console.error('[ProposalsHandler] ❌ Error in getForTopic:', error);
-      console.error('[ProposalsHandler] Error stack:', error.stack);
+      console.error('[ProposalsPlan] ❌ Error in getForTopic:', error);
+      console.error('[ProposalsPlan] Error stack:', error.stack);
       throw new Error(`COMPUTATION_ERROR: ${error.message}`);
     }
   }
@@ -312,7 +312,7 @@ export class ProposalsHandler {
         versionHash: String(result.hash),
       };
     } catch (error: any) {
-      console.error('[ProposalsHandler] Error in updateConfig:', error);
+      console.error('[ProposalsPlan] Error in updateConfig:', error);
       if (error.message.startsWith('INVALID_CONFIG')) {
         throw error;
       }
@@ -333,7 +333,7 @@ export class ProposalsHandler {
         isDefault,
       };
     } catch (error: any) {
-      console.error('[ProposalsHandler] Error in getConfig:', error);
+      console.error('[ProposalsPlan] Error in getConfig:', error);
       throw new Error(`USER_NOT_AUTHENTICATED: ${error.message}`);
     }
   }
@@ -360,7 +360,7 @@ export class ProposalsHandler {
         remainingCount,
       };
     } catch (error: any) {
-      console.error('[ProposalsHandler] Error in dismiss:', error);
+      console.error('[ProposalsPlan] Error in dismiss:', error);
       throw error;
     }
   }
@@ -394,7 +394,7 @@ export class ProposalsHandler {
           }
         } catch (error) {
           console.error(
-            `[ProposalsHandler] Error fetching keyword ${keywordIdHash}:`,
+            `[ProposalsPlan] Error fetching keyword ${keywordIdHash}:`,
             error
           );
         }
@@ -420,7 +420,7 @@ export class ProposalsHandler {
         },
       };
     } catch (error: any) {
-      console.error('[ProposalsHandler] Error in share:', error);
+      console.error('[ProposalsPlan] Error in share:', error);
       if (error.message.startsWith('SUBJECT_NOT_FOUND')) {
         throw error;
       }

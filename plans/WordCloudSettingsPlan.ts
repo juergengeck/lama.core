@@ -1,7 +1,7 @@
 /**
- * Word Cloud Settings Handler (Pure Business Logic)
+ * Word Cloud Settings Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for word cloud settings operations.
+ * Transport-agnostic plan for word cloud settings operations.
  * Manages user-specific word cloud visualization settings.
  * Can be used from both Electron IPC and Web Worker contexts.
  */
@@ -47,14 +47,14 @@ export interface ResetWordCloudSettingsResponse {
 }
 
 /**
- * WordCloudSettingsHandler - Pure business logic for word cloud settings
+ * WordCloudSettingsPlan - Pure business logic for word cloud settings
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  * - wordCloudSettingsManager: Settings storage manager
  * - defaultSettings: Default settings object (optional)
  */
-export class WordCloudSettingsHandler {
+export class WordCloudSettingsPlan {
   private nodeOneCore: any;
   private wordCloudSettingsManager: any;
   private defaultSettings: WordCloudSettings | null;
@@ -91,14 +91,14 @@ export class WordCloudSettingsHandler {
       const creatorId = await this.getCurrentUserId();
 
       const settings = await this.wordCloudSettingsManager.getSettings(creatorId);
-      console.log('[WordCloudSettingsHandler] Retrieved settings:', settings);
+      console.log('[WordCloudSettingsPlan] Retrieved settings:', settings);
 
       return {
         success: true,
         settings
       };
     } catch (error) {
-      console.error('[WordCloudSettingsHandler] Error getting settings:', error);
+      console.error('[WordCloudSettingsPlan] Error getting settings:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -119,14 +119,14 @@ export class WordCloudSettingsHandler {
         creatorId,
         request.updates
       );
-      console.log('[WordCloudSettingsHandler] Updated settings:', settings);
+      console.log('[WordCloudSettingsPlan] Updated settings:', settings);
 
       return {
         success: true,
         settings
       };
     } catch (error) {
-      console.error('[WordCloudSettingsHandler] Error updating settings:', error);
+      console.error('[WordCloudSettingsPlan] Error updating settings:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -152,14 +152,14 @@ export class WordCloudSettingsHandler {
         creatorId,
         this.defaultSettings
       );
-      console.log('[WordCloudSettingsHandler] Reset settings to defaults:', settings);
+      console.log('[WordCloudSettingsPlan] Reset settings to defaults:', settings);
 
       return {
         success: true,
         settings
       };
     } catch (error) {
-      console.error('[WordCloudSettingsHandler] Error resetting settings:', error);
+      console.error('[WordCloudSettingsPlan] Error resetting settings:', error);
       return {
         success: false,
         error: (error as Error).message

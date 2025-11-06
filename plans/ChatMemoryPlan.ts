@@ -1,6 +1,6 @@
 /**
- * Chat Memory Handler
- * Platform-agnostic handler for chat-memory integration
+ * Chat Memory Plan
+ * Platform-agnostic plan for chat-memory integration
  */
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
@@ -14,21 +14,21 @@ import type {
   FindRelatedMemoriesResponse
 } from '../types/chat-memory-types.js';
 
-export interface ChatMemoryHandlerDependencies {
+export interface ChatMemoryPlanDependencies {
   chatMemoryService: ChatMemoryService;
 }
 
 /**
- * ChatMemoryHandler
+ * ChatMemoryPlan
  *
- * Provides handler methods for chat-memory operations:
+ * Provides plan methods for chat-memory operations:
  * - Enable/disable memories per topic
  * - Extract subjects from chat messages
  * - Find related memories by keywords
  * - Manage memory updates
  */
-export class ChatMemoryHandler {
-  constructor(private deps: ChatMemoryHandlerDependencies) {}
+export class ChatMemoryPlan {
+  constructor(private deps: ChatMemoryPlanDependencies) {}
 
   /**
    * Enable memory extraction for a chat topic

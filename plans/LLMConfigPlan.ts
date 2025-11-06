@@ -1,7 +1,7 @@
 /**
- * LLM Config Handler (Pure Business Logic)
+ * LLM Config Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for LLM configuration management.
+ * Transport-agnostic plan for LLM configuration management.
  * Can be used from both Electron IPC and Web Worker contexts.
  * Pattern based on refinio.api handler architecture.
  */
@@ -86,14 +86,14 @@ export interface DeleteOllamaConfigResponse {
 }
 
 /**
- * LLMConfigHandler - Pure business logic for LLM configuration operations
+ * LLMConfigPlan - Pure business logic for LLM configuration operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  * - ollamaValidator: Service for testing Ollama connections
  * - configManager: Service for encryption/decryption
  */
-export class LLMConfigHandler {
+export class LLMConfigPlan {
   private nodeOneCore: any;
   private aiAssistantModel: any;
   private testOllamaConnection: (baseUrl: string, authToken?: string) => Promise<TestConnectionResponse>;
@@ -131,13 +131,13 @@ export class LLMConfigHandler {
    * Test connection to Ollama server
    */
   async testConnection(request: TestConnectionRequest): Promise<TestConnectionResponse> {
-    console.log('[LLMConfigHandler] Testing connection to:', request.baseUrl);
+    console.log('[LLMConfigPlan] Testing connection to:', request.baseUrl);
 
     try {
       const result = await this.testOllamaConnection(request.baseUrl, request.authToken);
       return result;
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Test connection error:', error);
+      console.error('[LLMConfigPlan] Test connection error:', error);
       return {
         success: false,
         error: error.message || 'Connection test failed',
@@ -150,7 +150,7 @@ export class LLMConfigHandler {
    * Save Ollama configuration to ONE.core storage
    */
   async setConfig(request: SetOllamaConfigRequest): Promise<SetOllamaConfigResponse> {
-    console.log('[LLMConfigHandler] Saving config:', {
+    console.log('[LLMConfigPlan] Saving config:', {
       modelType: request.modelType,
       baseUrl: request.baseUrl,
       modelName: request.modelName,
@@ -246,17 +246,17 @@ export class LLMConfigHandler {
 
       const result = await storeVersionedObject(llmObject);
       const hash = typeof result === 'string' ? result : result.idHash;
-      console.log('[LLMConfigHandler] Stored LLM config with hash:', hash);
+      console.log('[LLMConfigPlan] Stored LLM config with hash:', hash);
 
       // Post to channel so it can be retrieved later
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
-      console.log('[LLMConfigHandler] Posted LLM config to lama channel');
+      console.log('[LLMConfigPlan] Posted LLM config to lama channel');
 
       // If setting as active, set it as the default model in AIAssistantModel
       if (request.setAsActive && this.aiAssistantModel) {
-        console.log(`[LLMConfigHandler] Setting ${request.modelName} as default model`);
+        console.log(`[LLMConfigPlan] Setting ${request.modelName} as default model`);
         await this.aiAssistantModel.setDefaultModel(request.modelName);
-        console.log(`[LLMConfigHandler] Successfully set ${request.modelName} as default model`);
+        console.log(`[LLMConfigPlan] Successfully set ${request.modelName} as default model`);
         // TODO: Implement deactivation of other configs
         // This would require iterating through existing LLM objects and setting active=false
       }
@@ -266,7 +266,7 @@ export class LLMConfigHandler {
         configHash: hash,
       };
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Set config error:', error);
+      console.error('[LLMConfigPlan] Set config error:', error);
       return {
         success: false,
         error: error.message || 'Failed to save configuration',
@@ -279,7 +279,7 @@ export class LLMConfigHandler {
    * Retrieve current active Ollama configuration
    */
   async getConfig(request: GetOllamaConfigRequest): Promise<GetOllamaConfigResponse> {
-    console.log('[LLMConfigHandler] Retrieving config, includeInactive:', request.includeInactive);
+    console.log('[LLMConfigPlan] Retrieving config, includeInactive:', request.includeInactive);
 
     try {
       if (!this.nodeOneCore || !this.nodeOneCore.channelManager) {
@@ -303,7 +303,7 @@ export class LLMConfigHandler {
           }
         }
       } catch (iterError: any) {
-        console.log('[LLMConfigHandler] No LLM objects found:', iterError.message);
+        console.log('[LLMConfigPlan] No LLM objects found:', iterError.message);
       }
 
       // Filter for active config (or all if includeInactive)
@@ -339,7 +339,7 @@ export class LLMConfigHandler {
         },
       };
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Get config error:', error);
+      console.error('[LLMConfigPlan] Get config error:', error);
       return {
         success: false,
         error: error.message || 'Failed to retrieve configuration',
@@ -352,7 +352,7 @@ export class LLMConfigHandler {
    * Fetch models from Ollama server (active config or specified URL)
    */
   async getAvailableModels(request: GetAvailableModelsRequest): Promise<GetAvailableModelsResponse> {
-    console.log('[LLMConfigHandler] Get available models:', request);
+    console.log('[LLMConfigPlan] Get available models:', request);
 
     try {
       let baseUrl: string;
@@ -398,7 +398,7 @@ export class LLMConfigHandler {
             try {
               authToken = this.decryptToken(llmObjects[0].encryptedAuthToken);
             } catch (error: any) {
-              console.error('[LLMConfigHandler] Token decryption failed:', error);
+              console.error('[LLMConfigPlan] Token decryption failed:', error);
             }
           }
         }
@@ -413,7 +413,7 @@ export class LLMConfigHandler {
         source,
       };
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Get available models error:', error);
+      console.error('[LLMConfigPlan] Get available models error:', error);
 
       // Determine error code based on error message
       let errorCode: any = 'NETWORK_ERROR';
@@ -435,7 +435,7 @@ export class LLMConfigHandler {
    * Soft-delete an Ollama configuration
    */
   async deleteConfig(request: DeleteOllamaConfigRequest): Promise<DeleteOllamaConfigResponse> {
-    console.log('[LLMConfigHandler] Deleting config:', request.configHash);
+    console.log('[LLMConfigPlan] Deleting config:', request.configHash);
 
     try {
       if (!this.nodeOneCore) {
@@ -485,14 +485,14 @@ export class LLMConfigHandler {
       // Update in storage
       await storeVersionedObject(llmObject);
 
-      console.log('[LLMConfigHandler] Deleted config:', request.configHash);
+      console.log('[LLMConfigPlan] Deleted config:', request.configHash);
 
       return {
         success: true,
         deletedHash: request.configHash,
       };
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Delete config error:', error);
+      console.error('[LLMConfigPlan] Delete config error:', error);
       return {
         success: false,
         error: error.message || 'Failed to delete configuration',
@@ -505,11 +505,11 @@ export class LLMConfigHandler {
    * Get all LLM configurations
    */
   async getAllConfigs(): Promise<any[]> {
-    console.log('[LLMConfigHandler] Getting all LLM configs');
+    console.log('[LLMConfigPlan] Getting all LLM configs');
 
     try {
       if (!this.nodeOneCore) {
-        console.warn('[LLMConfigHandler] ONE.core not initialized');
+        console.warn('[LLMConfigPlan] ONE.core not initialized');
         return [];
       }
 
@@ -524,10 +524,10 @@ export class LLMConfigHandler {
         }
       }
 
-      console.log(`[LLMConfigHandler] Found ${llmObjects.length} LLM configurations`);
+      console.log(`[LLMConfigPlan] Found ${llmObjects.length} LLM configurations`);
       return llmObjects;
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Get all configs error:', error);
+      console.error('[LLMConfigPlan] Get all configs error:', error);
       return [];
     }
   }
@@ -543,7 +543,7 @@ export class LLMConfigHandler {
     error?: string;
     errorCode?: string;
   }> {
-    console.log('[LLMConfigHandler] Updating system prompt for LLM:', request.llmId);
+    console.log('[LLMConfigPlan] Updating system prompt for LLM:', request.llmId);
 
     try {
       if (!this.nodeOneCore) {
@@ -585,13 +585,13 @@ export class LLMConfigHandler {
       await storeVersionedObject(llmObject);
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
 
-      console.log('[LLMConfigHandler] System prompt updated successfully');
+      console.log('[LLMConfigPlan] System prompt updated successfully');
 
       return {
         success: true,
       };
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Update system prompt error:', error);
+      console.error('[LLMConfigPlan] Update system prompt error:', error);
       return {
         success: false,
         error: error.message || 'Failed to update system prompt',
@@ -609,7 +609,7 @@ export class LLMConfigHandler {
     error?: string;
     errorCode?: string;
   }> {
-    console.log('[LLMConfigHandler] Regenerating system prompt for LLM:', request.llmId);
+    console.log('[LLMConfigPlan] Regenerating system prompt for LLM:', request.llmId);
 
     try {
       if (!this.nodeOneCore) {
@@ -657,14 +657,14 @@ export class LLMConfigHandler {
       await storeVersionedObject(llmObject);
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
 
-      console.log('[LLMConfigHandler] System prompt regenerated successfully');
+      console.log('[LLMConfigPlan] System prompt regenerated successfully');
 
       return {
         success: true,
         systemPrompt: newSystemPrompt,
       };
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Regenerate system prompt error:', error);
+      console.error('[LLMConfigPlan] Regenerate system prompt error:', error);
       return {
         success: false,
         error: error.message || 'Failed to regenerate system prompt',
@@ -684,7 +684,7 @@ export class LLMConfigHandler {
     error?: string;
     errorCode?: string;
   }> {
-    console.log('[LLMConfigHandler] Updating API key for LLM:', request.llmId);
+    console.log('[LLMConfigPlan] Updating API key for LLM:', request.llmId);
 
     try {
       if (!this.nodeOneCore) {
@@ -747,13 +747,13 @@ export class LLMConfigHandler {
       await storeVersionedObject(llmObject);
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
 
-      console.log('[LLMConfigHandler] API key updated successfully');
+      console.log('[LLMConfigPlan] API key updated successfully');
 
       return {
         success: true,
       };
     } catch (error: any) {
-      console.error('[LLMConfigHandler] Update API key error:', error);
+      console.error('[LLMConfigPlan] Update API key error:', error);
       return {
         success: false,
         error: error.message || 'Failed to update API key',

@@ -7,7 +7,7 @@
  * Responsibilities:
  * - Listen to channelManager.onUpdated() events
  * - Detect messages in AI topics
- * - Trigger AI response generation via AIAssistantHandler
+ * - Trigger AI response generation via AIAssistantPlan
  * - Debounce rapid updates
  *
  * This class is platform-agnostic and works on both browser and Node.js.
@@ -17,12 +17,12 @@ import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
-import type { AIAssistantHandler } from '../../handlers/AIAssistantHandler.js';
+import type { AIAssistantPlan } from '../../plans/AIAssistantPlan.js';
 
 export interface AIMessageListenerDeps {
     channelManager: ChannelManager;
     topicModel: TopicModel;
-    aiHandler: AIAssistantHandler;
+    aiPlan: AIAssistantPlan;
     ownerId?: SHA256IdHash<Person>;
 }
 
@@ -69,7 +69,7 @@ export class AIMessageListener {
                 this.debounceTimers.delete(channelId);
 
                 // Check if this is an AI topic
-                const isAI = this.deps.aiHandler.isAITopic(channelId);
+                const isAI = this.deps.aiPlan.isAITopic(channelId);
                 if (!isAI) {
                     // Skip non-AI topics silently
                     return;
@@ -138,7 +138,7 @@ export class AIMessageListener {
             const messageSender = lastMessage.data?.sender || lastMessage.author;
 
             // Check if message is from AI (skip if yes)
-            const isFromAI = this.deps.aiHandler.isAIPerson(messageSender);
+            const isFromAI = this.deps.aiPlan.isAIPerson(messageSender);
             console.log(`[AIMessageListener] Last message from ${messageSender?.toString().substring(0, 8)}...: isAI=${isFromAI}, text="${messageText?.substring(0, 50)}..."`);
 
             if (isFromAI) {
@@ -186,8 +186,8 @@ export class AIMessageListener {
 
             console.log(`[AIMessageListener] Processing user message: "${messageText}"`);
 
-            // Delegate to AIAssistantHandler for AI response generation
-            await this.deps.aiHandler.processMessage(channelId, messageText, messageSender);
+            // Delegate to AIAssistantPlan for AI response generation
+            await this.deps.aiPlan.processMessage(channelId, messageText, messageSender);
 
         } catch (error) {
             console.error(`[AIMessageListener] Error handling channel update:`, error);

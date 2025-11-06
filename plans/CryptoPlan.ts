@@ -1,7 +1,7 @@
 /**
- * Crypto Handler (Pure Business Logic)
+ * Crypto Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for cryptographic object operations.
+ * Transport-agnostic plan for cryptographic object operations.
  * Provides access to keys, certificates, and other crypto objects from ONE.core.
  * Can be used from both Electron IPC and Web Worker contexts.
  */
@@ -68,12 +68,12 @@ export interface ExportCryptoObjectResponse {
 }
 
 /**
- * CryptoHandler - Pure business logic for cryptographic operations
+ * CryptoPlan - Pure business logic for cryptographic operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  */
-export class CryptoHandler {
+export class CryptoPlan {
   private nodeOneCore: any;
 
   constructor(nodeOneCore: any) {
@@ -124,7 +124,7 @@ export class CryptoHandler {
               };
               keys.push(instanceInfo);
             } catch (e) {
-              console.log('[CryptoHandler] Could not get instance info:', e);
+              console.log('[CryptoPlan] Could not get instance info:', e);
             }
           }
 
@@ -148,11 +148,11 @@ export class CryptoHandler {
                 });
               }
             } catch (e) {
-              console.log('[CryptoHandler] Could not get LeUTe identity:', e);
+              console.log('[CryptoPlan] Could not get LeUTe identity:', e);
             }
           }
         } catch (e) {
-          console.log('[CryptoHandler] Error getting keys from ONE.core:', e);
+          console.log('[CryptoPlan] Error getting keys from ONE.core:', e);
         }
       }
 
@@ -172,10 +172,10 @@ export class CryptoHandler {
         });
       }
 
-      console.log('[CryptoHandler] Returning keys:', keys.length);
+      console.log('[CryptoPlan] Returning keys:', keys.length);
       return { success: true, data: keys };
     } catch (error: unknown) {
-      console.error('[CryptoHandler] Failed to get keys:', error);
+      console.error('[CryptoPlan] Failed to get keys:', error);
       throw error;
     }
   }
@@ -241,11 +241,11 @@ export class CryptoHandler {
                 });
               }
             } catch (e) {
-              console.log('[CryptoHandler] Could not get IoM group:', e);
+              console.log('[CryptoPlan] Could not get IoM group:', e);
             }
           }
         } catch (e) {
-          console.log('[CryptoHandler] Error getting certificates from ONE.core:', e);
+          console.log('[CryptoPlan] Error getting certificates from ONE.core:', e);
         }
       }
 
@@ -265,10 +265,10 @@ export class CryptoHandler {
         });
       }
 
-      console.log('[CryptoHandler] Returning certificates:', certificates.length);
+      console.log('[CryptoPlan] Returning certificates:', certificates.length);
       return { success: true, data: certificates };
     } catch (error: unknown) {
-      console.error('[CryptoHandler] Failed to get certificates:', error);
+      console.error('[CryptoPlan] Failed to get certificates:', error);
       throw error;
     }
   }
@@ -350,7 +350,7 @@ export class CryptoHandler {
 
       return { success: true, data: exportData };
     } catch (error: unknown) {
-      console.error('[CryptoHandler] Failed to export:', error);
+      console.error('[CryptoPlan] Failed to export:', error);
       throw error;
     }
   }

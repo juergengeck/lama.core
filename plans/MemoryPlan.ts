@@ -1,6 +1,6 @@
 /**
- * Memory Handler
- * Platform-agnostic handler for memory storage operations
+ * Memory Plan
+ * Platform-agnostic plan for memory storage operations
  */
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
@@ -39,19 +39,19 @@ export interface SubjectAssembly {
 }
 
 /**
- * Memory Handler
+ * Memory Plan
  *
- * Delegates to memory module's SubjectHandler
+ * Delegates to memory module's SubjectPlan
  * Provides platform-agnostic interface for MCP tools
  */
-export class MemoryHandler {
-  constructor(private subjectHandler: any) {}
+export class MemoryPlan {
+  constructor(private subjectPlan: any) {}
 
   /**
    * Create a new subject assembly
    */
   async createSubject(params: CreateSubjectParams): Promise<StoreAssemblyResult> {
-    return await this.subjectHandler.createSubject(params);
+    return await this.subjectPlan.createSubject(params);
   }
 
   /**
@@ -61,7 +61,7 @@ export class MemoryHandler {
     idHash: SHA256IdHash<any>,
     options: { verifySignature?: boolean } = {}
   ): Promise<SubjectAssembly | null> {
-    return await this.subjectHandler.getSubject(idHash, options);
+    return await this.subjectPlan.getSubject(idHash, options);
   }
 
   /**
@@ -71,28 +71,28 @@ export class MemoryHandler {
     idHash: SHA256IdHash<any>,
     updates: UpdateSubjectParams
   ): Promise<StoreAssemblyResult> {
-    return await this.subjectHandler.updateSubject(idHash, updates);
+    return await this.subjectPlan.updateSubject(idHash, updates);
   }
 
   /**
    * Delete a subject
    */
   async deleteSubject(idHash: SHA256IdHash<any>): Promise<boolean> {
-    return await this.subjectHandler.deleteSubject(idHash);
+    return await this.subjectPlan.deleteSubject(idHash);
   }
 
   /**
    * List all subjects
    */
   async listSubjects(): Promise<SHA256IdHash<any>[]> {
-    return await this.subjectHandler.listSubjects();
+    return await this.subjectPlan.listSubjects();
   }
 
   /**
    * Get raw HTML for a subject
    */
   async getSubjectHtml(idHash: SHA256IdHash<any>): Promise<string | null> {
-    const filePath = this.subjectHandler.storageService.getFilePath(idHash, 'subjects');
-    return await this.subjectHandler.storageService.readRawHtml(idHash, 'subjects');
+    const filePath = this.subjectPlan.storageService.getFilePath(idHash, 'subjects');
+    return await this.subjectPlan.storageService.readRawHtml(idHash, 'subjects');
   }
 }

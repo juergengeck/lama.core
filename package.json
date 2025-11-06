@@ -9,10 +9,12 @@
     "clean": "find . -name '*.js' -not -path './node_modules/*' -delete"
   },
   "exports": {
-    "./handlers/*": "./dist/handlers/*",
+    "./plans/*": "./dist/plans/*",
     "./services/*": "./dist/services/*",
     "./models/*": "./dist/models/*",
-    "./one-ai/*": "./dist/one-ai/*"
+    "./one-ai/*": "./dist/one-ai/*",
+    "./ai/*": "./dist/ai/*",
+    "./initialization/*": "./dist/initialization/*"
   },
   "author": "lama.one Team",
   "license": "MIT",
@@ -23,7 +25,8 @@
   },
   "peerDependencies": {
     "@refinio/one.core": "*",
-    "@refinio/one.models": "*"
+    "@refinio/one.models": "*",
+    "@chat/core": "*"
   },
   "devDependencies": {
     "@types/chai-as-promised": "^8.0.2",

@@ -2,16 +2,13 @@
  * AI Initialization Handler
  *
  * Platform-agnostic business logic for AI initialization.
- * NO Electron imports - uses dependency injection.
+ * NO platform-specific imports - uses dependency injection.
  *
  * Principles:
- * - Dependency injection for platform-specific code
+ * - Dependency injection for platform-specific code (UserSettingsManager, AIAssistantHandler)
  * - Pure business logic only
  * - Testable in isolation
  */
-
-import { UserSettingsManager } from '../services/UserSettingsManager.js';
-import { initializeAIAssistantHandler } from '../handlers/AIAssistantHandler.js';
 
 /**
  * Dependencies injected by platform (Electron, web, etc.)
@@ -20,6 +17,8 @@ export interface AIDeps {
   storage: any;  // ONE.core instance
   llmManager: any;  // LLM manager
   getEnvVar: (key: string) => string | undefined;  // Platform-specific env access
+  createUserSettingsManager: (storage: any, email: string) => any;  // Factory for UserSettingsManager
+  initializeAIAssistant: (storage: any, llmManager: any) => Promise<any>;  // Factory for AI Assistant
 }
 
 export interface AIContext {
@@ -43,7 +42,7 @@ export class AIInitializationHandler {
   async initialize(context: AIContext): Promise<AIServices> {
     console.log('[AIInitializationHandler] Initializing AI services...');
 
-    // Step 1: Initialize UserSettingsManager
+    // Step 1: Initialize UserSettingsManager (via factory)
     const userSettingsManager = await this.initializeUserSettings(context);
 
     // Step 2: Discover Claude models
@@ -52,7 +51,7 @@ export class AIInitializationHandler {
     // Step 3: Configure LLM manager
     this.configureLLMManager(userSettingsManager);
 
-    // Step 4: Initialize AI Assistant Handler
+    // Step 4: Initialize AI Assistant Handler (via factory)
     const aiAssistantModel = await this.initializeAIAssistant();
 
     console.log('[AIInitializationHandler] ✅ AI services initialized');
@@ -67,7 +66,7 @@ export class AIInitializationHandler {
   private async initializeUserSettings(context: AIContext): Promise<any> {
     console.log('[AIInitializationHandler] Initializing UserSettingsManager...');
 
-    const userSettingsManager = new UserSettingsManager(this.deps.storage, context.email);
+    const userSettingsManager = this.deps.createUserSettingsManager(this.deps.storage, context.email);
 
     console.log('[AIInitializationHandler] ✅ UserSettingsManager initialized');
     return userSettingsManager;
@@ -105,7 +104,7 @@ export class AIInitializationHandler {
   private async initializeAIAssistant(): Promise<any> {
     console.log('[AIInitializationHandler] Initializing AI Assistant Handler...');
 
-    const aiAssistantModel = await initializeAIAssistantHandler(
+    const aiAssistantModel = await this.deps.initializeAIAssistant(
       this.deps.storage,
       this.deps.llmManager
     );

@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with lama.core.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
 
-**lama.core** is a platform-agnostic business logic library providing shared handlers, services, and models for LAMA applications. It contains pure business logic with no platform-specific dependencies.
+**lama.core** is a platform-agnostic business logic library providing shared plans, services, and models for LAMA applications. It contains pure business logic with no platform-specific dependencies.
 
 ## Architecture: Build-Time vs Runtime Dependencies
 
@@ -30,11 +30,15 @@ lama.core/
 ├── packages/              # Build-time only (NOT included in runtime)
 │   ├── one.core/          # @refinio/one.core@0.6.1-beta-3
 │   └── one.models/        # @refinio/one.models@14.1.0-beta-5
-├── handlers/              # Platform-agnostic request handlers
-│   ├── ChatHandler.ts
-│   ├── AIAssistantHandler.ts
-│   ├── ContactsHandler.ts
+├── plans/                 # Platform-agnostic business logic plans
+│   ├── ChatPlan.ts
+│   ├── AIAssistantPlan.ts
+│   ├── ContactsPlan.ts
 │   └── ...
+├── ai/                    # AI initialization infrastructure
+│   └── AIInitializationHandler.ts  # AI service initialization orchestration
+├── initialization/        # Core initialization system
+│   └── CoreInitializer.ts          # Enforces correct init order
 ├── services/              # LLM and external service integrations
 │   ├── llm-manager.ts
 │   ├── ollama.ts
@@ -62,17 +66,21 @@ lama.core/
   "dependencies": {
     "@anthropic-ai/sdk": "^0.65.0",
     "node-fetch": "^2.7.0"
+  },
+  "peerDependencies": {
+    "@refinio/one.core": "*",
+    "@refinio/one.models": "*"
   }
-  // NO @refinio/one.core or @refinio/one.models
-  // Consuming projects supply these at runtime
+  // Consuming projects supply one.core/one.models at runtime
 }
 ```
 
-### Why No Dependencies?
+### Why peerDependencies?
 
 - **Avoid duplicate modules**: Consuming projects have their own one.core/one.models
 - **Platform-agnostic**: lama.core doesn't choose which platform implementation to use
 - **Single runtime instance**: Only the consuming project's instance is loaded
+- **Build-time types**: Resolved via tsconfig.json paths to ./packages/*
 
 ### TypeScript Resolution
 
@@ -87,13 +95,13 @@ lama.core/
 
 TypeScript finds types in `./packages/*` during compilation, but these are NOT bundled or included at runtime.
 
-## Handler Pattern
+## Plan Pattern
 
-All handlers follow dependency injection pattern - they receive dependencies via constructor:
+All plans follow dependency injection pattern - they receive dependencies via constructor:
 
 ```typescript
-// ChatHandler.ts
-export class ChatHandler {
+// ChatPlan.ts
+export class ChatPlan {
   constructor(
     private nodeOneCore: any,      // Injected by consuming project
     private stateManager: any      // Injected by consuming project
@@ -105,19 +113,19 @@ export class ChatHandler {
 }
 ```
 
-**Consuming projects create handler instances**:
+**Consuming projects create plan instances**:
 
 ```typescript
-// lama.electron/main/ipc/handlers/chat.ts
-import { ChatHandler } from '@lama/core/handlers/ChatHandler.js';
+// lama.electron/main/ipc/plans/chat.ts
+import { ChatPlan } from '@lama/core/plans/ChatPlan.js';
 import nodeOneCore from '../../core/node-one-core.js';
 import stateManager from '../../state/manager.js';
 
-const chatHandler = new ChatHandler(nodeOneCore, stateManager);
+const chatPlan = new ChatPlan(nodeOneCore, stateManager);
 
 export default {
   async sendMessage(event, params) {
-    return await chatHandler.sendMessage(params);
+    return await chatPlan.sendMessage(params);
   }
 };
 ```
@@ -147,6 +155,7 @@ export interface LLMPlatform {
 npm install     # Installs @anthropic-ai/sdk, node-fetch only
 npm run build   # Compiles TypeScript using ./packages/* for types
 npm run watch   # Watch mode for development
+npm run clean   # Remove all .js files (except node_modules, packages, dist)
 ```
 
 **Note**: TypeScript errors in packages/ are from upstream one.core/one.models source and are ignored during lama.core development.
@@ -168,7 +177,7 @@ Projects use lama.core via `file:` reference:
 
 At runtime:
 - lama.electron loads its own one.core/one.models
-- lama.core handlers use those instances (single instance across app)
+- lama.core plans use those instances (single instance across app)
 
 ## Version Synchronization
 
@@ -187,15 +196,20 @@ When updating:
 
 ## Key Modules
 
-### Handlers (handlers/)
+### Plans (plans/)
 Pure business logic with dependency injection:
-- **ChatHandler** - Chat/messaging operations
-- **AIAssistantHandler** - AI assistant orchestration (component-based)
-- **ContactsHandler** - Contact management
-- **OneCoreHandler** - ONE.core instance operations
-- **TopicAnalysisHandler** - Keyword/subject extraction
-- **ExportHandler** - Conversation export
-- **ProposalsHandler** - Context-aware knowledge sharing
+- **AIAssistantPlan** - AI assistant orchestration (component-based)
+- **AIPlan** - AI operations
+- **AuditPlan** - Audit logging and compliance
+- **ChatMemoryPlan** - Chat memory management
+- **CryptoPlan** - Cryptographic operations
+- **KeywordDetailPlan** - Keyword detail management
+- **LLMConfigPlan** - LLM configuration
+- **MemoryPlan** - Memory operations
+- **ProposalsPlan** - Context-aware knowledge sharing
+- **SubjectsPlan** - Subject management
+- **TopicAnalysisPlan** - Keyword/subject extraction
+- **WordCloudSettingsPlan** - Word cloud configuration
 
 ### Services (services/)
 External integrations and platform abstractions:
@@ -220,13 +234,29 @@ Knowledge extraction from conversations:
 - **Keyword** - Extracted term/concept
 - **Summary** - Versioned overview of subjects in a topic
 
+### AI Initialization (ai/)
+AI service initialization infrastructure:
+- **AIInitializationHandler** - Orchestrates AI initialization flow
+  - Initializes UserSettingsManager
+  - Discovers Claude models and API keys
+  - Configures LLM manager
+  - Initializes AI Assistant Plan
+
+### Core Initialization (initialization/)
+System-wide initialization orchestration:
+- **CoreInitializer** - Enforces correct initialization order across all core models
+  - **Critical order**: LLM infrastructure MUST initialize before ChannelManager
+  - **Why**: ChannelManager processes existing messages on init, needs LLM contact cache populated
+  - **Flow**: LeuteModel → LLM → ChannelManager → TopicModel → Connections → Chat plans
+  - **Fail fast**: No fallbacks, no mitigation - throw on errors
+
 ## Development Workflow
 
-### Adding a New Handler
+### Adding a New Plan
 
-1. Create handler in `handlers/NewHandler.ts`:
+1. Create plan in `plans/NewPlan.ts`:
 ```typescript
-export class NewHandler {
+export class NewPlan {
   constructor(
     private nodeOneCore: any,
     private customDep: any
@@ -238,10 +268,10 @@ export class NewHandler {
 }
 ```
 
-2. Consuming project creates instance:
+2. Consuming project creates plan instance:
 ```typescript
-import { NewHandler } from '@lama/core/handlers/NewHandler.js';
-const handler = new NewHandler(nodeOneCore, customDep);
+import { NewPlan } from '@lama/core/plans/NewPlan.js';
+const plan = new NewPlan(nodeOneCore, customDep);
 ```
 
 ### Adding a New Service
@@ -299,7 +329,7 @@ Currently: No test suite (deferred)
 Future:
 - Unit tests with mocked one.core dependencies
 - Integration tests with real one.core instances
-- Run in Node.js (handlers are platform-agnostic)
+- Run in Node.js (plans are platform-agnostic)
 
 ## Migration Notes
 

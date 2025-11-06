@@ -1,7 +1,7 @@
 /**
- * Subjects Handler (Pure Business Logic)
+ * Subjects Plan (Pure Business Logic)
  *
- * Platform-agnostic handler for subject management operations.
+ * Platform-agnostic plan for subject management operations.
  * Can be used from both Electron IPC and Web Worker contexts.
  */
 
@@ -89,9 +89,9 @@ export interface ExtractSubjectsResponse {
 }
 
 /**
- * SubjectsHandler - Pure business logic for subject management
+ * SubjectsPlan - Pure business logic for subject management
  */
-export class SubjectsHandler {
+export class SubjectsPlan {
   private subjectService: SubjectService;
 
   constructor(subjectService?: SubjectService) {
@@ -118,7 +118,7 @@ export class SubjectsHandler {
       );
       return { success: true, subject };
     } catch (error) {
-      console.error('[SubjectsHandler] Error creating subject:', error);
+      console.error('[SubjectsPlan] Error creating subject:', error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -137,7 +137,7 @@ export class SubjectsHandler {
       );
       return { success: true, attachment };
     } catch (error) {
-      console.error('[SubjectsHandler] Error attaching subject:', error);
+      console.error('[SubjectsPlan] Error attaching subject:', error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -150,7 +150,7 @@ export class SubjectsHandler {
       const subjects = this.subjectService.getContentSubjects(request.contentHash);
       return { success: true, subjects };
     } catch (error) {
-      console.error('[SubjectsHandler] Error getting subjects:', error);
+      console.error('[SubjectsPlan] Error getting subjects:', error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -163,7 +163,7 @@ export class SubjectsHandler {
       const subjects = this.subjectService.getAllSubjects();
       return { success: true, subjects };
     } catch (error) {
-      console.error('[SubjectsHandler] Error getting all subjects:', error);
+      console.error('[SubjectsPlan] Error getting all subjects:', error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -177,7 +177,7 @@ export class SubjectsHandler {
       const results: Subject[] = [];
       return { success: true, results };
     } catch (error) {
-      console.error('[SubjectsHandler] Error searching subjects:', error);
+      console.error('[SubjectsPlan] Error searching subjects:', error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -190,7 +190,7 @@ export class SubjectsHandler {
       const resonance = this.subjectService.calculateResonance(request.subjectNames[0]);
       return { success: true, resonance };
     } catch (error) {
-      console.error('[SubjectsHandler] Error calculating resonance:', error);
+      console.error('[SubjectsPlan] Error calculating resonance:', error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -203,7 +203,7 @@ export class SubjectsHandler {
       const subjects = this.subjectService.extractSubjectsFromText(request.text) as Subject[];
       return { success: true, subjects };
     } catch (error) {
-      console.error('[SubjectsHandler] Error extracting subjects:', error);
+      console.error('[SubjectsPlan] Error extracting subjects:', error);
       return { success: false, error: (error as Error).message };
     }
   }
