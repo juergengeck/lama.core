@@ -66,6 +66,21 @@ export interface LLMPlatform {
    * @param analysisType - Type of analysis ('keywords' | 'subjects' | 'both')
    */
   emitAnalysisUpdate?(topicId: string, analysisType: 'keywords' | 'subjects' | 'both'): void;
+
+  /**
+   * Emit thinking status update during AI response generation
+   * @param topicId - Topic/conversation ID
+   * @param status - Status message describing current phase
+   */
+  emitThinkingStatus?(topicId: string, status: string): void;
+
+  /**
+   * Emit thinking stream update (for models with extended thinking like DeepSeek R1)
+   * @param topicId - Topic/conversation ID
+   * @param messageId - Message identifier
+   * @param thinkingContent - Accumulated thinking content
+   */
+  emitThinkingUpdate?(topicId: string, messageId: string, thinkingContent: string): void;
 }
 
 /**

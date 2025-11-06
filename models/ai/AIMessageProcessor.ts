@@ -160,16 +160,20 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
     try {
       // Get the model ID for this topic
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Getting model ID for topic ${topicId}`);
       const modelId = this.topicManager.getModelIdForTopic(topicId);
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Model ID: ${modelId}`);
       if (!modelId) {
-        console.log('[AIMessageProcessor] No AI model registered for this topic');
+        console.log('[AIMessageProcessor] ❌ No AI model registered for this topic');
         return null;
       }
 
       // Get the AI person ID for this model (requires aiContactManager)
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Getting AI person ID for model ${modelId}`);
       const aiPersonId = await this.getAIPersonIdForModel(modelId);
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: AI person ID: ${aiPersonId}`);
       if (!aiPersonId) {
-        console.error('[AIMessageProcessor] Could not get AI person ID');
+        console.error('[AIMessageProcessor] ❌ Could not get AI person ID');
         return null;
       }
 
@@ -191,6 +195,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       // Generate message ID for streaming
       const messageId = `ai-${Date.now()}`;
       let fullResponse = '';
+      let fullThinking = '';
 
       // Emit thinking indicator via platform
       if (this.platform) {
@@ -217,12 +222,22 @@ export class AIMessageProcessor implements IAIMessageProcessor {
               console.warn('[AIMessageProcessor] ⚠️  No platform available for streaming!');
             }
           },
+          onThinkingStream: (chunk: string) => {
+            fullThinking += chunk;
+
+            // Send thinking stream updates via platform
+            if (this.platform) {
+              console.log('[AIMessageProcessor] 🧠 Emitting thinking stream update, length:', fullThinking.length);
+              this.platform.emitThinkingUpdate(topicId, messageId, fullThinking);
+            }
+          },
         },
         topicId // Pass topicId for analysis
       );
 
       console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: chatWithAnalysis() completed`)
       const response = result?.response;
+      const thinking = result?.thinking || fullThinking;
 
       // Process analysis in background (non-blocking)
       // Use setTimeout for browser compatibility (setImmediate is Node.js only)
@@ -251,8 +266,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           // - response: the AI's message text
           // - aiPersonId: the author (AI's person ID)
           // - aiPersonId: the channel owner (AI posts to its own channel)
-          await topicRoom.sendMessage(response || fullResponse, aiPersonId, aiPersonId);
-          console.log(`[AIMessageProcessor] ✅ Stored AI response to channel ${topicId}`);
+          // - thinking: optional reasoning trace (for models like DeepSeek R1)
+          await topicRoom.sendMessage(response || fullResponse, aiPersonId, aiPersonId, thinking);
+          console.log(`[AIMessageProcessor] ✅ Stored AI response to channel ${topicId}${thinking ? ' (with thinking trace)' : ''}`);
 
           // Add message to cache so next buildPrompt() doesn't reload all messages
           if (this.promptBuilder) {
@@ -394,6 +410,10 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         {
           role: 'system' as const,
           content: combinedSystemPrompt,
+        },
+        {
+          role: 'user' as const,
+          content: 'Please introduce yourself and welcome me to this conversation.',
         },
       ];
 

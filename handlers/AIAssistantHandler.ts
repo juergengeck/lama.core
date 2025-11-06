@@ -483,13 +483,14 @@ export class AIAssistantHandler {
    * @param modelId - LLM model ID
    * @param options - Streaming and analysis options
    * @param topicId - Topic ID for analysis context
-   * @returns {response, analysis} with subjects and keywords
+   * @returns {response, analysis, thinking} with subjects, keywords, and thinking trace
    */
   async chatWithAnalysis(
     history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     modelId: string,
     options?: {
       onStream?: (chunk: string) => void;
+      onThinkingStream?: (chunk: string) => void;
     },
     topicId?: string
   ): Promise<any> {
@@ -504,82 +505,107 @@ export class AIAssistantHandler {
     const startTime = Date.now();
     console.log(`[AIAssistantHandler] chatWithAnalysis starting for model: ${modelId}`);
 
+    // Emit thinking status: preparing to call LLM
+    if (topicId && this.deps.platform?.emitThinkingStatus) {
+      this.deps.platform.emitThinkingStatus(topicId, 'Preparing request...');
+    }
+
     // OPTION 1: Stream response first, then analyze in background
     // Step 1: Stream the response (fast UX)
     let fullResponse = '';
+    let fullThinking = '';
+
+    // Emit thinking status: calling LLM
+    if (topicId && this.deps.platform?.emitThinkingStatus) {
+      this.deps.platform.emitThinkingStatus(topicId, 'Calling LLM...');
+    }
+
     const rawResponse = await this.deps.llmManager.chat(history, modelId, {
       ...options,
+      // Tools enabled - LLM can use MCP tools. Tool calls are filtered from streaming below.
       onStream: (chunk: string) => {
         fullResponse += chunk;
-        options?.onStream?.(chunk);
+
+        // Don't stream tool call JSON to user - let processToolCalls handle it
+        // Tool calls look like: {"tool":"...", "parameters":{...}} or ```json\n{...}\n```
+        const looksLikeToolCall = chunk.includes('"tool"') && chunk.includes('"parameters"');
+        if (!looksLikeToolCall) {
+          options?.onStream?.(chunk);
+        }
+      },
+      onThinkingStream: (chunk: string) => {
+        fullThinking += chunk;
+        options?.onThinkingStream?.(chunk);
       }
     });
 
     // Handle both string and object responses (with thinking metadata)
     if (typeof rawResponse === 'object' && (rawResponse as any)._hasThinking) {
       fullResponse = (rawResponse as any).content;
-      console.log('[AIAssistantHandler] Response includes thinking metadata');
+      fullThinking = (rawResponse as any).thinking || '';
+      console.log('[AIAssistantHandler] Response includes thinking metadata (length:', fullThinking.length, 'chars)');
     } else if (typeof rawResponse === 'string') {
       fullResponse = rawResponse;
     } else {
       fullResponse = String(rawResponse || '');
     }
 
-    console.log(`[AIAssistantHandler] Response streaming complete (${Date.now() - startTime}ms), starting analysis`);
+    console.log(`[AIAssistantHandler] Response streaming complete (${Date.now() - startTime}ms), starting background analysis`);
 
-    // Step 2: Analyze in background using abstract service (includes memory context)
-    let analysis: any;
-    try {
-      // Create analysis service with progress callback that streams to user
-      const progressCallback = (message: string) => {
-        console.log(`[AIAssistantHandler] Analysis progress: ${message}`);
-        options?.onStream?.(message); // Stream progress to user
-      };
-      const analysisService = new (this.analysisService.constructor as any)(
-        this.deps.llmManager,
-        this.deps.mcpManager,
-        progressCallback
-      );
-
-      const analysisContent: AnalysisContent = {
-        type: 'chat',
-        messages: [
-          ...history,
-          { role: 'assistant', content: fullResponse }
-        ]
-      };
-
-      const analysisContext: AnalysisContext = {
-        // Don't specify modelId - let AnalysisService auto-select a model that supports structured output
-        temperature: 0,
-        topicId,
-        disableTools: true
-      };
-
-      // AnalysisService automatically:
-      // 1. Fetches existing subjects from memory via MCP
-      // 2. Includes them in prompt for consistency
-      // 3. Returns structured analysis
-      const result = await analysisService.analyze(analysisContent, analysisContext);
-
-      analysis = {
-        subjects: result.subjects,
-        summaryUpdate: result.summary,
-        keywords: result.keywords
-      };
-
-      console.log(`[AIAssistantHandler] Analysis complete (${Date.now() - startTime}ms total)`);
-    } catch (error: any) {
-      console.warn('[AIAssistantHandler] Analysis failed:', error?.message || error);
-      // Return empty analysis - don't block the response
-      analysis = { subjects: [], summaryUpdate: '', keywords: [] };
-    }
-
-    return {
+    // Return immediately - don't block on analysis
+    const immediateResult = {
       response: fullResponse,
-      analysis,
+      thinking: fullThinking || undefined, // Include thinking trace if present
+      analysis: { subjects: [], summaryUpdate: '', keywords: [] }, // Empty - will be updated async
       topicId
     };
+
+    // Step 2: Analyze in background (non-blocking)
+    setImmediate(async () => {
+      try {
+        console.log(`[AIAssistantHandler] Background analysis starting for topic: ${topicId}`);
+
+        // Create analysis service with progress callback
+        const progressCallback = (message: string) => {
+          console.log(`[AIAssistantHandler] Analysis progress: ${message}`);
+        };
+        const analysisService = new (this.analysisService.constructor as any)(
+          this.deps.llmManager,
+          this.deps.mcpManager,
+          progressCallback
+        );
+
+        const analysisContent: AnalysisContent = {
+          type: 'chat',
+          messages: [
+            ...history,
+            { role: 'assistant', content: fullResponse }
+          ]
+        };
+
+        const analysisContext: AnalysisContext = {
+          // Don't specify modelId - let AnalysisService auto-select a model that supports structured output
+          temperature: 0,
+          topicId,
+          disableTools: true
+        };
+
+        // AnalysisService automatically:
+        // 1. Fetches existing subjects from memory via MCP
+        // 2. Includes them in prompt for consistency
+        // 3. Returns structured analysis
+        const result = await analysisService.analyze(analysisContent, analysisContext);
+
+        console.log(`[AIAssistantHandler] Background analysis complete (${Date.now() - startTime}ms total)`);
+        console.log(`[AIAssistantHandler] Analysis results: ${result.subjects?.length || 0} subjects, ${result.keywords?.length || 0} keywords`);
+
+        // Analysis complete - could emit event here if needed for UI updates
+      } catch (error: any) {
+        console.warn('[AIAssistantHandler] Background analysis failed:', error?.message || error);
+      }
+    });
+
+    return immediateResult;
   }
 
   /**

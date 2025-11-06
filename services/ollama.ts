@@ -287,9 +287,14 @@ async function chatWithOllama(
               }
             }
 
-            // Accumulate thinking separately (don't stream it)
+            // Accumulate thinking separately and stream it via separate callback
             if (thinking) {
               fullThinking += thinking
+
+              // Stream thinking to separate callback if provided
+              if ((options as any).onThinkingStream) {
+                ;(options as any).onThinkingStream(thinking)
+              }
             }
 
             if (!content && !thinking && !json.done) {
@@ -336,9 +341,14 @@ async function chatWithOllama(
           }
         }
 
-        // Accumulate thinking
+        // Accumulate thinking and stream it separately
         if (thinking) {
           fullThinking += thinking
+
+          // Stream thinking to separate callback if provided
+          if ((options as any).onThinkingStream) {
+            (options as any).onThinkingStream(thinking)
+          }
         }
       } catch (e: any) {
         console.error('[Ollama] Error parsing final JSON:', e.message)

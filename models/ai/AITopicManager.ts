@@ -314,7 +314,9 @@ export class AITopicManager implements IAITopicManager {
         needsWelcome = messages.length === 0;
       } catch (e) {
         // Topic doesn't exist, create it
-        await this.topicGroupManager.createGroupTopic('Hi', topicId, [aiPersonId]);
+        // CRITICAL: Include BOTH user and AI in participants so both get channels
+        const userPersonId = await this.leuteModel.myMainIdentity();
+        await this.topicGroupManager.createGroupTopic('Hi', topicId, [userPersonId, aiPersonId]);
         topicRoom = await this.topicModel.enterTopicRoom(topicId);
         needsWelcome = true;
       }
@@ -364,7 +366,9 @@ export class AITopicManager implements IAITopicManager {
         needsWelcome = messages.length === 0;
       } catch (e) {
         // Topic doesn't exist, create it with the PRIVATE AI contact
-        await this.topicGroupManager.createGroupTopic('LAMA', topicId, [privateAiPersonId]);
+        // CRITICAL: Include BOTH user and AI in participants so both get channels
+        const userPersonId = await this.leuteModel.myMainIdentity();
+        await this.topicGroupManager.createGroupTopic('LAMA', topicId, [userPersonId, privateAiPersonId]);
         topicRoom = await this.topicModel.enterTopicRoom(topicId);
         needsWelcome = true;
       }
@@ -416,6 +420,7 @@ export class AITopicManager implements IAITopicManager {
           // Get the topic object
           const topic = await this.topicModel.topics.queryById(topicId);
           if (!topic) {
+            console.log(`[AITopicManager] Topic ${topicId} not found, skipping`);
             continue;
           }
 
@@ -424,13 +429,17 @@ export class AITopicManager implements IAITopicManager {
           // Check if topic has a group (3+ participants including AI)
           if ((topic as any).group) {
             const group = await getIdObject((topic as any).group) as Group;
+            console.log(`[AITopicManager] Topic ${topicId} has group`);
 
             // NEW one.core structure: Group.hashGroup → HashGroup.person
             if (group.hashGroup) {
               const hashGroup = await getObject(group.hashGroup as SHA256Hash<HashGroup>) as HashGroup<Person>;
               if (hashGroup.person) {
+                console.log(`[AITopicManager] Topic ${topicId} has ${hashGroup.person.size} participants`);
                 for (const memberId of hashGroup.person) {
+                  console.log(`[AITopicManager] Checking participant: ${String(memberId).substring(0, 8)}...`);
                   const modelId = aiContactManager.getModelIdForPersonId(memberId);
+                  console.log(`[AITopicManager] Result: ${modelId || 'not AI'}`);
                   if (modelId) {
                     aiModelId = modelId;
                     console.log(`[AITopicManager] Found AI participant in ${topicId} (via Group): ${modelId}`);
@@ -443,13 +452,17 @@ export class AITopicManager implements IAITopicManager {
 
           // If not found via group, check messages for AI sender (P2P conversations)
           if (!aiModelId && !((topic as any).group)) {
+            console.log(`[AITopicManager] Topic ${topicId} has no group, checking messages...`);
             const topicRoom = await this.topicModel.enterTopicRoom(topicId);
             const messages = await topicRoom.retrieveAllMessages(); // Check messages
+            console.log(`[AITopicManager] Topic ${topicId} has ${messages.length} messages`);
 
             for (const msg of messages) {
               const msgSender = (msg as any).sender;
               if (msgSender) {
+                console.log(`[AITopicManager] Checking message sender: ${String(msgSender).substring(0, 8)}...`);
                 const modelId = aiContactManager.getModelIdForPersonId(msgSender);
+                console.log(`[AITopicManager] Result: ${modelId || 'not AI'}`);
                 if (modelId) {
                   aiModelId = modelId;
                   console.log(`[AITopicManager] Found AI participant in ${topicId} (via messages): ${modelId}`);
@@ -463,6 +476,8 @@ export class AITopicManager implements IAITopicManager {
           if (aiModelId) {
             this.registerAITopic(topicId, aiModelId);
             registeredCount++;
+          } else {
+            console.log(`[AITopicManager] No AI participant found in ${topicId}`);
           }
         } catch (error) {
           console.warn(`[AITopicManager] Error scanning topic:`, error);

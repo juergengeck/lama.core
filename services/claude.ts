@@ -52,14 +52,22 @@ class ClaudeService {
     try {
       if (options?.onStream) {
         // Streaming response
-        const stream = await this.client.messages.create({
+        const createParams: any = {
           model: modelId,
           max_tokens: options?.max_tokens || 4096,
           temperature: options?.temperature || 0.7,
           system: systemMessage,
           messages: anthropicMessages,
           stream: true
-        });
+        };
+
+        // Add tools if provided
+        if (options?.tools && Array.isArray(options.tools) && options.tools.length > 0) {
+          createParams.tools = options.tools;
+          console.log(`[ClaudeService] Streaming with ${options.tools.length} tools`);
+        }
+
+        const stream = await this.client.messages.create(createParams) as any;
 
         let fullResponse = '';
         for await (const event of stream) {
@@ -73,13 +81,21 @@ class ClaudeService {
         return fullResponse;
       } else {
         // Non-streaming response
-        const response = await this.client.messages.create({
+        const createParams: any = {
           model: modelId,
           max_tokens: options?.max_tokens || 4096,
           temperature: options?.temperature || 0.7,
           system: systemMessage,
           messages: anthropicMessages
-        });
+        };
+
+        // Add tools if provided
+        if (options?.tools && Array.isArray(options.tools) && options.tools.length > 0) {
+          createParams.tools = options.tools;
+          console.log(`[ClaudeService] Non-streaming with ${options.tools.length} tools`);
+        }
+
+        const response = await this.client.messages.create(createParams);
 
         // Extract text from response
         const textContent = response.content

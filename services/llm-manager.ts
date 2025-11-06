@@ -36,6 +36,7 @@ class LLMManager {
   mcpManager?: any; // Optional MCP manager (Electron only)
   forwardLog?: (level: string, message: string) => void; // Optional log forwarding
   systemPromptBuilder: SystemPromptBuilder; // System prompt builder for composable context injection
+  userSettingsManager?: any; // User settings manager for API keys
 
   constructor(
     platform?: LLMPlatform,
@@ -48,6 +49,7 @@ class LLMManager {
     this.platform = platform
     this.mcpManager = mcpManager
     this.forwardLog = forwardLog
+    this.userSettingsManager = userSettingsManager
     this.models = new Map()
     this.modelSettings = new Map()
     this.mcpClients = new Map()
@@ -75,6 +77,9 @@ class LLMManager {
     channelManager?: any
   ): void {
     console.log('[LLMManager] Updating SystemPromptBuilder dependencies')
+    console.log(`[LLMManager] userSettingsManager passed: ${userSettingsManager ? 'YES' : 'NO (undefined)'}`)
+    this.userSettingsManager = userSettingsManager
+    console.log(`[LLMManager] this.userSettingsManager after assignment: ${this.userSettingsManager ? 'SET' : 'NOT SET'}`)
     this.systemPromptBuilder = new SystemPromptBuilder(
       this.mcpManager,
       userSettingsManager,
@@ -373,6 +378,17 @@ class LLMManager {
               .replace(/\b\w/g, (char: string) => char.toUpperCase()) // Capitalize each word
           }
 
+          // Determine max output tokens based on model family
+          // Claude 3 (opus/sonnet/haiku): 4096 tokens
+          // Claude 3.5+: 8192 tokens
+          // Claude 4+: 16384 tokens
+          let maxOutputTokens = 8192 // Default for newer models
+          if (model.id.match(/^claude-3-(?:opus|sonnet|haiku)-/)) {
+            maxOutputTokens = 4096
+          } else if (model.id.match(/^claude-4/)) {
+            maxOutputTokens = 16384
+          }
+
           this.models.set(modelId, {
             id: modelId,
             name: displayName,
@@ -382,7 +398,7 @@ class LLMManager {
             contextLength: model.max_tokens || 200000,
             parameters: {
               temperature: 0.7,
-              maxTokens: 8192
+              maxTokens: maxOutputTokens
             }
           })
 
@@ -521,6 +537,24 @@ class LLMManager {
     const enhancedMessages = shouldDisableTools ? messages : await this.enhanceMessagesWithContext(messages, {})
     console.log(`[LLMManager] ENHANCEMENT ${shouldDisableTools ? 'SKIPPED' : 'COMPLETE'}`)
 
+    // Inject API key for Anthropic if not provided
+    if ((model as any).provider === 'anthropic' && !(options as any)?.apiKey) {
+      console.log(`[LLMManager] 🔍 DEBUG: this.userSettingsManager = ${this.userSettingsManager ? 'EXISTS' : 'UNDEFINED'}`)
+      console.log(`[LLMManager] 🔍 DEBUG: this.userSettingsManager type = ${typeof this.userSettingsManager}`)
+      if (this.userSettingsManager) {
+        const apiKey = await this.userSettingsManager.getApiKey('anthropic')
+        if (apiKey) {
+          console.log(`[LLMManager] Injected Claude API key from UserSettings`)
+          options = { ...options, apiKey }
+        } else {
+          console.error(`[LLMManager] ❌ No Claude API key found in UserSettings`)
+        }
+      } else {
+        console.error(`[LLMManager] ❌ UserSettingsManager not available, cannot retrieve API key`)
+        console.error(`[LLMManager] ❌ This should NOT happen if updateSystemPromptDependencies() was called!`)
+      }
+    }
+
     let response
 
     if ((model as any).provider === 'ollama') {
@@ -541,8 +575,8 @@ class LLMManager {
       personId: options.personId
     }
 
-    // Process tool calls if present
-    response = await this.processToolCalls(response, context)
+    // Process tool calls if present (ReACT pattern - tool results go back to LLM)
+    response = await this.processToolCalls(response, context, enhancedMessages, modelId, options)
 
     return response
   }
@@ -665,7 +699,7 @@ class LLMManager {
     return null
   }
 
-  async processToolCalls(response: any, context?: any): Promise<any> {
+  async processToolCalls(response: any, context?: any, messages?: any[], modelId?: string, options?: any): Promise<any> {
     console.log('[LLMManager] Checking for tool calls in response...')
 
     // Handle both string responses and object responses (with thinking)
@@ -716,12 +750,63 @@ class LLMManager {
           toolCall.parameters || {},
           context // Pass context for memory tools
         )
-        
+
         console.log('[LLMManager] Tool execution result:', JSON.stringify(result).substring(0, 200))
-        
-        // Format the result based on tool type with elegant, natural language
+
+        // Extract tool result text for the LLM to process
+        let toolResultText = ''
+        if (result.content && Array.isArray(result.content)) {
+          const textParts = result.content
+            .filter((c: any) => c.type === 'text')
+            .map((c: any) => c.text)
+          toolResultText = textParts.join('\n\n')
+        } else if (typeof result === 'string') {
+          toolResultText = result
+        } else {
+          toolResultText = JSON.stringify(result, null, 2)
+        }
+
+        // CRITICAL: Implement ReACT pattern - send tool result back to LLM for natural response
+        // Instead of returning the tool result directly, let the LLM process it
+        if (messages && modelId && options) {
+          console.log('[LLMManager] ReACT: Sending tool result back to LLM for natural response...')
+
+          // Build conversation with tool result
+          const conversationWithToolResult = [
+            ...messages,
+            {
+              role: 'assistant' as const,
+              content: responseText // The assistant's message with the tool call
+            },
+            {
+              role: 'user' as const,
+              content: `Tool result from ${toolCall.tool}:\n\n${toolResultText}\n\nPlease respond naturally to the user based on this information. Do not call any more tools, just provide a conversational response.`
+            }
+          ]
+
+          // CRITICAL: Recursively call chat() with disableTools to get proper streaming + analysis
+          // This ensures the follow-up response goes through the full chat pipeline
+          console.log('[LLMManager] ReACT: Recursively calling chat() for follow-up...')
+
+          const reactOptions = {
+            ...options,
+            disableTools: true // Disable tools for the follow-up call to avoid infinite loops
+          }
+
+          // Recursive call to chat() - will go through full pipeline including processToolCalls
+          // but tools are disabled so it won't loop
+          const finalResponse = await this.chat(conversationWithToolResult, modelId, reactOptions)
+
+          console.log('[LLMManager] ReACT: Got natural response from recursive chat()')
+          return finalResponse
+        }
+
+        // FALLBACK (for backward compatibility if messages/modelId not provided)
+        // Format the result and return it directly
+        console.warn('[LLMManager] No messages/modelId provided - falling back to direct tool result (not ideal)')
+
         let formattedResult = ''
-        
+
         if (toolCall.tool === 'filesystem:list_directory') {
           // Parse and format directory listing elegantly
           if (result.content && Array.isArray(result.content)) {
@@ -731,7 +816,7 @@ class LLMManager {
               const lines = textContent.text.split('\n').filter((line: any) => line.trim())
               const dirs: string[] = []
               const files: string[] = []
-              
+
               lines.forEach((line: any) => {
                 if (line.includes('[DIR]')) {
                   dirs.push(line.replace('[DIR]', '').trim())
@@ -739,9 +824,9 @@ class LLMManager {
                   files.push(line.replace('[FILE]', '').trim())
                 }
               })
-              
+
               formattedResult = 'Here\'s what I found in the current directory:\n\n'
-              
+
               if (dirs.length > 0) {
                 formattedResult += '**📁 Folders:**\n'
                 dirs.forEach(dir => {
@@ -749,14 +834,14 @@ class LLMManager {
                 })
                 if (files.length > 0) formattedResult += '\n'
               }
-              
+
               if (files.length > 0) {
                 formattedResult += '**📄 Files:**\n'
                 files.forEach(file => {
                   formattedResult += `• ${file}\n`
                 })
               }
-              
+
               formattedResult += `\n_Total: ${dirs.length} folders and ${files.length} files_`
             } else {
               formattedResult = 'I found the following items:\n\n' + JSON.stringify(result, null, 2)
@@ -764,51 +849,11 @@ class LLMManager {
           } else {
             formattedResult = 'Directory contents:\n\n' + JSON.stringify(result, null, 2)
           }
-        } else if (toolCall.tool.includes('read_file') || toolCall.tool.includes('read_text')) {
-          // Format file reading results
-          if (result.content && Array.isArray(result.content)) {
-            const textContent = result.content.find((c: any) => c.type === 'text')
-            if (textContent && textContent.text) {
-              const fileName = toolCall.parameters?.path || 'the file'
-              formattedResult = `Here's the content of ${fileName}:\n\n\`\`\`\n${textContent.text}\n\`\`\``
-            } else {
-              formattedResult = 'File content:\n\n' + JSON.stringify(result, null, 2)
-            }
-          } else {
-            formattedResult = result
-          }
-        } else if (toolCall.tool.includes('write_file') || toolCall.tool.includes('edit_file')) {
-          // Format file writing/editing results
-          formattedResult = '✅ File operation completed successfully.'
-          if (toolCall.parameters?.path) {
-            formattedResult = `✅ Successfully updated ${toolCall.parameters.path}`
-          }
-        } else if (toolCall.tool.includes('search')) {
-          // Format search results
-          if (result.content && Array.isArray(result.content)) {
-            const textContent = result.content.find((c: any) => c.type === 'text')
-            if (textContent && textContent.text) {
-              formattedResult = `Search results:\n\n${textContent.text}`
-            } else {
-              formattedResult = 'Search completed.'
-            }
-          } else {
-            formattedResult = result
-          }
-        } else if (result.content && Array.isArray(result.content)) {
-          // Generic MCP tool response with content array
-          const textParts = result.content
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-          formattedResult = textParts.join('\n\n')
-        } else if (typeof result === 'string') {
-          formattedResult = result
         } else {
-          // Fallback to JSON for complex objects
-          formattedResult = JSON.stringify(result, null, 2)
+          // Use the already extracted tool result text
+          formattedResult = toolResultText
         }
 
-        // Return the elegantly formatted result
         // Handle both string responses and object responses (with thinking)
         if (hasThinking && typeof response === 'object') {
           // For responses with thinking, replace in the content field
@@ -900,15 +945,27 @@ class LLMManager {
 
     console.log(`[LLMManager] Calling Claude with model ID: ${baseModelId}`)
 
+    // Get MCP tools if available and not explicitly disabled
+    const claudeOptions: any = {
+      apiKey,
+      temperature: model.parameters.temperature,
+      max_tokens: model.parameters.maxTokens,
+      onStream: options.onStream
+    };
+
+    // Add MCP tools unless explicitly disabled
+    if (!options.disableTools && this.mcpManager) {
+      const tools = this.mcpManager.getClaudeTools?.();
+      if (tools && Array.isArray(tools) && tools.length > 0) {
+        claudeOptions.tools = tools;
+        console.log(`[LLMManager] Passing ${tools.length} MCP tools to Claude`);
+      }
+    }
+
     return await chatWithClaude(
       baseModelId,
       messages,
-      {
-        apiKey,
-        temperature: model.parameters.temperature,
-        max_tokens: model.parameters.maxTokens,
-        onStream: options.onStream
-      }
+      claudeOptions
     )
   }
 
