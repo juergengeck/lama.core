@@ -19,7 +19,8 @@
     "paths": {
       "@refinio/*": ["./packages/*"],
       "@anthropic-ai/*": ["../lama.browser/node_modules/@anthropic-ai/*"],
-      "@chat/core/*": ["./packages/chat.core/*"]
+      "@chat/core/*": ["./packages/chat.core/*"],
+      "@mcp/core": ["../mcp.core/dist"]
     }
   },
   "include": ["ai/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "one-ai/**/*.ts", "services/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "*.d.ts"],

@@ -216,19 +216,24 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
             // Send streaming updates via platform
             if (this.platform) {
-              console.log('[AIMessageProcessor] 📡 Emitting streaming update, fullResponse length:', fullResponse.length);
+              // Reduced logging - only log every 100 chunks or final update
+              // console.log('[AIMessageProcessor] 📡 Emitting streaming update, fullResponse length:', fullResponse.length);
               this.platform.emitMessageUpdate(topicId, messageId, fullResponse, 'streaming');
             } else {
               console.warn('[AIMessageProcessor] ⚠️  No platform available for streaming!');
             }
           },
           onThinkingStream: (chunk: string) => {
+            // Reduced logging - only log significant events
+            // console.log('[AIMessageProcessor] 🧠 THINKING CHUNK RECEIVED, length:', chunk.length, 'total:', fullThinking.length);
             fullThinking += chunk;
 
             // Send thinking stream updates via platform
             if (this.platform) {
-              console.log('[AIMessageProcessor] 🧠 Emitting thinking stream update, length:', fullThinking.length);
+              // console.log('[AIMessageProcessor] 🧠 Emitting thinking stream update to platform, total length:', fullThinking.length);
               this.platform.emitThinkingUpdate(topicId, messageId, fullThinking);
+            } else {
+              console.error('[AIMessageProcessor] ❌ NO PLATFORM - cannot emit thinking stream!');
             }
           },
         },
@@ -327,6 +332,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
    */
   async handleNewTopic(topicId: string, modelId: string): Promise<void> {
     console.log(`[AIMessageProcessor] Handling new topic: ${topicId} with model: ${modelId}`);
+    console.log(`[AIMessageProcessor] STACK TRACE:`, new Error().stack);
 
     // Mark this topic as having welcome generation in progress
     const welcomePromise = this.generateWelcomeMessage(topicId, modelId);
@@ -374,6 +380,19 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           const topicRoom = await this.topicModel.enterTopicRoom(topicId);
           const aiPersonId = await this.getAIPersonIdForModel(modelId);
           if (aiPersonId && topicRoom) {
+            // Create the AI's channel first
+            console.log(`[AIMessageProcessor] 🔍 Creating AI channel for hardcoded welcome - topic: ${topicId}, owner: ${aiPersonId.toString().substring(0, 16)}...`);
+            try {
+              await this.channelManager.createChannel(topicId, aiPersonId);
+              console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: AI channel created for hardcoded welcome`);
+            } catch (channelError: any) {
+              if (channelError?.message?.includes('already exists')) {
+                console.log(`[AIMessageProcessor] ℹ️  AI channel already exists`);
+              } else {
+                throw channelError;
+              }
+            }
+
             await topicRoom.sendMessage(hardcodedWelcome, aiPersonId, aiPersonId);
             console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Hardcoded welcome message stored`);
 
@@ -391,6 +410,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           }
         } catch (storeError) {
           console.error('[AIMessageProcessor] Failed to store hardcoded welcome:', storeError);
+          throw storeError;  // Don't swallow errors
         }
 
         console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: ✅ Hardcoded welcome complete for topic: ${topicId}`);
@@ -475,10 +495,24 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         console.log(`[AIMessageProcessor] 🔍 aiPersonId:`, aiPersonId ? aiPersonId.toString().substring(0, 16) + '...' : 'NULL');
 
         if (aiPersonId && topicRoom) {
-          // Send message as the AI (channelOwner = aiPersonId for AI's channel)
-          // Store the extracted response (without thinking tags)
+          // CRITICAL: Create the AI's channel BEFORE posting
+          // Channels are for transport, not storage. We must create the channel first.
+          console.log(`[AIMessageProcessor] 🔍 Creating AI channel for topic: ${topicId}, owner: ${aiPersonId.toString().substring(0, 16)}...`);
+          try {
+            await this.channelManager.createChannel(topicId, aiPersonId);
+            console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: AI channel created`);
+          } catch (channelError: any) {
+            // Channel might already exist - that's fine
+            if (channelError?.message?.includes('already exists')) {
+              console.log(`[AIMessageProcessor] ℹ️  AI channel already exists`);
+            } else {
+              throw channelError;
+            }
+          }
+
+          // Now send the message (topicRoom.sendMessage stores + posts to channel)
           await topicRoom.sendMessage(finalResponse, aiPersonId, aiPersonId);
-          console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Welcome message stored in ONE.core`);
+          console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Welcome message stored and posted to channel`);
 
           // Add welcome message to cache
           if (this.promptBuilder) {

@@ -27,6 +27,7 @@ export interface AIContactManagerDeps {
   getIdObject: (idHash: SHA256IdHash<any>) => Promise<any>;
   createDefaultKeys?: (owner: SHA256IdHash<Person | Instance>, encryptionKeyPair?: KeyPair, signKeyPair?: SignKeyPair) => Promise<SHA256Hash<Keys>>;
   hasDefaultKeys?: (owner: SHA256IdHash<Person | Instance>) => Promise<boolean>;
+  queryLLMObjects?: () => AsyncIterable<any>;
 }
 
 export class AIContactManager implements IAIContactManager {
@@ -144,13 +145,14 @@ export class AIContactManager implements IAIContactManager {
         const myId = await this.leuteModel.myMainIdentity();
 
         // Create Profile object directly (using all required properties from recipe)
+        // NOTE: personDescription can be empty - ProfileModel will handle adding PersonName later if needed
         const profileObj: any = {
           $type$: 'Profile' as const,
           profileId: `ai-${modelId}`,  // ID property
           personId: personIdHash,  // referenceToId
           owner: myId,
-          nickname: displayName,  // Profile recipe uses 'nickname', not 'name'
-          personDescription: [],  // Singular, not plural
+          nickname: displayName,  // Profile recipe uses 'nickname' for display name
+          personDescription: [],  // Empty for now - PersonName requires ProfileModel API to add properly
           communicationEndpoint: []  // Singular, not plural
         };
 
@@ -168,6 +170,10 @@ export class AIContactManager implements IAIContactManager {
 
         const someoneResult: any = await this.deps.storeVersionedObject(newSomeone);
         const someoneIdHash = typeof someoneResult === 'object' && someoneResult?.idHash ? someoneResult.idHash : someoneResult;
+
+        // Register the Someone with LeuteModel so it appears in leuteModel.others()
+        await this.leuteModel.addSomeoneElse(someoneIdHash);
+        console.log(`[AIContactManager] Registered Someone with LeuteModel: ${someoneIdHash.toString().substring(0, 8)}...`);
 
         // NOTE: Do NOT call addProfile() here - it would try to create another Someone
         // The Person/Profile/Someone structure is already complete
@@ -216,57 +222,52 @@ export class AIContactManager implements IAIContactManager {
 
   /**
    * Load existing AI contacts from storage
-   * Scans LeuteModel for AI contacts and rebuilds caches
+   * Uses LLM objects as the source of truth for modelId ↔ personId mappings
    */
   async loadExistingAIContacts(models: LLMModelInfo[]): Promise<number> {
-    console.log('[AIContactManager] Loading existing AI contacts...');
+    console.log('[AIContactManager] Loading existing AI contacts from LLM objects...');
+
+    if (!this.llmObjectManager) {
+      throw new Error(`[AIContactManager] llmObjectManager not initialized - required for AI contact loading`);
+    }
 
     try {
-      const others = await this.leuteModel.others();
-      console.log(`[AIContactManager] Found ${others.length} total contacts`);
+      // Get all LLM objects from storage (this is the source of truth)
+      const allLLMs = this.llmObjectManager.getAllLLMObjects();
+      console.log(`[AIContactManager] Found ${allLLMs.length} total LLM objects`);
 
       let aiContactCount = 0;
 
-      for (const someone of others) {
-        try {
-          const personId = await someone.mainIdentity();
+      for (const llm of allLLMs) {
+        const llmData = llm as any;
 
-          // Get Person object to check email
-          const person = await this.deps.getIdObject(personId);
-          const email = (person as any).email || '';
+        // Only process LLM objects that have a personId (AI contacts)
+        if (llmData.personId && llmData.modelId) {
+          console.log(`[AIContactManager] ✅ Found AI contact: ${llmData.modelId} (person: ${llmData.personId.toString().substring(0, 8)}...)`);
 
-          // AI contacts have emails like "modelId@ai.local"
-          if (email.endsWith('@ai.local')) {
-            const emailPrefix = email.replace('@ai.local', '');
+          // Rebuild caches from LLM objects
+          this.aiContacts.set(llmData.modelId, llmData.personId);
+          this.personToModel.set(llmData.personId, llmData.modelId);
 
-            // Find matching model by checking if emailPrefix matches model ID pattern
-            for (const model of models) {
-              const expectedEmailPrefix = model.id.replace(/[^a-zA-Z0-9]/g, '_');
-              if (emailPrefix === expectedEmailPrefix) {
-                console.log(`[AIContactManager] ✅ Found AI contact: ${model.id} (person: ${personId.toString().substring(0, 8)}...)`);
-
-                // Cache the AI contact
-                this.aiContacts.set(model.id, personId);
-                this.personToModel.set(personId, model.id);
-
-                // Ensure LLM object exists
-                if (!this.llmObjectManager) {
-                  throw new Error(`[AIContactManager] llmObjectManager not initialized - required for AI contact loading`);
-                }
-                await this.createLLMObjectForAI(model.id, model.name, personId);
-                console.log(`[AIContactManager] Ensured LLM object for ${model.id}`);
-
-                aiContactCount++;
-                break;
-              }
+          // Find the Someone object for this personId and register it with LeuteModel
+          try {
+            const someone = await this.leuteModel.getSomeone(llmData.personId);
+            if (someone) {
+              const someoneIdHash = someone.idHash;
+              await this.leuteModel.addSomeoneElse(someoneIdHash);
+              console.log(`[AIContactManager] Registered existing Someone with LeuteModel: ${someoneIdHash.toString().substring(0, 8)}...`);
+            } else {
+              console.warn(`[AIContactManager] Could not find Someone for personId ${llmData.personId.toString().substring(0, 8)}...`);
             }
+          } catch (error) {
+            console.warn(`[AIContactManager] Failed to register Someone for ${llmData.modelId}:`, error);
           }
-        } catch (err) {
-          console.warn('[AIContactManager] Error processing contact:', err);
+
+          aiContactCount++;
         }
       }
 
-      console.log(`[AIContactManager] ✅ Loaded ${aiContactCount} AI contacts from ${others.length} total contacts`);
+      console.log(`[AIContactManager] ✅ Loaded ${aiContactCount} AI contacts from LLM objects`);
       return aiContactCount;
     } catch (error) {
       console.error('[AIContactManager] Failed to load AI contacts:', error);
@@ -321,7 +322,7 @@ export class AIContactManager implements IAIContactManager {
     await this.llmObjectManager.create({
       modelId,
       name: displayName,
-      aiPersonId: personId,
+      aiPersonId: personId
     });
   }
 }

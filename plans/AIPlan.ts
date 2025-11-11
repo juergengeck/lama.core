@@ -247,7 +247,8 @@ export class AIPlan {
 
         // Process analysis in background if available
         if (result.analysis && this.nodeOneCore?.topicAnalysisModel && request.topicId) {
-          setImmediate(async () => {
+          // Use setTimeout for browser compatibility (setImmediate is Node.js only)
+          setTimeout(async () => {
             try {
               console.log('[AIPlan] Processing analysis in background for topic:', request.topicId);
 
@@ -259,15 +260,17 @@ export class AIPlan {
                     const keywordTerms = subject.keywords?.map((kw: any) => kw.term || kw) || [];
 
                     // Create subject -> returns subject with idHash
+                    // Subject ID is the alphabetically sorted keyword combination for exact identity matching
+                    const subjectId = [...keywordTerms].sort().join('+');
                     const createdSubject = await this.nodeOneCore.topicAnalysisModel.createSubject(
                       request.topicId,
                       keywordTerms,
-                      subject.name,
+                      subjectId,
                       subject.description,
                       0.8
                     );
 
-                    console.log(`[AIPlan] Created subject: ${subject.name} with ID: ${createdSubject.idHash}`);
+                    console.log(`[AIPlan] Created subject: ${subjectId} with ID hash: ${createdSubject.idHash}`);
 
                     // Store each keyword with reference to this subject
                     for (const keyword of (subject.keywords || [])) {
@@ -314,7 +317,8 @@ export class AIPlan {
 
         // Process analysis in background if available
         if (chatResult.analysis && this.nodeOneCore?.topicAnalysisModel && request.topicId) {
-          setImmediate(async () => {
+          // Use setTimeout for browser compatibility (setImmediate is Node.js only)
+          setTimeout(async () => {
             try {
               console.log('[AIPlan] Processing analysis in background for topic:', request.topicId);
 
@@ -326,15 +330,17 @@ export class AIPlan {
                     const keywordTerms = subject.keywords?.map((kw: any) => kw.term || kw) || [];
 
                     // Create subject -> returns subject with idHash
+                    // Subject ID is the alphabetically sorted keyword combination for exact identity matching
+                    const subjectId = [...keywordTerms].sort().join('+');
                     const createdSubject = await this.nodeOneCore.topicAnalysisModel.createSubject(
                       request.topicId,
                       keywordTerms,
-                      subject.name,
+                      subjectId,
                       subject.description,
                       0.8
                     );
 
-                    console.log(`[AIPlan] Created subject: ${subject.name} with ID: ${createdSubject.idHash}`);
+                    console.log(`[AIPlan] Created subject: ${subjectId} with ID hash: ${createdSubject.idHash}`);
 
                     // Store each keyword with reference to this subject
                     for (const keyword of (subject.keywords || [])) {

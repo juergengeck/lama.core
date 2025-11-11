@@ -11,6 +11,9 @@ declare module '@OneObjectInterfaces' {
         GlobalLLMSettings: GlobalLLMSettings;
         Keyword: Keyword;
         ProposalConfig: ProposalConfig;
+        Proposal: Proposal;
+        ProposalInteractionPlan: ProposalInteractionPlan;
+        ProposalInteractionResponse: ProposalInteractionResponse;
     }
 
     // Add our custom ID object types
@@ -21,17 +24,15 @@ declare module '@OneObjectInterfaces' {
     // Define our custom object interfaces
     export interface GlobalLLMSettings {
         $type$: 'GlobalLLMSettings';
-        name: string; // Instance ID - this is the ID field
+        creator: string; // Person ID hash - this is the ID field (enables direct lookup)
+        created: number;
+        modified: number;
         defaultModelId?: string;
-        temperature?: number;
-        maxTokens?: number;
-        defaultProvider: string;
-        autoSelectBestModel: boolean;
-        preferredModelIds: string[];
-        systemPrompt?: string;
-        streamResponses?: boolean;
-        autoSummarize?: boolean;
-        enableMCP?: boolean;
+        temperature: number;
+        maxTokens: number;
+        enableAutoSummary: boolean;
+        enableAutoResponse: boolean;
+        defaultPrompt: string;
     }
 
     export interface LLM {
@@ -94,5 +95,36 @@ declare module '@OneObjectInterfaces' {
         minJaccard: number; // 0.0 to 1.0 - minimum Jaccard similarity threshold
         maxProposals: number; // 1-50 - maximum number of proposals to return
         updatedAt: number; // Unix timestamp of last update
+    }
+
+    export interface Proposal {
+        $type$: 'Proposal';
+        topicId: string; // ID property - where proposal appears
+        pastSubject: string; // ID property - IdHash of past subject to share
+        currentSubject?: string; // ID property - IdHash of current subject (optional for topic-level)
+        matchedKeywords: string[]; // Keywords that matched
+        relevanceScore: number; // Combined match + recency score
+        sourceTopicId: string; // Where the past subject comes from
+        pastSubjectName: string; // Display name
+        createdAt: number; // Unix timestamp
+    }
+
+    export interface ProposalInteractionPlan {
+        $type$: 'ProposalInteractionPlan';
+        userEmail: string; // ID property - who is interacting
+        proposalIdHash: string; // ID property - which proposal (IdHash)
+        action: 'view' | 'dismiss' | 'share'; // ID property - what action
+        topicId: string; // Context: where the interaction happened
+        createdAt: number; // Unix timestamp
+    }
+
+    export interface ProposalInteractionResponse {
+        $type$: 'ProposalInteractionResponse';
+        plan: string; // ID property - IdHash of the plan
+        success: boolean; // Did the action succeed?
+        executedAt: number; // Unix timestamp
+        sharedToTopicId?: string; // Optional: for 'share' actions
+        viewDuration?: number; // Optional: for 'view' actions (milliseconds)
+        error?: string; // Optional: if success = false
     }
 }

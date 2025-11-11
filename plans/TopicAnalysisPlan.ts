@@ -10,6 +10,7 @@
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
+import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import type { Subject } from '../one-ai/types/Subject.js';
 import type { Keyword } from '../one-ai/types/Keyword.js';
 
@@ -395,8 +396,10 @@ ${String(conversationText).substring(0, 3000)}`;
    * Get all subjects for a topic with keyword resolution
    */
   async getSubjects(request: GetSubjectsRequest): Promise<GetSubjectsResponse> {
+    console.log('[TopicAnalysisPlan.getSubjects] Called for topicId:', request.topicId);
     try {
       if (!this.topicAnalysisModel) {
+        console.log('[TopicAnalysisPlan.getSubjects] ❌ Topic Analysis Model not initialized');
         return {
           success: false,
           error: 'Topic Analysis Model not initialized',
@@ -405,43 +408,42 @@ ${String(conversationText).substring(0, 3000)}`;
       }
 
       const subjects = await this.topicAnalysisModel.getSubjects(request.topicId as SHA256IdHash<any>);
+      console.log('[TopicAnalysisPlan.getSubjects] Got', subjects.length, 'subjects from model');
 
-      // Get all keywords to resolve ID hashes to terms
-      const allKeywords = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
-
-      // Create a map of keyword ID hash -> keyword term
-      const keywordHashToTerm = new Map<string, string>();
-
-      for (const keyword of allKeywords) {
-        if (keyword.term) {
-          const keywordIdObj = {
-            $type$: 'Keyword' as const,
-            term: keyword.term.toLowerCase().trim()
-          };
-          const idHash = await calculateIdHashOfObj(keywordIdObj as any);
-          keywordHashToTerm.set(idHash, keyword.term);
-        }
-      }
-
-      // Resolve keyword ID hashes to terms in each subject
-      const resolvedSubjects = subjects.map((subject: any) => {
-        const resolvedKeywords = (subject.keywords || []).map((keywordHash: string) => {
-          const term = keywordHashToTerm.get(keywordHash);
-          if (!term) {
-            console.warn('[TopicAnalysisPlan] Could not resolve keyword hash:', keywordHash.substring(0, 16));
+      // Resolve keyword ID hashes to terms by loading the Keyword objects
+      const resolvedSubjects = await Promise.all(subjects.map(async (subject: any) => {
+        const resolvedKeywords = await Promise.all((subject.keywords || []).map(async (keywordHash: SHA256IdHash<any>) => {
+          try {
+            const result = await getObjectByIdHash(keywordHash);
+            if (result && result.obj && result.obj.term) {
+              return result.obj.term;
+            }
+          } catch (err) {
+            console.warn('[TopicAnalysisPlan] Could not load keyword:', keywordHash.substring(0, 16), err);
           }
-          return term || keywordHash;
-        });
+          return null;
+        }));
+
+        // Filter out nulls, fall back to splitting the id field if needed
+        const validKeywords = resolvedKeywords.filter(k => k !== null);
+        const finalKeywords = validKeywords.length > 0
+          ? validKeywords
+          : (subject.id ? subject.id.split('+') : []);
 
         return {
           ...subject,
-          keywords: resolvedKeywords
+          keywords: finalKeywords
         };
-      });
+      }));
 
       const filteredSubjects = request.includeArchived
         ? resolvedSubjects
         : resolvedSubjects.filter((s: any) => !s.archived);
+
+      console.log('[TopicAnalysisPlan.getSubjects] Returning', filteredSubjects.length, 'subjects');
+      if (filteredSubjects.length > 0) {
+        console.log('[TopicAnalysisPlan.getSubjects] First subject:', JSON.stringify(filteredSubjects[0]).substring(0, 200));
+      }
 
       return {
         success: true,

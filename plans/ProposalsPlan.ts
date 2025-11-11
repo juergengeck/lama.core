@@ -16,6 +16,11 @@ import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Subject } from '../one-ai/types/Subject.js';
 import type { Keyword } from '../one-ai/types/Keyword.js';
+import {
+  createProposalInteractionPlan,
+  createProposalInteractionResponse,
+  isProposalDismissed,
+} from './ProposalInteractions.js';
 
 // Re-export types for consumers
 export interface Proposal {
@@ -91,6 +96,7 @@ export interface ShareResponse {
   success: boolean;
   sharedContent: {
     subjectName: string;
+    description?: string; // Human-readable description of the subject
     keywords: string[];
     messages?: any[];
   };
@@ -102,7 +108,7 @@ const DEFAULT_CONFIG: ProposalConfig = {
   matchWeight: 0.7,
   recencyWeight: 0.3,
   recencyWindow: 30 * 24 * 60 * 60 * 1000, // 30 days
-  minJaccard: 0.2,
+  minJaccard: 0.1, // 10% match - lowered from 0.2 to catch more proposals with short input
   maxProposals: 10,
   updatedAt: Date.now(),
 };
@@ -232,10 +238,27 @@ export class ProposalsPlan {
       const rankedProposals = this.proposalRanker.rankProposals(proposals, config);
       console.log('[ProposalsPlan] Ranked proposals:', rankedProposals.length);
 
-      // Filter against dismissed proposals
-      const filtered = rankedProposals.filter(
-        (p: Proposal) => !this.dismissedProposals.has(`${request.topicId}:${p.pastSubject}`)
-      );
+      // Filter against dismissed proposals (both in-memory and stored in ONE.core)
+      const userEmail = this.nodeOneCore.email || 'user@example.com';
+      const filtered: Proposal[] = [];
+
+      for (const proposal of rankedProposals) {
+        // Check in-memory set first (fast)
+        if (this.dismissedProposals.has(`${request.topicId}:${proposal.pastSubject}`)) {
+          continue;
+        }
+
+        // Check stored dismissals/shares in ONE.core (persistent across sessions)
+        const isDismissed = await isProposalDismissed(userEmail, proposal.pastSubject as any);
+        if (isDismissed) {
+          // Add to in-memory set for faster future checks
+          this.dismissedProposals.add(`${request.topicId}:${proposal.pastSubject}`);
+          continue;
+        }
+
+        filtered.push(proposal);
+      }
+
       console.log('[ProposalsPlan] Filtered proposals (after dismissals):', filtered.length);
 
       // Cache results
@@ -295,15 +318,19 @@ export class ProposalsPlan {
         updatedAt: Date.now(),
       };
 
-      // Store as versioned object
+      console.log('[ProposalsPlan] Storing updated config for user:', updatedConfig.userEmail);
+
+      // Store as versioned object with ALL fields
+      // ONE.core will use only ID fields (from isId: true) to calculate ID hash
       const configObject = {
         $type$: 'ProposalConfig' as const,
         ...updatedConfig,
       };
 
       const result = await storeVersionedObject(configObject);
+      console.log('[ProposalsPlan] Config stored with hash:', result.hash);
 
-      // Invalidate proposal cache
+      // Invalidate proposal cache (config changes affect matching)
       this.proposalCache.clear();
 
       return {
@@ -339,7 +366,10 @@ export class ProposalsPlan {
   }
 
   /**
-   * Dismiss a proposal for the current session
+   * Dismiss a proposal (Plan/Response pattern)
+   *
+   * Creates a ProposalInteractionPlan with action='dismiss' and stores it permanently.
+   * The proposal ID hash comes from the pastSubjectIdHash.
    */
   async dismiss(request: DismissRequest): Promise<DismissResponse> {
     try {
@@ -347,7 +377,23 @@ export class ProposalsPlan {
         throw new Error('PROPOSAL_NOT_FOUND: Missing required parameters');
       }
 
-      // Add to dismissed set (session-only)
+      // Get current user email
+      const userEmail = this.nodeOneCore.email || 'user@example.com';
+
+      // Create ProposalInteractionPlan (stores permanently in ONE.core)
+      const { planIdHash } = await createProposalInteractionPlan(
+        userEmail,
+        request.pastSubjectIdHash as any,
+        'dismiss',
+        request.topicId
+      );
+
+      // Create ProposalInteractionResponse
+      await createProposalInteractionResponse(planIdHash, true);
+
+      console.log('[ProposalsPlan] ✅ Dismissed proposal:', request.pastSubjectIdHash);
+
+      // Also add to in-memory set for immediate filtering (performance optimization)
       const dismissKey = `${request.topicId}:${request.pastSubjectIdHash}`;
       this.dismissedProposals.add(dismissKey);
 
@@ -366,7 +412,9 @@ export class ProposalsPlan {
   }
 
   /**
-   * Share a proposal into the current conversation
+   * Share a proposal into the current conversation (Plan/Response pattern)
+   *
+   * Creates a ProposalInteractionPlan with action='share' and stores it permanently.
    */
   async share(request: ShareRequest): Promise<ShareResponse> {
     try {
@@ -378,8 +426,9 @@ export class ProposalsPlan {
 
       const pastSubject = result.obj;
 
-      // Get subject name and keywords
+      // Get subject name, description, and keywords
       const subjectName = pastSubject.id || 'Unknown Subject';
+      const description = pastSubject.description; // Human-readable description if available
       const keywords: string[] = [];
 
       // Retrieve keyword terms from ONE.core
@@ -407,7 +456,25 @@ export class ProposalsPlan {
         // For now, return empty array
       }
 
-      // Mark proposal as dismissed
+      // Get current user email
+      const userEmail = this.nodeOneCore.email || 'user@example.com';
+
+      // Create ProposalInteractionPlan (stores permanently in ONE.core)
+      const { planIdHash } = await createProposalInteractionPlan(
+        userEmail,
+        request.pastSubjectIdHash as any,
+        'share',
+        request.topicId
+      );
+
+      // Create ProposalInteractionResponse
+      await createProposalInteractionResponse(planIdHash, true, {
+        sharedToTopicId: request.topicId,
+      });
+
+      console.log('[ProposalsPlan] ✅ Shared proposal:', request.pastSubjectIdHash, 'to topic:', request.topicId);
+
+      // Also add to in-memory set for immediate filtering (shared proposals are also dismissed)
       const dismissKey = `${request.topicId}:${request.pastSubjectIdHash}`;
       this.dismissedProposals.add(dismissKey);
 
@@ -415,6 +482,7 @@ export class ProposalsPlan {
         success: true,
         sharedContent: {
           subjectName,
+          description, // Human-readable description (if available)
           keywords,
           messages: request.includeMessages ? messages : undefined,
         },
@@ -430,31 +498,41 @@ export class ProposalsPlan {
 
   /**
    * Helper: Get current user config or return defaults
+   *
+   * CRITICAL: When using isId: true in recipes, ONE.core calculates the ID hash
+   * using ONLY the ID fields ($type$ + userEmail). We must use the same
+   * minimal object structure when retrieving.
    */
   private async getCurrentConfig(): Promise<ProposalConfig> {
     try {
       // Get current user email from nodeOneCore
       const userEmail = this.nodeOneCore.email || 'user@example.com';
 
-      // Calculate ID hash for ProposalConfig
+      // Calculate ID hash using ONLY ID fields (matching recipe's isId: true)
+      // This must match what ONE.core uses when storing with isId: true
       const configIdObj = {
         $type$: 'ProposalConfig' as const,
         userEmail,
       };
       const configIdHash = await calculateIdHashOfObj(configIdObj as any);
 
-      // Retrieve from ONE.core
+      console.log('[ProposalsPlan] Looking up config for user:', userEmail, 'idHash:', configIdHash);
+
+      // Retrieve from ONE.core by ID hash
       const result = await getObjectByIdHash(configIdHash);
       if (result && result.obj) {
+        console.log('[ProposalsPlan] Found stored config:', result.obj);
         return result.obj as any as ProposalConfig;
       }
 
+      console.log('[ProposalsPlan] No stored config found, using defaults');
       // Return defaults if not found
       return {
         ...DEFAULT_CONFIG,
         userEmail,
       };
     } catch (error) {
+      console.error('[ProposalsPlan] Error retrieving config, using defaults:', error);
       // Return defaults on error
       return {
         ...DEFAULT_CONFIG,

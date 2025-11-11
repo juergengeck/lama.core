@@ -26,7 +26,8 @@
   "peerDependencies": {
     "@refinio/one.core": "*",
     "@refinio/one.models": "*",
-    "@chat/core": "*"
+    "@chat/core": "*",
+    "@mcp/core": "*"
   },
   "devDependencies": {
     "@types/chai-as-promised": "^8.0.2",

@@ -415,7 +415,8 @@ Updated summary:`;
 
       // Yield to prevent blocking
       if (i + batchSize < messages.length) {
-        await new Promise(resolve => setImmediate(resolve));
+        // Use setTimeout for browser compatibility (setImmediate is Node.js only)
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
     }
 

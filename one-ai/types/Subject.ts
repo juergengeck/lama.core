@@ -19,5 +19,6 @@ export interface Subject {
   messageCount: number;
   createdAt: number;
   lastSeenAt: number;
+  description?: string; // LLM-generated description of the subject
   archived?: boolean;
 }

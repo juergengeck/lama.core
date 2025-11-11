@@ -313,7 +313,7 @@ class LLMManager {
             parameters: {
               modelName: parsedModel.name, // The actual Ollama model name
               temperature: 0.7,
-              maxTokens: 2048
+              maxTokens: 1024  // Reduced from 2048 - reasoning models expand this significantly
             }
           })
 
@@ -882,7 +882,9 @@ class LLMManager {
           temperature: model.parameters.temperature,
           max_tokens: model.parameters.maxTokens,
           onStream: options.onStream,
-          format: options.format  // Pass through structured output schema
+          onThinkingStream: options.onThinkingStream,  // Pass through thinking stream callback
+          format: options.format,  // Pass through structured output schema
+          topicId: options.topicId  // Pass through topicId for request tracking and cancellation
         }
       )
     } catch (error: any) {

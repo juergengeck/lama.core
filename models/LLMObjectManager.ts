@@ -36,6 +36,7 @@ export interface LLMObject {
 export interface LLMObjectManagerDeps {
     storeVersionedObject: (obj: any) => Promise<any>;
     createAccess?: (accessRequests: any[]) => Promise<void>;
+    queryAllLLMObjects?: () => AsyncIterable<LLMObject>;
 }
 
 interface CachedLLMObject extends LLMObject {
@@ -61,13 +62,51 @@ export class LLMObjectManager {
 
     /**
      * Initialize the manager
-     * Note: Cache is populated by AIContactManager when loading existing AI contacts
+     * Loads existing LLM objects from storage
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
 
-        console.log('[LLMObjectManager] Initializing (cache populated by AIContactManager)');
+        console.log('[LLMObjectManager] Initializing - loading LLM objects from storage');
+        await this.loadLLMObjectsFromStorage();
         this.initialized = true;
+    }
+
+    /**
+     * Load all LLM objects from ONE.core storage
+     * This is the source of truth for modelId ↔ personId mappings
+     */
+    async loadLLMObjectsFromStorage(): Promise<number> {
+        if (!this.deps.queryAllLLMObjects) {
+            console.log('[LLMObjectManager] queryAllLLMObjects not provided, skipping storage load');
+            return 0;
+        }
+
+        try {
+            console.log('[LLMObjectManager] Loading LLM objects from storage...');
+            const llmObjectsIterator = this.deps.queryAllLLMObjects();
+
+            let loadedCount = 0;
+            for await (const llmObject of llmObjectsIterator) {
+                // Only cache LLM objects that have a personId (AI contacts)
+                if (llmObject.personId && llmObject.modelId) {
+                    this.llmObjects.set(llmObject.modelId, {
+                        ...llmObject,
+                        isAI: true,
+                    });
+                    loadedCount++;
+                    console.log(
+                        `[LLMObjectManager] ✅ Loaded AI LLM: ${llmObject.modelId} (person: ${llmObject.personId.toString().substring(0, 8)}...)`
+                    );
+                }
+            }
+
+            console.log(`[LLMObjectManager] ✅ Loaded ${loadedCount} AI LLM objects from storage`);
+            return loadedCount;
+        } catch (error) {
+            console.error('[LLMObjectManager] Failed to load LLM objects from storage:', error);
+            throw error;
+        }
     }
 
     /**

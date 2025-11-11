@@ -109,6 +109,14 @@ export class LLMAnalysisService implements AnalysisService {
         }
         const parsed = JSON.parse(cleanJson);
 
+        // DEBUG: Log what the LLM actually returned
+        console.log('[AnalysisService] 🔍 LLM returned:', JSON.stringify(parsed).substring(0, 500));
+        console.log('[AnalysisService] 🔍 parsed.analysis exists?', !!parsed.analysis);
+        console.log('[AnalysisService] 🔍 parsed.subjects exists?', !!parsed.subjects);
+        if (parsed.analysis) {
+          console.log('[AnalysisService] 🔍 parsed.analysis.subjects length:', parsed.analysis.subjects?.length || 0);
+        }
+
         // Convert to standard Analysis format
         const analysis = this.parseAnalysisResponse(parsed);
 
@@ -295,12 +303,15 @@ export class LLMAnalysisService implements AnalysisService {
    * Parse LLM response into Analysis format
    */
   private parseAnalysisResponse(parsed: any): Analysis {
-    const subjects: Subject[] = (parsed.subjects || []).map((subject: any) => {
-      const conceptsArray = subject.key_concepts || subject.keyConcepts || subject.concepts || [];
+    // Handle nested structure: {analysis: {subjects: [...], summaryUpdate: "..."}}
+    const analysisData = parsed.analysis || parsed;
+    const subjects: Subject[] = (analysisData.subjects || []).map((subject: any) => {
+      // Support both 'keywords' array (new schema) and 'concepts' array (fallback)
+      const keywordsArray = subject.keywords || subject.key_concepts || subject.keyConcepts || subject.concepts || [];
 
-      const keywords = conceptsArray.map((item: any) => {
+      const keywords = keywordsArray.map((item: any) => {
         if (typeof item === 'object' && item !== null) {
-          const term = item.keyword || item.term || item.concept;
+          const term = item.term || item.keyword || item.concept;
           if (term) {
             return {
               term: String(term),
@@ -328,7 +339,7 @@ export class LLMAnalysisService implements AnalysisService {
     return {
       subjects,
       keywords: [...new Set(allKeywords)],  // Deduplicate
-      summary: parsed.summary || '',
+      summary: analysisData.summaryUpdate || analysisData.summary || '',
       confidence: parsed.confidence || 0.8
     };
   }

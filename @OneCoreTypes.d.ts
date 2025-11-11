@@ -15,7 +15,7 @@ declare module '@OneObjectInterfaces' {
         $type$: 'Subject';
         id: string; // keyword combination (e.g., "pizza+baker+career")
         topic: string; // reference to parent topic (channel ID)
-        keywords: string[];
+        keywords: SHA256IdHash<Keyword>[]; // Array of Keyword ID hashes
         timeRanges: Array<{
             start: number;
             end: number;
@@ -23,6 +23,7 @@ declare module '@OneObjectInterfaces' {
         messageCount: number;
         createdAt: number;
         lastSeenAt: number;
+        description?: string; // LLM-generated description
         archived?: boolean;
         likes?: number;
         dislikes?: number;
@@ -33,7 +34,7 @@ declare module '@OneObjectInterfaces' {
         $type$: 'Keyword';
         term: string; // ID field - deterministic lookup
         frequency: number;
-        subjects: string[]; // Subject IDs (keyword combinations)
+        subjects: SHA256IdHash<Subject>[]; // Array of Subject ID hashes
         score?: number;
         createdAt: number;
         lastSeen: number;
@@ -116,19 +117,18 @@ declare module '@OneObjectInterfaces' {
     }
 
     // GlobalLLMSettings - global settings for LLM management
+    // Uses creator (Person ID) as ID field for direct retrieval
     export interface GlobalLLMSettings {
         $type$: 'GlobalLLMSettings';
-        name: string; // Instance ID - this is the ID field
-        defaultProvider: string;
-        autoSelectBestModel: boolean;
-        preferredModelIds: string[];
+        creator: string; // Person ID hash - ID field (enables direct lookup, NO QUERIES)
+        created: number;
+        modified: number;
         defaultModelId?: string;
-        temperature?: number;
-        maxTokens?: number;
-        systemPrompt?: string;
-        streamResponses?: boolean;
-        autoSummarize?: boolean;
-        enableMCP?: boolean;
+        temperature: number;
+        maxTokens: number;
+        enableAutoSummary: boolean;
+        enableAutoResponse: boolean;
+        defaultPrompt: string;
     }
 
     // MessageAssertion for verifiable message credentials

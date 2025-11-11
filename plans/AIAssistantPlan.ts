@@ -151,6 +151,19 @@ export class AIAssistantPlan {
   }
 
   /**
+   * Check if a topic exists in storage
+   * @private
+   */
+  private async _checkTopicExists(topicId: string): Promise<boolean> {
+    try {
+      await this.deps.topicModel.enterTopicRoom(topicId);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * Load default model from platform-specific persistence
    * @private
    */
@@ -205,6 +218,9 @@ export class AIAssistantPlan {
       const contactCount = await this.contactManager.loadExistingAIContacts(models);
       console.log(`[AIAssistantPlan] Loaded ${contactCount} existing AI contacts`);
 
+      // DO NOT create contacts for all models - contacts are only created when user selects a model
+      console.log(`[AIAssistantPlan] ${models.length} models available`);
+
       // Update model info with personIds
       for (const model of models) {
         const personId = this.contactManager.getPersonIdForModel(model.id);
@@ -217,20 +233,58 @@ export class AIAssistantPlan {
       this.messageProcessor.setAvailableLLMModels(models);
       console.log(`[AIAssistantPlan] Updated message processor with ${models.length} models (with personIds)`);
 
-      // Scan existing conversations for AI participants
-      const topicCount = await this.topicManager.scanExistingConversations(this.contactManager);
-      console.log(`[AIAssistantPlan] Scanned ${topicCount} existing AI topics`);
-
-      // Load saved default model from persistence (unified for browser + Electron)
+      // Load saved default model from persistence - BUT only if default chats already exist
+      // If chats don't exist, user must select via UI (which creates chats)
       if (models.length > 0) {
+        // Check if default chats (hi/lama) already exist
+        const hiExists = await this._checkTopicExists('hi');
+        const lamaExists = await this._checkTopicExists('lama');
+
         const savedDefaultModel = await this._loadDefaultModelFromPersistence(models);
-        if (savedDefaultModel) {
+
+        // If topics exist but no saved model, repair by scanning and registering them
+        if (hiExists && lamaExists && !savedDefaultModel) {
+          console.log(`[AIAssistantPlan] ⚠️  Found orphaned topics without saved model - will scan to register them`);
+          // Note: Topics will be registered during scanExistingConversations below
+          // No need to set default model here - user will select via UI
+        } else if (savedDefaultModel) {
           // Verify the saved model exists in available models
           const modelExists = models.some(m => m.id === savedDefaultModel);
           if (modelExists) {
-            // Use the plan's setDefaultModel which creates default chats
-            await this.setDefaultModel(savedDefaultModel);
-            console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel}`);
+            if (hiExists && lamaExists) {
+              // Chats exist - safe to auto-load the saved model
+              this.topicManager.setDefaultModel(savedDefaultModel);
+              console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel} (chats already exist)`);
+
+              // Ensure AI contacts exist for this model only (the one that was selected)
+              const model = models.find(m => m.id === savedDefaultModel);
+              if (model) {
+                const displayName = model.displayName || model.name || savedDefaultModel;
+
+                // Check if contact already exists before creating
+                const existingPersonId = this.contactManager.getPersonIdForModel(savedDefaultModel);
+                if (!existingPersonId) {
+                  await this.contactManager.ensureAIContactForModel(savedDefaultModel, displayName);
+                  console.log(`[AIAssistantPlan] Created AI contact for restored model: ${savedDefaultModel}`);
+                }
+
+                // Check private variant
+                const privateModelId = savedDefaultModel + '-private';
+                const privateDisplayName = `${displayName} (Private)`;
+                const existingPrivatePersonId = this.contactManager.getPersonIdForModel(privateModelId);
+                if (!existingPrivatePersonId) {
+                  await this.contactManager.ensureAIContactForModel(privateModelId, privateDisplayName);
+                  console.log(`[AIAssistantPlan] Created private AI contact for restored model`);
+                }
+
+                // Ensure topics exist and AI participants are in groups (this registers them)
+                await this.createDefaultChats();
+                console.log(`[AIAssistantPlan] Ensured existing chats have AI participants and are registered`);
+              }
+            } else {
+              // Chats don't exist - user must select via UI
+              console.log(`[AIAssistantPlan] Default chats missing - user must select model via UI`);
+            }
           } else {
             console.log(`[AIAssistantPlan] Saved model ${savedDefaultModel} not available`);
           }
@@ -249,6 +303,12 @@ export class AIAssistantPlan {
       } else {
         console.log(`[AIAssistantPlan] No default model set - user will be prompted to select one`);
       }
+
+      // Scan existing conversations to register AI topics
+      // This rebuilds the in-memory topic registry from ONE.core storage
+      console.log('[AIAssistantPlan] Scanning existing conversations for AI participants...');
+      const scannedCount = await this.scanExistingConversations();
+      console.log(`[AIAssistantPlan] ✅ Scan complete - registered ${scannedCount} additional AI topics`);
 
       this.initialized = true;
       console.log('[AIAssistantPlan] ✅ Initialization complete');
@@ -299,9 +359,10 @@ export class AIAssistantPlan {
   /**
    * Scan existing conversations for AI participants and register them
    */
-  async scanExistingConversations(): Promise<void> {
+  async scanExistingConversations(): Promise<number> {
     console.log('[AIAssistantPlan] Scanning existing conversations...');
-    await this.topicManager.scanExistingConversations(this.contactManager);
+    const count = await this.topicManager.scanExistingConversations(this.contactManager);
+    return count;
   }
 
   /**
@@ -338,6 +399,17 @@ export class AIAssistantPlan {
    */
   isAIPerson(personId: SHA256IdHash<Person>): boolean {
     return this.contactManager.isAIPerson(personId);
+  }
+
+  /**
+   * Check if a topic has any LLM participants.
+   *
+   * The AITopicManager registry is the source of truth - if the topic isn't registered, it doesn't have AI.
+   */
+  async topicHasLLMParticipant(topicId: string): Promise<boolean> {
+    const isRegistered = this.topicManager.isAITopic(topicId);
+    console.log(`[AIAssistantPlan.topicHasLLMParticipant] Topic ${topicId} registered: ${isRegistered}`);
+    return isRegistered;
   }
 
   /**
@@ -561,7 +633,8 @@ export class AIAssistantPlan {
     };
 
     // Step 2: Analyze in background (non-blocking)
-    setImmediate(async () => {
+    // Use setTimeout for browser compatibility (setImmediate is Node.js only)
+    setTimeout(async () => {
       try {
         console.log(`[AIAssistantPlan] Background analysis starting for topic: ${topicId}`);
 
@@ -598,6 +671,34 @@ export class AIAssistantPlan {
 
         console.log(`[AIAssistantPlan] Background analysis complete (${Date.now() - startTime}ms total)`);
         console.log(`[AIAssistantPlan] Analysis results: ${result.subjects?.length || 0} subjects, ${result.keywords?.length || 0} keywords`);
+
+        // Store the extracted subjects and keywords using TopicAnalysisModel
+        if (result.subjects && result.subjects.length > 0 && this.deps.topicAnalysisModel) {
+          console.log(`[AIAssistantPlan] Storing ${result.subjects.length} subjects to ONE.core...`);
+          for (const subject of result.subjects.slice(0, 5)) {
+            try {
+              const subjectId = subject.keywords.map(k => k.term).join('+');
+              const createdSubject = await this.deps.topicAnalysisModel.createSubject(
+                topicId as any,
+                subject.keywords.map(k => k.term),
+                subjectId,
+                subject.description,
+                subject.keywords[0]?.confidence || 0.8
+              );
+              // Add keywords to subject
+              for (const keyword of subject.keywords) {
+                await this.deps.topicAnalysisModel.addKeywordToSubject(
+                  topicId as any,
+                  keyword.term,
+                  createdSubject.idHash
+                );
+              }
+            } catch (error) {
+              console.warn(`[AIAssistantPlan] Failed to store subject:`, error);
+            }
+          }
+          console.log(`[AIAssistantPlan] ✅ Subjects stored successfully`);
+        }
 
         // Analysis complete - could emit event here if needed for UI updates
       } catch (error: any) {

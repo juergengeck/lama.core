@@ -188,11 +188,6 @@ export class AITopicManager implements IAITopicManager {
   ): Promise<void> {
     console.log('[AITopicManager] Ensuring default AI chats...');
 
-    // FIRST: Try to register existing topics even without a default model
-    const hiExists = await this.checkAndRegisterExistingTopic('hi', aiContactManager);
-    const lamaExists = await this.checkAndRegisterExistingTopic('lama', aiContactManager);
-
-    // SECOND: Create missing topics OR generate welcome messages for existing empty topics (requires default model)
     if (!this.defaultModelId) {
       throw new Error('No default model set - cannot create default chats');
     }
@@ -207,10 +202,10 @@ export class AITopicManager implements IAITopicManager {
       throw new Error(`Could not create AI contact for model: ${this.defaultModelId}`);
     }
 
-    // Create Hi or ensure it has a welcome message (Hi always needs to be ensured for welcome message)
+    // Create Hi chat (or ensure it has a welcome message if it exists)
     await this.ensureHiChat(this.defaultModelId, aiPersonId, onTopicCreated);
 
-    // Create LAMA or ensure it has a welcome message (LAMA always needs to be ensured)
+    // Create LAMA chat (or ensure it has a welcome message if it exists)
     {
       const privateModelId = this.defaultModelId + '-private';
 
@@ -242,15 +237,21 @@ export class AITopicManager implements IAITopicManager {
   ): Promise<boolean> {
     try {
       const topic = await this.topicModel.topics.queryById(topicId);
-      if (topic && (topic as any).group) {
-        // Verify topic is actually in storage (not just in collection cache)
-        try {
-          await this.topicModel.enterTopicRoom(topicId);
-        } catch (error) {
-          console.warn(`[AITopicManager] Topic '${topicId}' in collection but not in storage - will recreate`, error);
-          return false;
-        }
+      if (!topic) {
+        console.log(`[AITopicManager] Topic '${topicId}' does not exist`);
+        return false;
+      }
 
+      // Verify topic is actually in storage (not just in collection cache)
+      try {
+        await this.topicModel.enterTopicRoom(topicId);
+      } catch (error) {
+        console.warn(`[AITopicManager] Topic '${topicId}' in collection but not in storage - will recreate`, error);
+        return false;
+      }
+
+      // Check if topic has a group (3+ participants)
+      if ((topic as any).group) {
         // Topic exists in storage - try to determine its model from group members
         const group = await getIdObject((topic as any).group) as Group;
 
@@ -270,19 +271,19 @@ export class AITopicManager implements IAITopicManager {
             }
           }
         }
+      }
 
-        // Topic exists but no AI participant found
-        // Register with default model if available
-        if (this.defaultModelId) {
-          const finalModelId = topicId === 'lama' ? `${this.defaultModelId}-private` : this.defaultModelId;
-          this.registerAITopic(topicId, finalModelId);
-          console.log(`[AITopicManager] Registered orphaned topic '${topicId}' with default model: ${finalModelId}`);
-          return true;
-        }
+      // Topic exists but no AI participant found (either no group or group with no AI)
+      // Register with default model if available
+      if (this.defaultModelId) {
+        const finalModelId = topicId === 'lama' ? `${this.defaultModelId}-private` : this.defaultModelId;
+        this.registerAITopic(topicId, finalModelId);
+        console.log(`[AITopicManager] Registered orphaned topic '${topicId}' with default model: ${finalModelId}`);
+        return true;
       }
     } catch (error) {
       // Topic doesn't exist or error during check
-      console.log(`[AITopicManager] Topic '${topicId}' does not exist or check failed:`, error instanceof Error ? error.message : String(error));
+      console.log(`[AITopicManager] Topic '${topicId}' check failed:`, error instanceof Error ? error.message : String(error));
     }
     return false;
   }
@@ -307,18 +308,32 @@ export class AITopicManager implements IAITopicManager {
       let topicRoom: any;
       let needsWelcome = false;
 
-      // Check if topic already exists
+      // Check if topic already exists in storage (not just collection cache)
+      let topicExists = false;
       try {
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
-        const messages = await topicRoom.retrieveAllMessages();
-        needsWelcome = messages.length === 0;
+        await this.topicModel.enterTopicRoom(topicId);
+        topicExists = true;
       } catch (e) {
+        // Topic doesn't exist in storage
+      }
+
+      if (!topicExists) {
         // Topic doesn't exist, create it
         // CRITICAL: Include BOTH user and AI in participants so both get channels
         const userPersonId = await this.leuteModel.myMainIdentity();
         await this.topicGroupManager.createGroupTopic('Hi', topicId, [userPersonId, aiPersonId]);
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
         needsWelcome = true;
+      } else {
+        // Topic exists - ensure AI participant is in the group
+        console.log('[AITopicManager] Hi chat exists, ensuring AI participant is in group...');
+        await this.topicGroupManager.addParticipantsToTopic(topicId, [aiPersonId]);
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        const messages = await topicRoom.retrieveAllMessages();
+        needsWelcome = messages.length === 0;
+      }
+
+      if (!topicRoom) {
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
       }
 
       // Register as AI topic
@@ -359,18 +374,32 @@ export class AITopicManager implements IAITopicManager {
       let topicRoom: any;
       let needsWelcome = false;
 
-      // Check if topic already exists
+      // Check if topic already exists in storage (not just collection cache)
+      let topicExists = false;
       try {
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
-        const messages = await topicRoom.retrieveAllMessages();
-        needsWelcome = messages.length === 0;
+        await this.topicModel.enterTopicRoom(topicId);
+        topicExists = true;
       } catch (e) {
+        // Topic doesn't exist in storage
+      }
+
+      if (!topicExists) {
         // Topic doesn't exist, create it with the PRIVATE AI contact
         // CRITICAL: Include BOTH user and AI in participants so both get channels
         const userPersonId = await this.leuteModel.myMainIdentity();
         await this.topicGroupManager.createGroupTopic('LAMA', topicId, [userPersonId, privateAiPersonId]);
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
         needsWelcome = true;
+      } else {
+        // Topic exists - ensure AI participant is in the group
+        console.log('[AITopicManager] LAMA chat exists, ensuring AI participant is in group...');
+        await this.topicGroupManager.addParticipantsToTopic(topicId, [privateAiPersonId]);
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        const messages = await topicRoom.retrieveAllMessages();
+        needsWelcome = messages.length === 0;
+      }
+
+      if (!topicRoom) {
+        topicRoom = await this.topicModel.enterTopicRoom(topicId);
       }
 
       // Register as AI topic with the PRIVATE model ID
@@ -399,95 +428,109 @@ export class AITopicManager implements IAITopicManager {
    * Uses channel participants as source of truth
    */
   async scanExistingConversations(aiContactManager: any): Promise<number> {
-    console.log('[AITopicManager] Scanning existing conversations for AI participants...');
+    console.log('[AITopicManager] 🔍 SCAN START - Scanning existing conversations for AI participants...');
 
     try {
       // Get all channels
       const allChannels = await this.channelManager.getMatchingChannelInfos();
-      console.log(`[AITopicManager] Found ${allChannels.length} total channels`);
+      console.log(`[AITopicManager] 🔍 Found ${allChannels.length} total channels`);
+
+      // Log existing registered topics
+      const existingTopics = Array.from(this._topicModelMap.keys());
+      console.log(`[AITopicManager] 🔍 Already registered topics: [${existingTopics.join(', ')}]`);
+
+      // Log available AI contacts
+      console.log(`[AITopicManager] 🔍 Checking what AI contacts are available...`);
 
       let registeredCount = 0;
 
       for (const channelInfo of allChannels) {
         try {
+          // Channel ID is NOT the same as topic ID - we need to get the topic from the channel
+          // For AI topics, the channel.id is the topic ID (channels created by createGroupTopic use topic.id as channel.id)
           const topicId = channelInfo.id;
+
+          console.log(`[AITopicManager] 🔍 Checking channel/topic: ${topicId}`);
 
           // Skip if already registered
           if (this._topicModelMap.has(topicId)) {
+            console.log(`[AITopicManager]   ↳ SKIP - already registered with model: ${this._topicModelMap.get(topicId)}`);
             continue;
           }
 
-          // Get the topic object
-          const topic = await this.topicModel.topics.queryById(topicId);
+          // Try to enter the topic room to verify it exists
+          let topic;
+          try {
+            await this.topicModel.enterTopicRoom(topicId);
+            topic = await this.topicModel.topics.queryById(topicId);
+          } catch (e) {
+            // Topic doesn't exist or can't be accessed
+            console.log(`[AITopicManager]   ↳ SKIP - topic doesn't exist or can't be accessed`);
+            continue;
+          }
+
           if (!topic) {
-            console.log(`[AITopicManager] Topic ${topicId} not found, skipping`);
+            console.log(`[AITopicManager]   ↳ SKIP - topic not found in collection`);
             continue;
           }
 
           let aiModelId = null;
 
-          // Check if topic has a group (3+ participants including AI)
-          if ((topic as any).group) {
-            const group = await getIdObject((topic as any).group) as Group;
-            console.log(`[AITopicManager] Topic ${topicId} has group`);
+          // Check if topic has a group - all AI topics are group topics
+          // Use topicGroupManager to check if the topic is a group topic
+          let groupIdHash: SHA256IdHash<Group> | null = null;
+          try {
+            groupIdHash = await this.topicGroupManager?.getGroupForTopic(topicId) || null;
+          } catch (e) {
+            // Not a group topic or error accessing group
+          }
+
+          if (groupIdHash) {
+            console.log(`[AITopicManager]   ↳ Topic is a group topic, checking participants...`);
+            const group = await getIdObject(groupIdHash) as Group;
 
             // NEW one.core structure: Group.hashGroup → HashGroup.person
             if (group.hashGroup) {
               const hashGroup = await getObject(group.hashGroup as SHA256Hash<HashGroup>) as HashGroup<Person>;
               if (hashGroup.person) {
-                console.log(`[AITopicManager] Topic ${topicId} has ${hashGroup.person.size} participants`);
+                console.log(`[AITopicManager]   ↳ Group has ${hashGroup.person.size} participants`);
+                // Check each participant in the group to find AI
                 for (const memberId of hashGroup.person) {
-                  console.log(`[AITopicManager] Checking participant: ${String(memberId).substring(0, 8)}...`);
                   const modelId = aiContactManager.getModelIdForPersonId(memberId);
-                  console.log(`[AITopicManager] Result: ${modelId || 'not AI'}`);
+                  console.log(`[AITopicManager]      - Participant ${memberId.substring(0, 8)}... → model: ${modelId || 'NOT AI'}`);
                   if (modelId) {
                     aiModelId = modelId;
-                    console.log(`[AITopicManager] Found AI participant in ${topicId} (via Group): ${modelId}`);
+                    console.log(`[AITopicManager]   ↳ ✅ FOUND AI participant in ${topicId}: ${modelId}`);
                     break;
                   }
                 }
+              } else {
+                console.log(`[AITopicManager]   ↳ Group hashGroup has no participants`);
               }
+            } else {
+              console.log(`[AITopicManager]   ↳ Group has no hashGroup`);
             }
-          }
-
-          // If not found via group, check messages for AI sender (P2P conversations)
-          if (!aiModelId && !((topic as any).group)) {
-            console.log(`[AITopicManager] Topic ${topicId} has no group, checking messages...`);
-            const topicRoom = await this.topicModel.enterTopicRoom(topicId);
-            const messages = await topicRoom.retrieveAllMessages(); // Check messages
-            console.log(`[AITopicManager] Topic ${topicId} has ${messages.length} messages`);
-
-            for (const msg of messages) {
-              const msgSender = (msg as any).sender;
-              if (msgSender) {
-                console.log(`[AITopicManager] Checking message sender: ${String(msgSender).substring(0, 8)}...`);
-                const modelId = aiContactManager.getModelIdForPersonId(msgSender);
-                console.log(`[AITopicManager] Result: ${modelId || 'not AI'}`);
-                if (modelId) {
-                  aiModelId = modelId;
-                  console.log(`[AITopicManager] Found AI participant in ${topicId} (via messages): ${modelId}`);
-                  break;
-                }
-              }
-            }
+          } else {
+            console.log(`[AITopicManager]   ↳ SKIP - topic has no group (not a group chat)`);
           }
 
           // Register if AI participant found
           if (aiModelId) {
             this.registerAITopic(topicId, aiModelId);
             registeredCount++;
+            console.log(`[AITopicManager]   ↳ ✅ REGISTERED topic ${topicId} with model ${aiModelId}`);
           } else {
-            console.log(`[AITopicManager] No AI participant found in ${topicId}`);
+            console.log(`[AITopicManager]   ↳ SKIP - no AI participant found in topic ${topicId}`);
           }
         } catch (error) {
-          console.warn(`[AITopicManager] Error scanning topic:`, error);
+          console.warn(`[AITopicManager]   ↳ ERROR scanning topic:`, error);
         }
       }
 
-      console.log(`[AITopicManager] ✅ Registered ${registeredCount} existing AI topics`);
+      console.log(`[AITopicManager] 🔍 SCAN COMPLETE - Registered ${registeredCount} new AI topics`);
       return registeredCount;
     } catch (error) {
-      console.error('[AITopicManager] Failed to scan conversations:', error);
+      console.error('[AITopicManager] 🔍 SCAN FAILED:', error);
       throw error;
     }
   }

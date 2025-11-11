@@ -1,11 +1,11 @@
 /**
- * AI Initialization Handler
+ * AI Initialization Plan
  *
  * Platform-agnostic business logic for AI initialization.
  * NO platform-specific imports - uses dependency injection.
  *
  * Principles:
- * - Dependency injection for platform-specific code (UserSettingsManager, AIAssistantHandler)
+ * - Dependency injection for platform-specific code (UserSettingsManager, AIAssistant)
  * - Pure business logic only
  * - Testable in isolation
  */
@@ -33,14 +33,14 @@ export interface AIServices {
 }
 
 /**
- * AI Initialization Handler
+ * AI Initialization Plan
  * Handles AI model discovery, user settings, and assistant initialization
  */
-export class AIInitializationHandler {
+export class AIInitializationPlan {
   constructor(private deps: AIDeps) {}
 
   async initialize(context: AIContext): Promise<AIServices> {
-    console.log('[AIInitializationHandler] Initializing AI services...');
+    console.log('[AIInitializationPlan] Initializing AI services...');
 
     // Step 1: Initialize UserSettingsManager (via factory)
     const userSettingsManager = await this.initializeUserSettings(context);
@@ -51,10 +51,10 @@ export class AIInitializationHandler {
     // Step 3: Configure LLM manager
     this.configureLLMManager(userSettingsManager);
 
-    // Step 4: Initialize AI Assistant Handler (via factory)
+    // Step 4: Initialize AI Assistant (via factory)
     const aiAssistantModel = await this.initializeAIAssistant();
 
-    console.log('[AIInitializationHandler] ✅ AI services initialized');
+    console.log('[AIInitializationPlan] ✅ AI services initialized');
 
     return {
       userSettingsManager,
@@ -64,16 +64,16 @@ export class AIInitializationHandler {
   }
 
   private async initializeUserSettings(context: AIContext): Promise<any> {
-    console.log('[AIInitializationHandler] Initializing UserSettingsManager...');
+    console.log('[AIInitializationPlan] Initializing UserSettingsManager...');
 
     const userSettingsManager = this.deps.createUserSettingsManager(this.deps.storage, context.email);
 
-    console.log('[AIInitializationHandler] ✅ UserSettingsManager initialized');
+    console.log('[AIInitializationPlan] ✅ UserSettingsManager initialized');
     return userSettingsManager;
   }
 
   private async discoverClaudeModels(userSettingsManager: any): Promise<string | undefined> {
-    console.log('[AIInitializationHandler] Discovering Claude models...');
+    console.log('[AIInitializationPlan] Discovering Claude models...');
 
     // Get API key from user settings
     let anthropicApiKey = await userSettingsManager.getApiKey('anthropic');
@@ -82,34 +82,34 @@ export class AIInitializationHandler {
     if (!anthropicApiKey) {
       anthropicApiKey = this.deps.getEnvVar('ANTHROPIC_API_KEY');
       if (anthropicApiKey) {
-        console.log('[AIInitializationHandler] Using API key from environment');
+        console.log('[AIInitializationPlan] Using API key from environment');
       }
     }
 
     // Discover Claude models
     await this.deps.llmManager.discoverClaudeModels(anthropicApiKey);
-    console.log('[AIInitializationHandler] ✅ Claude models discovered');
+    console.log('[AIInitializationPlan] ✅ Claude models discovered');
 
     return anthropicApiKey;
   }
 
   private configureLLMManager(userSettingsManager: any): void {
-    console.log('[AIInitializationHandler] Configuring LLM Manager...');
+    console.log('[AIInitializationPlan] Configuring LLM Manager...');
 
     this.deps.llmManager.updateSystemPromptDependencies(userSettingsManager);
 
-    console.log('[AIInitializationHandler] ✅ LLM Manager configured');
+    console.log('[AIInitializationPlan] ✅ LLM Manager configured');
   }
 
   private async initializeAIAssistant(): Promise<any> {
-    console.log('[AIInitializationHandler] Initializing AI Assistant Handler...');
+    console.log('[AIInitializationPlan] Initializing AI Assistant...');
 
     const aiAssistantModel = await this.deps.initializeAIAssistant(
       this.deps.storage,
       this.deps.llmManager
     );
 
-    console.log('[AIInitializationHandler] ✅ AI Assistant Handler initialized');
+    console.log('[AIInitializationPlan] ✅ AI Assistant initialized');
     return aiAssistantModel;
   }
 }

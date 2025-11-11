@@ -61,6 +61,11 @@ export const SubjectRecipe = {
             itemtype: { type: 'integer' }
         },
         {
+            itemprop: 'description',
+            itemtype: { type: 'string' },
+            optional: true
+        },
+        {
             itemprop: 'archived',
             itemtype: { type: 'boolean' },
             optional: true

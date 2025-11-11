@@ -87,6 +87,7 @@ export default class TopicAnalysisModel extends Model {
             messageCount: 1,
             createdAt: now,
             lastSeenAt: now,
+            description: description || undefined, // LLM-generated description
             archived: false
         };
 
@@ -373,9 +374,12 @@ export default class TopicAnalysisModel extends Model {
     async getKeywords(topicId: any, queryOptions = {}): Promise<Keyword[]> {
         this.state.assertCurrentState('Initialised');
 
+        console.log(`[TopicAnalysisModel] getKeywords called for topic: ${topicId}`);
+
         // Check cache
         const cached = this.keywordsCache.get(topicId);
         if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+            console.log(`[TopicAnalysisModel] Returning ${cached.data.length} cached keywords`);
             return cached.data;
         }
 
@@ -383,6 +387,7 @@ export default class TopicAnalysisModel extends Model {
         // retrieveAllKeywords() hangs on multiChannelObjectIterator - likely malformed Keyword object
         const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
         const subjects = await analysisRoom.retrieveAllSubjects();
+        console.log(`[TopicAnalysisModel] Found ${subjects.length} subjects for topic: ${topicId}`);
 
         // Collect unique keyword ID hashes from all subjects
         const keywordIdSet = new Set<string>();
@@ -397,15 +402,26 @@ export default class TopicAnalysisModel extends Model {
         // Fetch actual keyword objects by ID hash
         const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
         const keywords: Keyword[] = [];
+        let missingKeywordCount = 0;
         for (const keywordId of keywordIdSet) {
             try {
                 const keyword = await getObjectByIdHash(keywordId as any) as any;
                 if (keyword && keyword.$type$ === 'Keyword') {
                     keywords.push(keyword as Keyword);
                 }
-            } catch (error) {
-                console.error(`[TopicAnalysisModel] Failed to fetch keyword ${keywordId}:`, error);
+            } catch (error: any) {
+                // Skip missing keywords (can happen after storage clear or migration)
+                if (error?.code === 'SB-READ2' && error?.type === 'vheads') {
+                    missingKeywordCount++;
+                    console.log(`[TopicAnalysisModel] Skipping missing keyword ${keywordId.substring(0, 8)}...`);
+                } else {
+                    console.error(`[TopicAnalysisModel] Failed to fetch keyword ${keywordId}:`, error);
+                }
             }
+        }
+
+        if (missingKeywordCount > 0) {
+            console.log(`[TopicAnalysisModel] ⚠️  Skipped ${missingKeywordCount} missing keywords (likely from old subjects)`);
         }
 
         // Cache the result

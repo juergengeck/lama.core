@@ -68,10 +68,14 @@ export class AIMessageListener {
             const timerId = setTimeout(async () => {
                 this.debounceTimers.delete(channelId);
 
+                console.log(`[AIMessageListener] 🔔 Channel update received for: ${channelId}`);
+
                 // Check if this is an AI topic
                 const isAI = this.deps.aiPlan.isAITopic(channelId);
+                console.log(`[AIMessageListener] 🤖 Is AI topic? ${isAI} for channel: ${channelId}`);
+
                 if (!isAI) {
-                    // Skip non-AI topics silently
+                    console.log(`[AIMessageListener] ⏭️  Skipping non-AI topic: ${channelId}`);
                     return;
                 }
 
