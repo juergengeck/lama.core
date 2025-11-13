@@ -332,7 +332,6 @@ export class AIMessageProcessor implements IAIMessageProcessor {
    */
   async handleNewTopic(topicId: string, modelId: string): Promise<void> {
     console.log(`[AIMessageProcessor] Handling new topic: ${topicId} with model: ${modelId}`);
-    console.log(`[AIMessageProcessor] STACK TRACE:`, new Error().stack);
 
     // Mark this topic as having welcome generation in progress
     const welcomePromise = this.generateWelcomeMessage(topicId, modelId);
