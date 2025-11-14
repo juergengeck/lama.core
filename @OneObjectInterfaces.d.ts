@@ -14,6 +14,8 @@ declare module '@OneObjectInterfaces' {
         Proposal: Proposal;
         ProposalInteractionPlan: ProposalInteractionPlan;
         ProposalInteractionResponse: ProposalInteractionResponse;
+        AssemblyPlan: AssemblyPlan;
+        CubeAssembly: CubeAssembly;
     }
 
     // Add our custom ID object types
@@ -126,5 +128,39 @@ declare module '@OneObjectInterfaces' {
         sharedToTopicId?: string; // Optional: for 'share' actions
         viewDuration?: number; // Optional: for 'view' actions (milliseconds)
         error?: string; // Optional: if success = false
+    }
+
+    export interface AssemblyPlan {
+        $type$: 'AssemblyPlan';
+        id: string; // ID property - call identifier
+        name: string;
+        description: string;
+        demandPatterns: Array<{
+            keywords: string[];
+            urgency: number;
+            criteria: { conversationId: string; prompt: string };
+        }>;
+        supplyPatterns: Array<{
+            keywords: string[];
+            criteria: { modelId: string };
+        }>;
+        owner: string;
+        created: number;
+        modified: number;
+        status: string;
+    }
+
+    export interface CubeAssembly {
+        $type$: 'CubeAssembly';
+        aiAssistantCall: string; // References AssemblyPlan IdHash
+        property: string; // ID property - which property this captures
+        supply: any;
+        demand: any;
+        instanceVersion: any;
+        children: any;
+        plan: string; // References AssemblyPlan IdHash
+        owner: string;
+        created: number;
+        modified: number;
     }
 }

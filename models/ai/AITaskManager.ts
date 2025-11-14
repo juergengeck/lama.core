@@ -206,7 +206,7 @@ export class AITaskManager implements IAITaskManager {
    */
   private async executeSummaryGeneration(
     topicId: string,
-    message: string,
+    _message: string,
     parameters?: Record<string, any>
   ): Promise<any> {
     console.log(`[AITaskManager] Generating summary for topic: ${topicId}`);
@@ -225,11 +225,11 @@ export class AITaskManager implements IAITaskManager {
    * Execute research task
    */
   private async executeResearch(
-    topicId: string,
-    message: string,
-    parameters?: Record<string, any>
+    _topicId: string,
+    _message: string,
+    _parameters?: Record<string, any>
   ): Promise<any> {
-    console.log(`[AITaskManager] Executing research for topic: ${topicId}`);
+    console.log(`[AITaskManager] Executing research for topic: ${_topicId}`);
 
     // Research task implementation would go here
     // This is a placeholder for future research capabilities

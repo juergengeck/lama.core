@@ -190,6 +190,11 @@ export const LLMRecipe = {
             itemprop: 'encryptedAuthToken',
             itemtype: { type: 'string' },
             optional: true
+        },
+        {
+            itemprop: 'encryptedApiKey',
+            itemtype: { type: 'string' },
+            optional: true
         }
     ]
 };

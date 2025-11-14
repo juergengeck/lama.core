@@ -9,12 +9,13 @@
     "clean": "find . -name '*.js' -not -path './node_modules/*' -delete"
   },
   "exports": {
-    "./plans/*": "./dist/plans/*",
-    "./services/*": "./dist/services/*",
-    "./models/*": "./dist/models/*",
-    "./one-ai/*": "./dist/one-ai/*",
-    "./ai/*": "./dist/ai/*",
-    "./initialization/*": "./dist/initialization/*"
+    "./plans/*": "./dist/lama.core/plans/*",
+    "./services/*": "./dist/lama.core/services/*",
+    "./models/*": "./dist/lama.core/models/*",
+    "./one-ai/*": "./dist/lama.core/one-ai/*",
+    "./ai/*": "./dist/lama.core/ai/*",
+    "./constants/*": "./dist/lama.core/constants/*",
+    "./initialization/*": "./dist/lama.core/initialization/*"
   },
   "author": "lama.one Team",
   "license": "MIT",

@@ -4,7 +4,6 @@
  * Subjects are the semantic tags that create identity, memory, and resonance patterns.
  * They bridge the gap between cryptographic hashes and human/AI understanding.
  */
-import { createHash } from 'crypto';
 /**
  * SubjectService - Core service for Subject management
  */
@@ -467,8 +466,7 @@ export class SubjectService {
             signature = {
                 contactId,
                 topSubjects: [],
-                uniqueSubjects: [],
-                signature: ''
+                uniqueSubjects: []
             };
             this.signatures.set(contactId, signature);
         }
@@ -483,9 +481,6 @@ export class SubjectService {
         // Keep top 20 subjects
         signature.topSubjects.sort((a, b) => b.affinity - a.affinity);
         signature.topSubjects = signature.topSubjects.slice(0, 20);
-        // Update signature hash
-        const pattern = signature.topSubjects.map(s => `${s.name}:${s.affinity}`).join(',');
-        signature.signature = createHash('sha256').update(pattern).digest('hex');
         // Find unique subjects (used mainly by this contact)
         const allAttachments = Array.from(this.attachments.values()).flat();
         const contactAttachments = allAttachments.filter(a => a.attachedBy === contactId);

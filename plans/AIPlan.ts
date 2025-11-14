@@ -175,24 +175,25 @@ export interface DiscoverClaudeModelsResponse {
  * AIPlan - Pure business logic for AI operations
  */
 export class AIPlan {
+  static get name(): string { return 'AI'; }
+  static get description(): string { return 'Manages AI chat, models, tools, and API keys'; }
+  static get version(): string { return '1.0.0'; }
+
   private llmManager: any = null;
+  private nodeOneCore: any = null;
   private aiAssistantModel: any = null;
   private topicModel: TopicModel | null = null;
-  private nodeOneCore: any = null;
   private stateManager: any = null;
 
   constructor(
     llmManager?: any,
-    aiAssistantModel?: any,
-    topicModel?: TopicModel,
+    _aiAssistantModel?: any,
+    _topicModel?: TopicModel,
     nodeOneCore?: any,
-    stateManager?: any
+    _stateManager?: any
   ) {
     this.llmManager = llmManager || null;
-    this.aiAssistantModel = aiAssistantModel || null;
-    this.topicModel = topicModel || null;
     this.nodeOneCore = nodeOneCore || null;
-    this.stateManager = stateManager || null;
   }
 
   /**
@@ -382,7 +383,7 @@ export class AIPlan {
   /**
    * Get available AI models
    */
-  async getModels(request: GetModelsRequest): Promise<GetModelsResponse> {
+  async getModels(_request: GetModelsRequest): Promise<GetModelsResponse> {
     console.log('[AIPlan] Get models request');
 
     try {
@@ -529,7 +530,7 @@ export class AIPlan {
   /**
    * Get available MCP tools
    */
-  async getTools(request: GetToolsRequest): Promise<GetToolsResponse> {
+  async getTools(_request: GetToolsRequest): Promise<GetToolsResponse> {
     console.log('[AIPlan] Get MCP tools request');
 
     try {
@@ -598,7 +599,7 @@ export class AIPlan {
   /**
    * Initialize LLM manager
    */
-  async initializeLLM(request: InitializeLLMRequest): Promise<InitializeLLMResponse> {
+  async initializeLLM(_request: InitializeLLMRequest): Promise<InitializeLLMResponse> {
     console.log('[AIPlan] Initialize LLM request');
 
     try {
@@ -639,7 +640,7 @@ export class AIPlan {
   /**
    * Debug MCP tools registration
    */
-  async debugTools(request: DebugToolsRequest): Promise<DebugToolsResponse> {
+  async debugTools(_request: DebugToolsRequest): Promise<DebugToolsResponse> {
     console.log('[AIPlan] Debug tools request');
 
     try {
@@ -780,7 +781,7 @@ export class AIPlan {
    * This is called lazily when the chat view is accessed, not during model selection
    * DELEGATES to AIAssistantModel - we do NOT create chats here
    */
-  async ensureDefaultChats(request: EnsureDefaultChatsRequest): Promise<EnsureDefaultChatsResponse> {
+  async ensureDefaultChats(_request: EnsureDefaultChatsRequest): Promise<EnsureDefaultChatsResponse> {
     try {
       if (!this.nodeOneCore?.initialized) {
         console.log('[AIPlan] Node not initialized');

@@ -32,12 +32,16 @@ export interface LLMPlatform {
    * @param messageId - Message identifier
    * @param content - Message content (string for backward compat, or object with thinking/response)
    * @param status - Message status ('pending' | 'streaming' | 'complete' | 'error')
+   * @param modelId - Optional model identifier (e.g., "gpt-oss:20b")
+   * @param modelName - Optional human-readable model name (e.g., "GPT-OSS 20B")
    */
   emitMessageUpdate(
     topicId: string,
     messageId: string,
     content: string | { thinking?: string; response: string; raw?: string },
-    status: string
+    status: string,
+    modelId?: string,
+    modelName?: string
   ): void;
 
   /**
@@ -99,7 +103,9 @@ export class NullLLMPlatform implements LLMPlatform {
     _topicId: string,
     _messageId: string,
     _content: string | { thinking?: string; response: string; raw?: string },
-    _status: string
+    _status: string,
+    _modelId?: string,
+    _modelName?: string
   ): void {
     // No-op
   }

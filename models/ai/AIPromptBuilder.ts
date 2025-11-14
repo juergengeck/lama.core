@@ -35,8 +35,8 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   private readonly MESSAGE_CACHE_TTL = 5000; // 5 seconds
 
   constructor(
-    private leuteModel: LeuteModel,
-    private channelManager: ChannelManager,
+    _leuteModel: LeuteModel,
+    _channelManager: ChannelManager,
     private topicModel: any, // Shared TopicModel instance
     private llmManager: any, // LLMManager interface
     private topicManager: any, // AITopicManager
@@ -60,7 +60,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   async buildPrompt(
     topicId: string,
     newMessage: string,
-    senderId: SHA256IdHash<Person>
+    _senderId: SHA256IdHash<Person>
   ): Promise<PromptResult> {
     console.log(`[AIPromptBuilder] Building prompt for topic: ${topicId}`);
 
@@ -267,7 +267,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
         // Extract potential topics (simple keyword extraction)
         const words = text.toLowerCase().split(/\s+/);
-        words.filter(w => w.length > 5).forEach(w => topics.add(w));
+        words.filter((w: string) => w.length > 5).forEach((w: string) => topics.add(w));
 
         if (sender && !this.isAIMessage(sender)) {
           participants.add('User');

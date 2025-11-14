@@ -58,7 +58,7 @@ export default class TopicAnalysisRoom {
         });
 
         if (!channelInfos || channelInfos.length === 0) {
-            throw new Error(`No channels found for topic: ${this.topicId}`);
+            return [];
         }
 
         const allSubjects = [];
@@ -82,7 +82,7 @@ export default class TopicAnalysisRoom {
         });
 
         if (!channelInfos || channelInfos.length === 0) {
-            throw new Error(`No channels found for topic: ${this.topicId}`);
+            return [];
         }
 
         const summaries = [];

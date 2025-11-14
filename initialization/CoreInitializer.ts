@@ -74,16 +74,17 @@ export async function initializeCoreModels(
         console.log('[CoreInitializer] ✅ LLMObjectManager initialized');
     }
 
-    // Initialize LLM manager (discover models, load configs)
-    if (deps.llmManager?.init) {
-        await deps.llmManager.init();
-        console.log('[CoreInitializer] ✅ LLMManager initialized');
-    }
+    // NOTE: LLMManager.init() is called by the platform after CoreInitializer completes
+    // This allows platforms to control when model discovery happens (e.g., after settings are loaded)
+    // Browser: Calls llmManager.init() immediately after CoreInitializer
+    // Electron: May defer until user configures API keys
+    console.log('[CoreInitializer] ⏭️  Skipping LLMManager.init() - platform will call it after CoreInitializer');
 
     // Initialize AI Assistant Plan (populates LLM contact cache)
+    // Note: init() will skip AI contact creation until LLM models are discovered
     if (deps.aiAssistantModel?.init) {
         await deps.aiAssistantModel.init();
-        console.log('[CoreInitializer] ✅ AIAssistantPlan initialized (LLM cache populated)');
+        console.log('[CoreInitializer] ✅ AIAssistantPlan initialized');
     }
 
     // Step 3: ChannelManager (NOW safe to process existing messages)

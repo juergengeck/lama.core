@@ -9,7 +9,6 @@
 // import type { TopicAnalysisModel } from '../main/core/one-ai/models/TopicAnalysisModel.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import type { Subject } from '../one-ai/types/Subject.js';
 import type { Keyword } from '../one-ai/types/Keyword.js';
@@ -325,13 +324,17 @@ ${String(conversationText).substring(0, 3000)}`;
           subject.description,
           0.8
         );
-        subjectsToStore.push({ idHash: createdSubject.idHash, keywords: subject.keywords });
+        subjectsToStore.push({ idHash: createdSubject.idHash, keywords: subject.keywords, fullSubject: createdSubject });
       }
 
       // Now create keywords with subject ID hashes
+      const keywordMap = new Map(); // term -> keyword object
       for (const subject of subjectsToStore) {
         for (const keywordTerm of subject.keywords) {
-          await this.topicAnalysisModel.addKeywordToSubject(request.topicId as SHA256IdHash<any>, keywordTerm, subject.idHash);
+          const keywordObj = await this.topicAnalysisModel.addKeywordToSubject(request.topicId as SHA256IdHash<any>, keywordTerm, subject.idHash);
+          if (keywordObj) {
+            keywordMap.set(keywordTerm, keywordObj);
+          }
         }
       }
 
@@ -359,9 +362,13 @@ ${String(conversationText).substring(0, 3000)}`;
         null
       );
 
-      // Get the created subjects for return
-      const createdSubjects: any = await this.topicAnalysisModel.getSubjects(request.topicId as SHA256IdHash<any>);
-      const createdKeywords: any = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
+      // Prime the cache with freshly created objects (bypasses channel propagation race condition)
+      const createdSubjects = subjectsToStore.map(s => s.fullSubject);
+      const createdKeywords = Array.from(keywordMap.values());
+
+      console.log('[TopicAnalysisPlan] Priming cache with', createdSubjects.length, 'subjects and', createdKeywords.length, 'keywords');
+      this.topicAnalysisModel.setCachedSubjects(request.topicId as SHA256IdHash<any>, createdSubjects);
+      this.topicAnalysisModel.setCachedKeywords(request.topicId as SHA256IdHash<any>, createdKeywords);
 
       console.log('[TopicAnalysisPlan] Analysis complete:', {
         topicId: request.topicId,

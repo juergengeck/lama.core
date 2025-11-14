@@ -8,10 +8,34 @@ import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import type { LLMPlatform } from './llm-platform.js';
 import { LLM_RESPONSE_SCHEMA } from '../schemas/llm-response.schema.js';
 import { chatWithOllama, getLocalOllamaModels, parseOllamaModel, cancelAllOllamaRequests, cancelStreamingForTopic } from './ollama.js';
-import { chatWithClaude } from './claude.js';
+// Browser-compatible HTTP implementations (pure fetch, no SDK dependencies)
+import { chatWithAnthropicHTTP, testAnthropicApiKey } from './anthropic-http.js';
+import { chatWithOpenAIHTTP, testOpenAIApiKey as testOpenAIKey } from './openai-http.js';
 import * as lmstudio from './lmstudio.js';
 import { SystemPromptBuilder } from './system-prompt-builder.js';
 import type { SystemPromptContext } from './system-prompt-builder.js';
+
+/**
+ * LLM connection health status
+ */
+export enum LLMHealthStatus {
+  UNKNOWN = 'unknown',      // Not yet tested
+  HEALTHY = 'healthy',      // Last call succeeded
+  UNHEALTHY = 'unhealthy',  // Connection/network error (may recover)
+  FAILED = 'failed'         // Configuration error (won't recover without intervention)
+}
+
+/**
+ * Error information with recovery context
+ */
+export interface LLMErrorContext {
+  modelId: string;
+  error: Error;
+  healthStatus: LLMHealthStatus;
+  isRetryable: boolean;
+  alternativeModels: string[]; // Available alternatives
+  topicId?: string; // Topic that encountered the error
+}
 
 class LLMManager {
   name: any;
@@ -37,6 +61,12 @@ class LLMManager {
   forwardLog?: (level: string, message: string) => void; // Optional log forwarding
   systemPromptBuilder: SystemPromptBuilder; // System prompt builder for composable context injection
   userSettingsManager?: any; // User settings manager for API keys
+  corsProxyUrl?: string; // CORS proxy URL for browser API calls
+
+  // LLM health tracking
+  private modelHealth: Map<string, LLMHealthStatus>; // modelId → health status
+  private lastHealthCheck: Map<string, number>; // modelId → timestamp
+  private readonly HEALTH_CHECK_CACHE_MS = 30000; // Cache health status for 30s
 
   constructor(
     platform?: LLMPlatform,
@@ -56,6 +86,10 @@ class LLMManager {
     this.mcpTools = new Map()
     this.isInitialized = false
     this.ollamaConfig = null
+
+    // Initialize health tracking
+    this.modelHealth = new Map()
+    this.lastHealthCheck = new Map()
 
     // Initialize system prompt builder
     this.systemPromptBuilder = new SystemPromptBuilder(
@@ -205,8 +239,8 @@ class LLMManager {
       // Register available models
       await this.registerModels()
 
-      // Initialize MCP servers
-      await this.initializeMCP()
+      // MCP initialization moved to MCPInitializationPlan (after NodeOneCore exists)
+      // await this.initializeMCP()
 
       this.isInitialized = true
       console.log('[LLMManager] Initialized successfully with MCP support')
@@ -228,7 +262,75 @@ class LLMManager {
   }
 
   async registerModels(): Promise<any> {
-    // Check for LM Studio availability (optional)
+    // Discover Ollama models (checks what's actually running)
+    await this.discoverOllamaModels()
+
+    // Discover LM Studio models (checks what's actually running)
+    await this.discoverLMStudioModels()
+
+    // Discover Claude models if API key is configured
+    if (this.userSettingsManager) {
+      const claudeApiKey = await this.userSettingsManager.getApiKey('anthropic')
+      if (claudeApiKey) {
+        await this.discoverClaudeModels(claudeApiKey)
+      } else {
+        console.log('[LLMManager] No Claude API key found, skipping Claude model discovery')
+      }
+    }
+
+    // Discover OpenAI models if API key is configured
+    if (this.userSettingsManager) {
+      const openaiApiKey = await this.userSettingsManager.getApiKey('openai')
+      if (openaiApiKey) {
+        await this.discoverOpenAIModels(openaiApiKey)
+      } else {
+        console.log('[LLMManager] No OpenAI API key found, skipping OpenAI model discovery')
+      }
+    }
+
+    console.log(`[LLMManager] Registered ${this.models.size} total models`)
+  }
+
+  async discoverOllamaModels(): Promise<any> {
+    try {
+      const ollamaModels: any = await getLocalOllamaModels()
+
+      if (ollamaModels.length > 0) {
+        console.log(`[LLMManager] Discovered ${ollamaModels.length} Ollama models`)
+
+        for (const rawModel of ollamaModels) {
+          const parsedModel = parseOllamaModel(rawModel)
+
+          // All Ollama models get base capabilities
+          const capabilities = ['chat', 'completion'];
+
+          // Register the base model
+          this.models.set(parsedModel.id, {
+            id: parsedModel.id,
+            name: parsedModel.displayName,
+            provider: 'ollama',
+            description: `${parsedModel.description} (${parsedModel.size})`,
+            capabilities,
+            contextLength: 8192,
+            size: parsedModel.sizeBytes, // Numeric size in bytes for sorting/display
+            parameters: {
+              modelName: parsedModel.name, // The actual Ollama model name
+              temperature: 0.7,
+              maxTokens: 1024  // Reduced from 2048 - reasoning models expand this significantly
+            }
+          })
+
+          console.log(`[LLMManager] Registered Ollama model: ${parsedModel.id}`)
+        }
+      } else {
+        console.log('[LLMManager] No Ollama models found')
+      }
+    } catch (error) {
+      console.log('[LLMManager] Failed to discover Ollama models:', (error as Error).message)
+    }
+  }
+
+  async discoverLMStudioModels(): Promise<any> {
     try {
       const isLMStudioAvailable: any = await lmstudio.isLMStudioRunning()
 
@@ -275,138 +377,81 @@ class LLMManager {
     } catch (error) {
       console.log('[LLMManager] LM Studio not available:', (error as Error).message)
     }
-
-    // Discover Ollama models dynamically
-    await this.discoverOllamaModels()
-
-    // Discover Claude models during init (reads API key from secure storage)
-    await this.discoverClaudeModels()
-
-    console.log(`[LLMManager] Registered ${this.models.size} models`)
-
-    // No default model concept in LLM manager
-    console.log(`[LLMManager] ${this.models.size} models registered`)
-  }
-
-  async discoverOllamaModels(): Promise<any> {
-    try {
-      const ollamaModels: any = await getLocalOllamaModels()
-
-      if (ollamaModels.length > 0) {
-        console.log(`[LLMManager] Discovered ${ollamaModels.length} Ollama models`)
-
-        for (const rawModel of ollamaModels) {
-          const parsedModel = parseOllamaModel(rawModel)
-
-          // All Ollama models get base capabilities
-          const capabilities = ['chat', 'completion'];
-
-          // Register the base model
-          this.models.set(parsedModel.id, {
-            id: parsedModel.id,
-            name: parsedModel.displayName,
-            provider: 'ollama',
-            description: `${parsedModel.description} (${parsedModel.size})`,
-            capabilities,
-            contextLength: 8192,
-            size: parsedModel.sizeBytes, // Numeric size in bytes for sorting/display
-            parameters: {
-              modelName: parsedModel.name, // The actual Ollama model name
-              temperature: 0.7,
-              maxTokens: 1024  // Reduced from 2048 - reasoning models expand this significantly
-            }
-          })
-
-          console.log(`[LLMManager] Registered Ollama model: ${parsedModel.id}`)
-        }
-      } else {
-        console.log('[LLMManager] No Ollama models found')
-      }
-    } catch (error) {
-      console.log('[LLMManager] Failed to discover Ollama models:', (error as Error).message)
-    }
   }
 
   async discoverClaudeModels(providedApiKey?: string): Promise<any> {
     try {
       // Platform layer must provide API key - lama.core is platform-agnostic
       if (!providedApiKey) {
-        console.log('[LLMManager] No Claude API key provided, skipping Claude model discovery')
+        console.log('[LLMManager] No Claude API key provided, skipping Claude model registration')
         return
       }
 
-      const apiKey = providedApiKey
+      console.log('[LLMManager] Registering Claude models from model registry (HTTP-based, browser-compatible)')
 
-      console.log('[LLMManager] Discovering Claude models with API key:', apiKey?.substring(0, 20) + '...')
+      // Import model registry to get Claude model definitions
+      const { getModelsByProvider } = await import('../constants/model-registry.js')
+      const claudeModels = getModelsByProvider('anthropic')
 
-      // Query Anthropic API for available models
-      const response: any = await fetch('https://api.anthropic.com/v1/models', {
-        method: 'GET',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01'
-        }
-      })
+      console.log(`[LLMManager] Found ${claudeModels.length} Claude models in registry`)
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        console.error('[LLMManager] Failed to fetch Claude models from API:', {
-          status: response.status,
-          statusText: response.statusText,
-          error: errorText
+      for (const modelConfig of claudeModels) {
+        // Use model ID without provider prefix for consistency with rest of codebase
+        const modelId = modelConfig.id
+
+        this.models.set(modelId, {
+          id: modelId,
+          name: modelConfig.name,
+          provider: 'anthropic',
+          description: modelConfig.description,
+          capabilities: modelConfig.capabilities || ['chat', 'inference', 'streaming'],
+          contextLength: modelConfig.contextWindow || 200000,
+          parameters: {
+            temperature: modelConfig.defaultTemperature || 0.7,
+            maxTokens: 8192 // Claude 4+ default
+          }
         })
-        return
-      }
 
-      const data = await response.json()
-      console.log('[LLMManager] Raw API response:', data)
-
-      if (data.data && Array.isArray(data.data)) {
-        console.log(`[LLMManager] Discovered ${data.data.length} Claude models from API`)
-
-        for (const model of data.data) {
-          const modelId = `claude:${model.id}`
-
-          // Generate human-readable name from model ID if display_name not provided
-          let displayName = model.display_name
-          if (!displayName) {
-            // Transform "claude-3-5-sonnet-20241022" into "Claude 3.5 Sonnet"
-            displayName = model.id
-              .replace(/^claude-/, 'Claude ')
-              .replace(/-(\d+)$/, '') // Remove date suffix
-              .replace(/-/g, ' ')
-              .replace(/\b\w/g, (char: string) => char.toUpperCase()) // Capitalize each word
-          }
-
-          // Determine max output tokens based on model family
-          // Claude 3 (opus/sonnet/haiku): 4096 tokens
-          // Claude 3.5+: 8192 tokens
-          // Claude 4+: 16384 tokens
-          let maxOutputTokens = 8192 // Default for newer models
-          if (model.id.match(/^claude-3-(?:opus|sonnet|haiku)-/)) {
-            maxOutputTokens = 4096
-          } else if (model.id.match(/^claude-4/)) {
-            maxOutputTokens = 16384
-          }
-
-          this.models.set(modelId, {
-            id: modelId,
-            name: displayName,
-            provider: 'anthropic',
-            description: `Claude model: ${model.id}`,
-            capabilities: ['chat', 'analysis', 'reasoning', 'structured_output'],
-            contextLength: model.max_tokens || 200000,
-            parameters: {
-              temperature: 0.7,
-              maxTokens: maxOutputTokens
-            }
-          })
-
-          console.log(`[LLMManager] Registered Claude model: ${modelId} as "${displayName}"`)
-        }
+        console.log(`[LLMManager] Registered Claude model: ${modelId} (${modelConfig.name})`)
       }
     } catch (error) {
-      console.log('[LLMManager] Failed to discover Claude models:', (error as Error).message)
+      console.log('[LLMManager] Failed to register Claude models:', (error as Error).message)
+    }
+  }
+
+  async discoverOpenAIModels(providedApiKey?: string): Promise<any> {
+    try {
+      if (!providedApiKey) {
+        console.log('[LLMManager] No OpenAI API key provided, skipping OpenAI model registration')
+        return
+      }
+
+      console.log('[LLMManager] Registering OpenAI models from model registry (API discovery not supported in browser)')
+
+      // Import model registry to get OpenAI model definitions
+      const { getModelsByProvider } = await import('../constants/model-registry.js')
+      const openaiModels = getModelsByProvider('openai')
+
+      console.log(`[LLMManager] Found ${openaiModels.length} OpenAI models in registry`)
+
+      for (const modelConfig of openaiModels) {
+        this.models.set(modelConfig.id, {
+          id: modelConfig.id,
+          name: modelConfig.name,
+          provider: 'openai',
+          description: modelConfig.description,
+          capabilities: modelConfig.capabilities || ['chat', 'inference', 'streaming'],
+          contextLength: modelConfig.contextWindow || 128000,
+          parameters: {
+            temperature: modelConfig.defaultTemperature || 0.7,
+            maxTokens: 4096
+          }
+        })
+
+        console.log(`[LLMManager] Registered OpenAI model: ${modelConfig.id} (${modelConfig.name})`)
+      }
+    } catch (error) {
+      console.log('[LLMManager] Failed to register OpenAI models:', (error as Error).message)
     }
   }
 
@@ -555,16 +600,55 @@ class LLMManager {
       }
     }
 
+    // Inject API key for OpenAI if not provided
+    if ((model as any).provider === 'openai' && !(options as any)?.apiKey) {
+      if (this.userSettingsManager) {
+        const apiKey = await this.userSettingsManager.getApiKey('openai')
+        if (apiKey) {
+          console.log(`[LLMManager] Injected OpenAI API key from UserSettings`)
+          options = { ...options, apiKey }
+        } else {
+          console.error(`[LLMManager] ❌ No OpenAI API key found in UserSettings`)
+        }
+      } else {
+        console.error(`[LLMManager] ❌ UserSettingsManager not available, cannot retrieve API key`)
+      }
+    }
+
     let response
 
-    if ((model as any).provider === 'ollama') {
-      response = await this.chatWithOllama(model as any, enhancedMessages, options)
-    } else if ((model as any).provider === 'lmstudio') {
-      response = await this.chatWithLMStudio(model as any, enhancedMessages, options)
-    } else if ((model as any).provider === 'anthropic') {
-      response = await this.chatWithClaude(model as any, enhancedMessages, options)
-    } else {
-      throw new Error(`Unsupported provider: ${(model as any).provider}`)
+    try {
+      if ((model as any).provider === 'ollama') {
+        response = await this.chatWithOllama(model as any, enhancedMessages, options)
+      } else if ((model as any).provider === 'lmstudio') {
+        response = await this.chatWithLMStudio(model as any, enhancedMessages, options)
+      } else if ((model as any).provider === 'anthropic') {
+        response = await this.chatWithClaude(model as any, enhancedMessages, options)
+      } else if ((model as any).provider === 'openai') {
+        response = await this.chatWithOpenAI(model as any, enhancedMessages, options)
+      } else {
+        throw new Error(`Unsupported provider: ${(model as any).provider}`)
+      }
+
+      // Mark model as healthy after successful call
+      this.markModelHealthy(effectiveModelId);
+    } catch (error: any) {
+      // Mark model as unhealthy/failed
+      this.markModelUnhealthy(effectiveModelId, error);
+
+      // Create enhanced error with recovery context
+      const errorContext = this.createErrorContext(effectiveModelId, error, options.topicId);
+
+      // Attach error context to the error object for platform layer
+      (error as any).llmErrorContext = errorContext;
+
+      console.error(`[LLMManager] Chat failed for model ${effectiveModelId}:`, error.message);
+      console.error(`[LLMManager] Health: ${errorContext.healthStatus}, Retryable: ${errorContext.isRetryable}`);
+      if (errorContext.alternativeModels.length > 0) {
+        console.log(`[LLMManager] Alternative models available: ${errorContext.alternativeModels.join(', ')}`);
+      }
+
+      throw error;
     }
 
     // Build context for tool execution
@@ -941,34 +1025,82 @@ class LLMManager {
       throw new Error('Claude API key not provided - platform layer must supply options.apiKey')
     }
 
-    // Extract base model ID - stored as claude:claude-3-5-sonnet-20241022
-    // Need to send just: claude-3-5-sonnet-20241022
-    const baseModelId = model.id.startsWith('claude:') ? model.id.substring(7) : model.id
+    // Extract base model ID - remove private suffix and provider prefix
+    const baseModelId = model.id.replace('-private', '').replace(/^claude:/, '')
 
-    console.log(`[LLMManager] Calling Claude with model ID: ${baseModelId}`)
+    console.log(`[LLMManager] Calling Claude with model ID: ${baseModelId} (HTTP-based, browser-compatible)`)
+
+    // Convert messages to Anthropic format
+    const anthropicMessages = messages
+      .filter((m: any) => m.role !== 'system')
+      .map((m: any) => ({ role: m.role, content: m.content }));
+
+    // Extract system message
+    const systemMessage = messages.find((m: any) => m.role === 'system')?.content || options.system;
 
     // Get MCP tools if available and not explicitly disabled
-    const claudeOptions: any = {
-      apiKey,
-      temperature: model.parameters.temperature,
-      max_tokens: model.parameters.maxTokens,
-      onStream: options.onStream
-    };
+    const tools = !options.disableTools && this.mcpManager
+      ? this.mcpManager.getClaudeTools?.()
+      : undefined;
 
-    // Add MCP tools unless explicitly disabled
-    if (!options.disableTools && this.mcpManager) {
-      const tools = this.mcpManager.getClaudeTools?.();
-      if (tools && Array.isArray(tools) && tools.length > 0) {
-        claudeOptions.tools = tools;
-        console.log(`[LLMManager] Passing ${tools.length} MCP tools to Claude`);
-      }
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      console.log(`[LLMManager] Passing ${tools.length} MCP tools to Claude`);
     }
 
-    return await chatWithClaude(
-      baseModelId,
-      messages,
-      claudeOptions
-    )
+    // Use browser-compatible HTTP implementation
+    return await chatWithAnthropicHTTP({
+      apiKey,
+      model: baseModelId,
+      messages: anthropicMessages,
+      system: systemMessage,
+      temperature: model.parameters.temperature,
+      max_tokens: model.parameters.maxTokens,
+      tools,
+      onStream: options.onStream,
+      signal: options.signal,
+      proxyUrl: this.corsProxyUrl
+    });
+  }
+
+  async chatWithOpenAI(model: any, messages: any, options: any = {}): Promise<any> {
+    // Platform layer must provide API key - lama.core is platform-agnostic
+    const apiKey = options.apiKey
+    if (!apiKey) {
+      throw new Error('OpenAI API key not provided - platform layer must supply options.apiKey')
+    }
+
+    // Extract base model ID - remove private suffix and provider prefix
+    const baseModelId = model.id.replace('-private', '').replace(/^openai:/, '')
+
+    console.log(`[LLMManager] Calling OpenAI with model ID: ${baseModelId} (HTTP-based, browser-compatible)`)
+
+    // OpenAI format includes system messages in the messages array
+    const openaiMessages = messages.map((m: any) => ({
+      role: m.role,
+      content: m.content
+    }));
+
+    // Get MCP tools if available and not explicitly disabled (OpenAI format)
+    const tools = !options.disableTools && this.mcpManager
+      ? this.mcpManager.getOpenAITools?.()
+      : undefined;
+
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      console.log(`[LLMManager] Passing ${tools.length} MCP tools to OpenAI`);
+    }
+
+    // Use browser-compatible HTTP implementation
+    return await chatWithOpenAIHTTP({
+      apiKey,
+      model: baseModelId,
+      messages: openaiMessages,
+      temperature: model.parameters.temperature,
+      max_tokens: model.parameters.maxTokens,
+      tools,
+      onStream: options.onStream,
+      signal: options.signal,
+      proxyUrl: this.corsProxyUrl
+    });
   }
 
   async loadSettings(): Promise<any> {
@@ -1068,47 +1200,14 @@ class LLMManager {
    * Test a Claude API key
    */
   async testClaudeApiKey(apiKey: any): Promise<any> {
-    try {
-      // Make a minimal API call to test the key
-      const response: any = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'claude-3-haiku-20240307',
-          max_tokens: 10,
-          messages: [{ role: 'user', content: 'Hi' }]
-        })
-      })
-      
-      return response.ok
-    } catch (error) {
-      console.error('[LLMManager] Claude API key test failed:', error)
-      return false
-    }
+    return await testAnthropicApiKey(apiKey);
   }
 
   /**
    * Test an OpenAI API key
    */
   async testOpenAIApiKey(apiKey: any): Promise<any> {
-    try {
-      // Make a minimal API call to test the key
-      const response: any = await fetch('https://api.openai.com/v1/models', {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`
-        }
-      })
-      
-      return response.ok
-    } catch (error) {
-      console.error('[LLMManager] OpenAI API key test failed:', error)
-      return false
-    }
+    return await testOpenAIKey(apiKey);
   }
 
   /**
@@ -1146,6 +1245,103 @@ class LLMManager {
 
     this.registerPrivateVariant(modelId)
     console.log(`[LLMManager] Registered private variant for: ${modelId}`)
+  }
+
+  /**
+   * Get health status for a model
+   */
+  getModelHealth(modelId: string): LLMHealthStatus {
+    return this.modelHealth.get(modelId) || LLMHealthStatus.UNKNOWN;
+  }
+
+  /**
+   * Update health status after successful call
+   */
+  private markModelHealthy(modelId: string): void {
+    this.modelHealth.set(modelId, LLMHealthStatus.HEALTHY);
+    this.lastHealthCheck.set(modelId, Date.now());
+  }
+
+  /**
+   * Update health status after failed call
+   */
+  private markModelUnhealthy(modelId: string, error: Error): void {
+    const status = this.classifyError(error);
+    this.modelHealth.set(modelId, status);
+    this.lastHealthCheck.set(modelId, Date.now());
+  }
+
+  /**
+   * Classify error to determine if it's retryable
+   */
+  private classifyError(error: Error): LLMHealthStatus {
+    const message = error.message.toLowerCase();
+
+    // Configuration errors (won't recover without user intervention)
+    if (
+      message.includes('api key') ||
+      message.includes('authentication') ||
+      message.includes('unauthorized') ||
+      message.includes('invalid credentials') ||
+      message.includes('model') && message.includes('not found')
+    ) {
+      return LLMHealthStatus.FAILED;
+    }
+
+    // Network/connection errors (may recover on retry)
+    if (
+      message.includes('network') ||
+      message.includes('connection') ||
+      message.includes('timeout') ||
+      message.includes('econnrefused') ||
+      message.includes('fetch failed')
+    ) {
+      return LLMHealthStatus.UNHEALTHY;
+    }
+
+    // Default to unhealthy (retryable)
+    return LLMHealthStatus.UNHEALTHY;
+  }
+
+  /**
+   * Get available healthy alternative models
+   */
+  getHealthyAlternatives(currentModelId: string): string[] {
+    const alternatives: string[] = [];
+
+    for (const [modelId, model] of this.models.entries()) {
+      // Skip current model
+      if (modelId === currentModelId) continue;
+
+      // Skip private variants for now
+      if (modelId.includes('-private')) continue;
+
+      // Check if model is healthy or unknown (untested)
+      const health = this.getModelHealth(modelId);
+      if (health === LLMHealthStatus.HEALTHY || health === LLMHealthStatus.UNKNOWN) {
+        alternatives.push(modelId);
+      }
+    }
+
+    return alternatives;
+  }
+
+  /**
+   * Create error context with recovery information
+   */
+  createErrorContext(modelId: string, error: Error, topicId?: string): LLMErrorContext {
+    const healthStatus = this.getModelHealth(modelId);
+    const isRetryable = healthStatus !== LLMHealthStatus.FAILED;
+    const alternativeModels = this.getHealthyAlternatives(modelId);
+
+    return {
+      modelId,
+      error,
+      healthStatus,
+      isRetryable,
+      alternativeModels,
+      topicId
+    };
   }
 
   async shutdown(): Promise<any> {

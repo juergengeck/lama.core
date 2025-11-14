@@ -83,7 +83,7 @@ export class CryptoPlan {
   /**
    * Get available keys from ONE.core
    */
-  async getKeys(request: GetKeysRequest): Promise<GetKeysResponse> {
+  async getKeys(_request: GetKeysRequest): Promise<GetKeysResponse> {
     try {
       const keys: CryptoKey[] = [];
 
@@ -183,7 +183,7 @@ export class CryptoPlan {
   /**
    * Get available certificates from ONE.core
    */
-  async getCertificates(request: GetCertificatesRequest): Promise<GetCertificatesResponse> {
+  async getCertificates(_request: GetCertificatesRequest): Promise<GetCertificatesResponse> {
     try {
       const certificates: Certificate[] = [];
 

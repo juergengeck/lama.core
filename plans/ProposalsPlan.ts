@@ -15,7 +15,6 @@ import {
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Subject } from '../one-ai/types/Subject.js';
-import type { Keyword } from '../one-ai/types/Keyword.js';
 import {
   createProposalInteractionPlan,
   createProposalInteractionResponse,
@@ -183,7 +182,7 @@ export class ProposalsPlan {
 
           // Calculate ID hashes for all subjects
           subjectIdHashes = await Promise.all(
-            subjects.map((subject) => calculateIdHashOfObj(subject as any))
+            subjects.map((subject: any) => calculateIdHashOfObj(subject as any))
           );
           console.log('[ProposalsPlan] Calculated ID hashes for', subjectIdHashes.length, 'subjects');
         } catch (error: any) {
@@ -283,28 +282,39 @@ export class ProposalsPlan {
    */
   async updateConfig(request: UpdateConfigRequest): Promise<UpdateConfigResponse> {
     try {
-      // Validate config parameters
-      if (request.config.matchWeight !== undefined) {
-        if (request.config.matchWeight < 0 || request.config.matchWeight > 1) {
-          throw new Error('INVALID_CONFIG: matchWeight must be between 0.0 and 1.0');
+      // Validate request structure more defensively
+      if (!request || typeof request !== 'object') {
+        throw new Error('INVALID_REQUEST: request must be an object');
+      }
+
+      if (!request.config || typeof request.config !== 'object') {
+        throw new Error('INVALID_REQUEST: config object is required');
+      }
+
+      const config = request.config;
+
+      // Validate config parameters - check existence first to avoid undefined access
+      if ('matchWeight' in config && config.matchWeight !== undefined) {
+        if (typeof config.matchWeight !== 'number' || config.matchWeight < 0 || config.matchWeight > 1) {
+          throw new Error('INVALID_CONFIG: matchWeight must be a number between 0.0 and 1.0');
         }
       }
 
-      if (request.config.recencyWeight !== undefined) {
-        if (request.config.recencyWeight < 0 || request.config.recencyWeight > 1) {
-          throw new Error('INVALID_CONFIG: recencyWeight must be between 0.0 and 1.0');
+      if ('recencyWeight' in config && config.recencyWeight !== undefined) {
+        if (typeof config.recencyWeight !== 'number' || config.recencyWeight < 0 || config.recencyWeight > 1) {
+          throw new Error('INVALID_CONFIG: recencyWeight must be a number between 0.0 and 1.0');
         }
       }
 
-      if (request.config.maxProposals !== undefined) {
-        if (request.config.maxProposals < 1 || request.config.maxProposals > 50) {
-          throw new Error('INVALID_CONFIG: maxProposals must be between 1 and 50');
+      if ('maxProposals' in config && config.maxProposals !== undefined) {
+        if (typeof config.maxProposals !== 'number' || config.maxProposals < 1 || config.maxProposals > 50) {
+          throw new Error('INVALID_CONFIG: maxProposals must be a number between 1 and 50');
         }
       }
 
-      if (request.config.minJaccard !== undefined) {
-        if (request.config.minJaccard < 0 || request.config.minJaccard > 1) {
-          throw new Error('INVALID_CONFIG: minJaccard must be between 0.0 and 1.0');
+      if ('minJaccard' in config && config.minJaccard !== undefined) {
+        if (typeof config.minJaccard !== 'number' || config.minJaccard < 0 || config.minJaccard > 1) {
+          throw new Error('INVALID_CONFIG: minJaccard must be a number between 0.0 and 1.0');
         }
       }
 
@@ -350,7 +360,7 @@ export class ProposalsPlan {
   /**
    * Get current user's proposal configuration
    */
-  async getConfig(request: GetConfigRequest): Promise<GetConfigResponse> {
+  async getConfig(_request: GetConfigRequest): Promise<GetConfigResponse> {
     try {
       const config = await this.getCurrentConfig();
       const isDefault = config.updatedAt === DEFAULT_CONFIG.updatedAt;

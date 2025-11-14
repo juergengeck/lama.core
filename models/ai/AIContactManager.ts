@@ -19,15 +19,18 @@ import type { KeyPair } from '@refinio/one.core/lib/crypto/encryption.js';
 import type { SignKeyPair } from '@refinio/one.core/lib/crypto/sign.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type { IAIContactManager } from './interfaces.js';
-import type { LLMModelInfo, AIContactCreationResult } from './types.js';
+import type { LLMModelInfo } from './types.js';
 
 // CRITICAL: Storage functions passed as dependencies to avoid module duplication in Vite worker bundles
 export interface AIContactManagerDeps {
   storeVersionedObject: (obj: any) => Promise<any>;
+  storeUnversionedObject: (obj: any) => Promise<SHA256Hash<any> | {hash: SHA256Hash<any>, obj: any, status: string}>;
   getIdObject: (idHash: SHA256IdHash<any>) => Promise<any>;
   createDefaultKeys?: (owner: SHA256IdHash<Person | Instance>, encryptionKeyPair?: KeyPair, signKeyPair?: SignKeyPair) => Promise<SHA256Hash<Keys>>;
   hasDefaultKeys?: (owner: SHA256IdHash<Person | Instance>) => Promise<boolean>;
   queryLLMObjects?: () => AsyncIterable<any>;
+  trustPlan?: any; // Optional TrustPlan for assigning trust levels
+  journalPlan?: any; // Optional JournalPlan for recording creation
 }
 
 export class AIContactManager implements IAIContactManager {
@@ -144,15 +147,25 @@ export class AIContactManager implements IAIContactManager {
       if (!existingSomeone) {
         const myId = await this.leuteModel.myMainIdentity();
 
-        // Create Profile object directly (using all required properties from recipe)
-        // NOTE: personDescription can be empty - ProfileModel will handle adding PersonName later if needed
+        // Store PersonName as unversioned object and get its hash
+        // Handle both wrapped (just hash) and unwrapped (full result) return types
+        const personNameResult = await this.deps.storeUnversionedObject({
+          $type$: 'PersonName' as const,
+          name: displayName
+        });
+        const personNameHash = typeof personNameResult === 'object' && 'hash' in personNameResult
+          ? personNameResult.hash
+          : personNameResult;
+        console.log(`[AIContactManager] Created PersonName: ${personNameHash.toString().substring(0, 8)}...`);
+
+        // Create Profile object with hash reference to PersonName
         const profileObj: any = {
           $type$: 'Profile' as const,
           profileId: `ai-${modelId}`,  // ID property
           personId: personIdHash,  // referenceToId
           owner: myId,
           nickname: displayName,  // Profile recipe uses 'nickname' for display name
-          personDescription: [],  // Empty for now - PersonName requires ProfileModel API to add properly
+          personDescription: [personNameHash],  // Array of SHA256Hash references to PersonDescription objects
           communicationEndpoint: []  // Singular, not plural
         };
 
@@ -192,6 +205,45 @@ export class AIContactManager implements IAIContactManager {
       await this.createLLMObjectForAI(modelId, displayName, personIdHash);
       console.log(`[AIContactManager] Ensured LLM object for ${modelId}`);
 
+      // Assign 'high' trust level to AI contacts
+      if (this.deps.trustPlan) {
+        try {
+          const myId = await this.leuteModel.myMainIdentity();
+          const trustResult = await this.deps.trustPlan.setTrustLevel({
+            personId: personIdHash,
+            trustLevel: 'high',
+            establishedBy: myId,
+            reason: 'AI assistant contact - system created'
+          });
+
+          if (trustResult.success) {
+            console.log(`[AIContactManager] ✅ Assigned 'high' trust level to AI contact ${modelId}`);
+          } else {
+            console.warn(`[AIContactManager] ⚠️ Failed to assign trust level:`, trustResult.error);
+          }
+        } catch (error) {
+          console.error(`[AIContactManager] Error assigning trust level to AI contact:`, error);
+          // Don't throw - trust assignment failure shouldn't break AI contact creation
+        }
+      }
+
+      // Record AI contact creation in journal as an assembly
+      if (this.deps.journalPlan) {
+        try {
+          const myId = await this.leuteModel.myMainIdentity();
+          await this.deps.journalPlan.recordAIContactCreation(
+            myId,
+            personIdHash,
+            modelId,
+            displayName
+          );
+          console.log(`[AIContactManager] 📝 Recorded AI contact creation in journal`);
+        } catch (error) {
+          console.error(`[AIContactManager] Error recording AI contact creation in journal:`, error);
+          // Don't throw - journal recording failure shouldn't break AI contact creation
+        }
+      }
+
       return personIdHash;
     } catch (error) {
       console.error(`[AIContactManager] Failed to create AI contact for ${modelId}:`, error);
@@ -224,7 +276,7 @@ export class AIContactManager implements IAIContactManager {
    * Load existing AI contacts from storage
    * Uses LLM objects as the source of truth for modelId ↔ personId mappings
    */
-  async loadExistingAIContacts(models: LLMModelInfo[]): Promise<number> {
+  async loadExistingAIContacts(_models: LLMModelInfo[]): Promise<number> {
     console.log('[AIContactManager] Loading existing AI contacts from LLM objects...');
 
     if (!this.llmObjectManager) {

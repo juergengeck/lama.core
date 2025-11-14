@@ -19,7 +19,7 @@ import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js'
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
-import { HI_WELCOME_MESSAGE } from '../../constants/welcome-messages.js';
+import { getWelcomeMessage } from '../../constants/welcome-messages.js';
 import type { IAITopicManager } from './interfaces.js';
 import type { AIMode, LLMModelInfo } from './types.js';
 
@@ -47,7 +47,8 @@ export class AITopicManager implements IAITopicManager {
     private channelManager: ChannelManager,
     private leuteModel: LeuteModel,
     private llmManager: any, // LLMManager interface
-    private topicGroupManager?: any // Optional - for topic creation (Node.js only)
+    private topicGroupManager?: any, // Optional - for topic creation (Node.js only)
+    private assemblyManager?: any // Optional - for knowledge assembly creation
   ) {
     this._topicModelMap = new Map();
     this._topicLoadingState = new Map();
@@ -148,6 +149,21 @@ export class AITopicManager implements IAITopicManager {
   }
 
   /**
+   * Switch/reassign the model for an existing AI topic
+   * Used for error recovery when primary model fails
+   */
+  switchTopicModel(topicId: string, newModelId: string): void {
+    if (!this.isAITopic(topicId)) {
+      throw new Error(`Cannot switch model - topic ${topicId} is not an AI topic`);
+    }
+
+    const oldModelId = this._topicModelMap.get(topicId);
+    this._topicModelMap.set(topicId, newModelId);
+
+    console.log(`[AITopicManager] Switched topic ${topicId} from model ${oldModelId} to ${newModelId}`);
+  }
+
+  /**
    * Get default AI model
    */
   getDefaultModel(): string | null {
@@ -231,7 +247,8 @@ export class AITopicManager implements IAITopicManager {
    * Check if a topic exists and register it if found
    * Returns true if the topic exists, false otherwise
    */
-  private async checkAndRegisterExistingTopic(
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private async _checkAndRegisterExistingTopic(
     topicId: string,
     aiContactManager: any
   ): Promise<boolean> {
@@ -295,7 +312,7 @@ export class AITopicManager implements IAITopicManager {
   private async ensureHiChat(
     modelId: string,
     aiPersonId: SHA256IdHash<Person>,
-    onTopicCreated?: (topicId: string, modelId: string) => Promise<void>
+    _onTopicCreated?: (topicId: string, modelId: string) => Promise<void>
   ): Promise<void> {
     console.log('[AITopicManager] Ensuring Hi chat...');
 
@@ -323,6 +340,12 @@ export class AITopicManager implements IAITopicManager {
         const userPersonId = await this.leuteModel.myMainIdentity();
         await this.topicGroupManager.createGroupTopic('Hi', topicId, [userPersonId, aiPersonId]);
         needsWelcome = true;
+
+        // Create Assembly for this topic
+        if (this.assemblyManager) {
+          console.log('[AITopicManager] Creating Assembly for Hi chat');
+          await this.assemblyManager.createChatAssembly(topicId, 'Hi');
+        }
       } else {
         // Topic exists - ensure AI participant is in the group
         console.log('[AITopicManager] Hi chat exists, ensuring AI participant is in group...');
@@ -343,7 +366,21 @@ export class AITopicManager implements IAITopicManager {
       // Post static welcome message directly (NO LLM generation for Hi chat)
       if (needsWelcome) {
         console.log('[AITopicManager] ✅ Hi chat created, posting static welcome message');
-        await topicRoom.sendMessage(HI_WELCOME_MESSAGE, aiPersonId, aiPersonId);
+
+        // Get model provider to determine welcome message
+        let modelProvider: string | undefined;
+        try {
+          const model = this.llmManager?.getModel(modelId);
+          if (model) {
+            modelProvider = model.provider;
+            console.log('[AITopicManager] Model provider:', modelProvider);
+          }
+        } catch (error) {
+          console.warn('[AITopicManager] Could not get model provider, using default message:', error);
+        }
+
+        const welcomeMessage = getWelcomeMessage(modelProvider);
+        await topicRoom.sendMessage(welcomeMessage, aiPersonId, aiPersonId);
         console.log('[AITopicManager] ✅ Static welcome message posted to Hi chat');
       } else {
         console.log('[AITopicManager] ✅ Hi chat already exists');
@@ -389,6 +426,12 @@ export class AITopicManager implements IAITopicManager {
         const userPersonId = await this.leuteModel.myMainIdentity();
         await this.topicGroupManager.createGroupTopic('LAMA', topicId, [userPersonId, privateAiPersonId]);
         needsWelcome = true;
+
+        // Create Assembly for this topic
+        if (this.assemblyManager) {
+          console.log('[AITopicManager] Creating Assembly for LAMA chat');
+          await this.assemblyManager.createChatAssembly(topicId, 'LAMA');
+        }
       } else {
         // Topic exists - ensure AI participant is in the group
         console.log('[AITopicManager] LAMA chat exists, ensuring AI participant is in group...');

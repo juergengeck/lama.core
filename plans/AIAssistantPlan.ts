@@ -75,6 +75,9 @@ export interface AIAssistantPlanDependencies {
   /** Optional: Topic group manager for topic creation (Node.js only) */
   topicGroupManager?: any;
 
+  /** Optional: Assembly manager for knowledge assembly creation */
+  assemblyManager?: any;
+
   /** Optional: Settings persistence for default model and other preferences */
   settingsPersistence?: AISettingsPersistence;
 
@@ -117,7 +120,8 @@ export class AIAssistantPlan {
       deps.channelManager,
       deps.leuteModel,
       deps.llmManager,
-      deps.topicGroupManager
+      deps.topicGroupManager,
+      deps.assemblyManager
     );
 
     this.taskManager = new AITaskManager(deps.channelManager, deps.topicAnalysisModel);
@@ -167,7 +171,7 @@ export class AIAssistantPlan {
    * Load default model from platform-specific persistence
    * @private
    */
-  private async _loadDefaultModelFromPersistence(models: LLMModelInfo[]): Promise<string | null> {
+  private async _loadDefaultModelFromPersistence(_models: LLMModelInfo[]): Promise<string | null> {
     // Try browser-specific llmConfigPlan first (if available)
     if (this.deps.llmConfigPlan) {
       const config = await this.deps.llmConfigPlan.getConfig({});
@@ -441,14 +445,7 @@ export class AIAssistantPlan {
   async setDefaultModel(modelId: string): Promise<void> {
     console.log(`[AIAssistantPlan] Setting default model: ${modelId}`);
 
-    // Verify model exists
-    const models = this.deps.llmManager?.getAvailableModels() || [];
-    const model = models.find((m: any) => m.id === modelId);
-
-    if (!model) {
-      throw new Error(`Model ${modelId} not found`);
-    }
-
+    // Set as default immediately - topicManager uses modelId directly
     this.topicManager.setDefaultModel(modelId);
 
     // Persist the model
@@ -677,10 +674,10 @@ export class AIAssistantPlan {
           console.log(`[AIAssistantPlan] Storing ${result.subjects.length} subjects to ONE.core...`);
           for (const subject of result.subjects.slice(0, 5)) {
             try {
-              const subjectId = subject.keywords.map(k => k.term).join('+');
+              const subjectId = subject.keywords.map((k: any) => k.term).join('+');
               const createdSubject = await this.deps.topicAnalysisModel.createSubject(
                 topicId as any,
-                subject.keywords.map(k => k.term),
+                subject.keywords.map((k: any) => k.term),
                 subjectId,
                 subject.description,
                 subject.keywords[0]?.confidence || 0.8
@@ -773,7 +770,7 @@ export class AIAssistantPlan {
   getAllContacts(): Array<{ modelId: string; name: string; personId: string | null }> {
     const models = this.deps.llmManager.getAvailableModels();
 
-    return models.map(model => ({
+    return models.map((model: any) => ({
       modelId: model.id,
       name: model.name,
       personId: this.contactManager.getPersonIdForModel(model.id)

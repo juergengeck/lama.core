@@ -344,6 +344,30 @@ export default class TopicAnalysisModel extends Model {
     }
 
     /**
+     * Manually populate the subjects cache (bypasses channel query)
+     * Used after creating subjects to avoid race condition with channel propagation
+     */
+    setCachedSubjects(topicId: any, subjects: Subject[]): void {
+        console.log(`[TopicAnalysisModel] Priming subjects cache for topic ${topicId} with ${subjects.length} subjects`);
+        this.subjectsCache.set(topicId, {
+            data: subjects,
+            timestamp: Date.now()
+        });
+    }
+
+    /**
+     * Manually populate the keywords cache (bypasses channel query)
+     * Used after creating keywords to avoid race condition with channel propagation
+     */
+    setCachedKeywords(topicId: any, keywords: Keyword[]): void {
+        console.log(`[TopicAnalysisModel] Priming keywords cache for topic ${topicId} with ${keywords.length} keywords`);
+        this.keywordsCache.set(topicId, {
+            data: keywords,
+            timestamp: Date.now()
+        });
+    }
+
+    /**
      * Get all subjects for a topic
      */
     async getSubjects(topicId: any, queryOptions = {}): Promise<Subject[]> {

@@ -85,7 +85,7 @@ export class WordCloudSettingsPlan {
    * Get word cloud settings for the current user
    */
   async getWordCloudSettings(
-    request: GetWordCloudSettingsRequest
+    _request: GetWordCloudSettingsRequest
   ): Promise<GetWordCloudSettingsResponse> {
     try {
       const creatorId = await this.getCurrentUserId();
@@ -138,7 +138,7 @@ export class WordCloudSettingsPlan {
    * Reset word cloud settings to defaults for the current user
    */
   async resetWordCloudSettings(
-    request: ResetWordCloudSettingsRequest
+    _request: ResetWordCloudSettingsRequest
   ): Promise<ResetWordCloudSettingsResponse> {
     try {
       const creatorId = await this.getCurrentUserId();

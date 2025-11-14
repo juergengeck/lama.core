@@ -21,7 +21,6 @@ import type { IAIMessageProcessor, IAIPromptBuilder, IAITaskManager } from './in
 import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
 import OneObjectCache from '@refinio/one.models/lib/api/utils/caches/OneObjectCache.js';
-import { DEFAULT_SYSTEM_PROMPT } from '../../constants/system-prompts.js';
 
 export class AIMessageProcessor implements IAIMessageProcessor {
   // Circular dependencies - injected via setters
@@ -44,11 +43,11 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   constructor(
     private channelManager: ChannelManager,
     private llmManager: any, // LLMManager interface
-    private leuteModel: LeuteModel,
+    _leuteModel: LeuteModel,
     private topicManager: any, // AITopicManager
     private contactManager: any, // AIContactManager
     private topicModel: TopicModel, // For storing messages in ONE.core
-    private stateManager?: any, // Optional state manager for tracking
+    _stateManager?: any, // Optional state manager for tracking
     private platform?: LLMPlatform, // Optional platform for UI events
     private topicAnalysisModel?: any // Optional topic analysis model for subject/keyword creation
   ) {
@@ -92,21 +91,6 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     this.availableModels = models;
   }
 
-  /**
-   * Get system prompt for a specific model
-   * Returns model-specific prompt from LLM object, or default if not set
-   */
-  private getSystemPromptForModel(modelId: string): string {
-    const model = this.llmManager?.getModel(modelId);
-
-    if (model?.systemPrompt) {
-      console.log(`[AIMessageProcessor] Using custom system prompt for model: ${modelId}`);
-      return model.systemPrompt;
-    }
-
-    console.log(`[AIMessageProcessor] Using default system prompt for model: ${modelId}`);
-    return DEFAULT_SYSTEM_PROMPT;
-  }
 
   /**
    * Handle a new topic message
@@ -197,6 +181,10 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       let fullResponse = '';
       let fullThinking = '';
 
+      // Get model info for event emission
+      const model = this.llmManager?.getModel(modelId);
+      const modelName = model?.name || model?.displayName;
+
       // Emit thinking indicator via platform
       if (this.platform) {
         this.platform.emitProgress(topicId, 0);
@@ -218,7 +206,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
             if (this.platform) {
               // Reduced logging - only log every 100 chunks or final update
               // console.log('[AIMessageProcessor] 📡 Emitting streaming update, fullResponse length:', fullResponse.length);
-              this.platform.emitMessageUpdate(topicId, messageId, fullResponse, 'streaming');
+              this.platform.emitMessageUpdate(topicId, messageId, fullResponse, 'streaming', modelId, modelName);
             } else {
               console.warn('[AIMessageProcessor] ⚠️  No platform available for streaming!');
             }
@@ -259,7 +247,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
       // Emit completion via platform
       if (this.platform) {
-        this.platform.emitMessageUpdate(topicId, messageId, response || fullResponse, 'complete');
+        this.platform.emitMessageUpdate(topicId, messageId, response || fullResponse, 'complete', modelId, modelName);
       }
 
       // CRITICAL: Store the AI's response to the channel
@@ -558,7 +546,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
    * Get hardcoded welcome message for topics that don't need AI generation
    * NOTE: "hi" topic welcome is handled by the app layer (lama.cube)
    */
-  private getHardcodedWelcome(topicId: string): string | null {
+  private getHardcodedWelcome(_topicId: string): string | null {
     // No hardcoded welcomes in infrastructure layer
     // App-specific welcome messages belong in lama.cube
     return null;

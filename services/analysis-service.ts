@@ -229,7 +229,7 @@ export class LLMAnalysisService implements AnalysisService {
   private buildPrompt(
     content: AnalysisContent,
     existingSubjects: Subject[],
-    context?: AnalysisContext
+    _context?: AnalysisContext
   ): Array<{ role: string; content: string }> {
     const systemPrompt = this.buildSystemPrompt(existingSubjects);
 

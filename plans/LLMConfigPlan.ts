@@ -8,13 +8,14 @@
 
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { generateSystemPromptForModel } from '../constants/system-prompts.js';
+import { getModelProvider, modelRequiresApiKey } from '../constants/model-registry.js';
 
 // Re-export types for convenience
 export interface TestConnectionRequest {
   baseUrl: string;
   authToken?: string;
+  serviceName?: string; // Service name for logging (e.g., 'Ollama', 'LM Studio')
 }
 
 export interface TestConnectionResponse {
@@ -32,6 +33,7 @@ export interface SetOllamaConfigRequest {
   authToken?: string;
   modelName: string;
   setAsActive: boolean;
+  apiKey?: string; // For cloud providers (Claude, OpenAI, etc.)
 }
 
 export interface SetOllamaConfigResponse {
@@ -91,50 +93,47 @@ export interface DeleteOllamaConfigResponse {
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  * - ollamaValidator: Service for testing Ollama connections
- * - configManager: Service for encryption/decryption
+ * - settings: ONE.core SettingsModel for secure API key storage (uses master key encryption)
  */
 export class LLMConfigPlan {
   private nodeOneCore: any;
-  private aiAssistantModel: any;
-  private testOllamaConnection: (baseUrl: string, authToken?: string) => Promise<TestConnectionResponse>;
+  private llmManager: any;
+  private settings: any; // PropertyTreeStore from ONE.models
+  private testOllamaConnection: (baseUrl: string, authToken?: string, serviceName?: string) => Promise<TestConnectionResponse>;
   private fetchOllamaModels: (baseUrl: string, authToken?: string) => Promise<any[]>;
-  private encryptToken: (token: string) => string;
-  private decryptToken: (encrypted: string) => string;
   private computeBaseUrl: (modelType: string, baseUrl?: string) => string;
-  private isEncryptionAvailable: () => boolean;
 
   constructor(
     nodeOneCore: any,
-    aiAssistantModel: any,
+    aiAssistantModel: any, // Kept for backward compatibility but unused
+    llmManager: any,
+    settings: any, // PropertyTreeStore from ONE.models
     ollamaValidator: {
-      testOllamaConnection: (baseUrl: string, authToken?: string) => Promise<TestConnectionResponse>;
+      testOllamaConnection: (baseUrl: string, authToken?: string, serviceName?: string) => Promise<TestConnectionResponse>;
       fetchOllamaModels: (baseUrl: string, authToken?: string) => Promise<any[]>;
     },
     configManager: {
-      encryptToken: (token: string) => string;
-      decryptToken: (encrypted: string) => string;
       computeBaseUrl: (modelType: string, baseUrl?: string) => string;
-      isEncryptionAvailable: () => boolean;
     }
   ) {
     this.nodeOneCore = nodeOneCore;
-    this.aiAssistantModel = aiAssistantModel;
+    // Don't store aiAssistantModel - access dynamically from nodeOneCore.aiAssistantModel
+    // This allows aiAssistantModel to be initialized after LLMConfigPlan is created
+    this.llmManager = llmManager;
+    this.settings = settings;
     this.testOllamaConnection = ollamaValidator.testOllamaConnection;
     this.fetchOllamaModels = ollamaValidator.fetchOllamaModels;
-    this.encryptToken = configManager.encryptToken;
-    this.decryptToken = configManager.decryptToken;
     this.computeBaseUrl = configManager.computeBaseUrl;
-    this.isEncryptionAvailable = configManager.isEncryptionAvailable;
   }
 
   /**
-   * Test connection to Ollama server
+   * Test connection to Ollama-compatible server (Ollama, LM Studio, etc.)
    */
   async testConnection(request: TestConnectionRequest): Promise<TestConnectionResponse> {
     console.log('[LLMConfigPlan] Testing connection to:', request.baseUrl);
 
     try {
-      const result = await this.testOllamaConnection(request.baseUrl, request.authToken);
+      const result = await this.testOllamaConnection(request.baseUrl, request.authToken, request.serviceName);
       return result;
     } catch (error: any) {
       console.error('[LLMConfigPlan] Test connection error:', error);
@@ -154,11 +153,16 @@ export class LLMConfigPlan {
       modelType: request.modelType,
       baseUrl: request.baseUrl,
       modelName: request.modelName,
+      setAsActive: request.setAsActive,
     });
+    console.log('[LLMConfigPlan] ⚠️ request.setAsActive =', request.setAsActive);
 
     try {
-      // Validation: remote type requires baseUrl
-      if (request.modelType === 'remote' && !request.baseUrl) {
+      // Check if model requires API key (cloud provider)
+      const requiresApiKey = modelRequiresApiKey(request.modelName);
+
+      // Validation: remote Ollama (not cloud API) requires baseUrl
+      if (request.modelType === 'remote' && !request.baseUrl && !requiresApiKey) {
         return {
           success: false,
           error: 'Remote Ollama requires baseUrl',
@@ -184,28 +188,45 @@ export class LLMConfigPlan {
         };
       }
 
-      // Check encryption availability if auth token provided
-      if (request.authToken && !this.isEncryptionAvailable()) {
-        return {
-          success: false,
-          error: 'Token encryption not available on this system',
-          errorCode: 'ENCRYPTION_ERROR',
-        };
-      }
-
-      // Encrypt auth token if provided
-      let encryptedAuthToken: string | undefined;
+      // Store auth token in settings if provided (ONE.core handles encryption via master key)
       if (request.authToken) {
         try {
-          encryptedAuthToken = this.encryptToken(request.authToken);
+          const settingsKey = `llm.${request.modelName}.authToken`;
+          await this.settings.setValue(settingsKey, request.authToken);
+          console.log(`[LLMConfigPlan] Stored auth token in settings (encrypted by ONE.core): ${settingsKey}`);
         } catch (error: any) {
           return {
             success: false,
-            error: `Token encryption failed: ${error.message}`,
-            errorCode: 'ENCRYPTION_ERROR',
+            error: `Failed to store auth token: ${error.message}`,
+            errorCode: 'STORAGE_ERROR',
           };
         }
       }
+
+      // Store API key in settings if provided (ONE.core handles encryption via master key)
+      if (request.apiKey) {
+        try {
+          const settingsKey = `llm.${request.modelName}.apiKey`;
+          await this.settings.setValue(settingsKey, request.apiKey);
+          console.log(`[LLMConfigPlan] Stored API key in settings (encrypted by ONE.core): ${settingsKey}`);
+
+          // Initialize LLMManager now that we have an API key
+          // This will discover models from the provider (Claude, OpenAI, etc.)
+          // Use force=true to re-discover models even if already initialized
+          console.log('[LLMConfigPlan] API key stored, re-initializing LLMManager to discover cloud models...');
+          await this.llmManager.init(true);
+          console.log('[LLMConfigPlan] ✅ LLMManager re-initialized with cloud models');
+        } catch (error: any) {
+          return {
+            success: false,
+            error: `Failed to store API key: ${error.message}`,
+            errorCode: 'STORAGE_ERROR',
+          };
+        }
+      }
+
+      // Get provider from model registry
+      const provider = getModelProvider(request.modelName);
 
       // Build LLM object
       const now = Date.now();
@@ -213,7 +234,9 @@ export class LLMConfigPlan {
         $type$: 'LLM',
         name: request.modelName,
         filename: request.modelName,
+        modelId: request.modelName, // Required field for identification
         modelType: request.modelType,
+        provider: provider, // Set provider for cloud API models
         active: request.setAsActive,
         deleted: false,
         created: now,
@@ -224,16 +247,14 @@ export class LLMConfigPlan {
         systemPrompt: generateSystemPromptForModel(request.modelName, request.modelName),
       };
 
-      // Add network fields if provided
+      // Add network fields if provided (tokens/keys stored in settings, not objects)
       if (request.baseUrl) {
         llmObject.baseUrl = request.baseUrl;
       }
       if (request.authType) {
         llmObject.authType = request.authType;
       }
-      if (encryptedAuthToken) {
-        llmObject.encryptedAuthToken = encryptedAuthToken;
-      }
+      // Note: auth tokens and API keys are stored in settings (not in LLM object)
 
       // Store in ONE.core
       if (!this.nodeOneCore || !this.nodeOneCore.channelManager) {
@@ -252,13 +273,17 @@ export class LLMConfigPlan {
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
       console.log('[LLMConfigPlan] Posted LLM config to lama channel');
 
-      // If setting as active, set it as the default model in AIAssistantModel
-      if (request.setAsActive && this.aiAssistantModel) {
+      // If setting as active, set it as the default model in AIAssistantPlan
+      // AIAssistantPlan will handle model registration via LLMManager
+      // Access aiAssistantModel dynamically from nodeOneCore to avoid initialization order issues
+      if (request.setAsActive && this.nodeOneCore.aiAssistantModel) {
         console.log(`[LLMConfigPlan] Setting ${request.modelName} as default model`);
-        await this.aiAssistantModel.setDefaultModel(request.modelName);
+        await this.nodeOneCore.aiAssistantModel.setDefaultModel(request.modelName);
         console.log(`[LLMConfigPlan] Successfully set ${request.modelName} as default model`);
         // TODO: Implement deactivation of other configs
         // This would require iterating through existing LLM objects and setting active=false
+      } else if (request.setAsActive) {
+        console.warn('[LLMConfigPlan] ⚠️ Cannot set default model - aiAssistantModel not yet initialized');
       }
 
       return {
@@ -394,13 +419,8 @@ export class LLMConfigPlan {
             }
           }
 
-          if (llmObjects[0]?.encryptedAuthToken) {
-            try {
-              authToken = this.decryptToken(llmObjects[0].encryptedAuthToken);
-            } catch (error: any) {
-              console.error('[LLMConfigPlan] Token decryption failed:', error);
-            }
-          }
+          // Auth tokens are now stored in SettingsModel (encrypted by ONE.core)
+          // Legacy encryptedAuthToken field is no longer used
         }
       }
 
@@ -447,7 +467,7 @@ export class LLMConfigPlan {
       }
 
       // Load the config object by iterating through LLM objects
-      const hash = ensureIdHash(request.configHash);
+      ensureIdHash(request.configHash);
       let llmObject: any = null;
 
       try {
@@ -696,16 +716,11 @@ export class LLMConfigPlan {
       }
 
       // Check encryption availability
-      if (!this.isEncryptionAvailable()) {
-        return {
-          success: false,
-          error: 'API key encryption not available on this system',
-          errorCode: 'ENCRYPTION_ERROR',
-        };
-      }
+      // API keys are now encrypted by ONE.core's SettingsModel
+      // No need to check encryption availability
 
-      // Load the LLM object
-      const llmIdHash = ensureIdHash(request.llmId);
+      // Load the LLM object by hash
+      // request.llmId is the object hash (configHash) returned from setConfig
       let llmObject: any = null;
 
       const iterator = this.nodeOneCore.channelManager.objectIteratorWithType('LLM', {
@@ -713,13 +728,17 @@ export class LLMConfigPlan {
       });
 
       for await (const obj of iterator) {
-        if (obj && obj.data && obj.data.id === llmIdHash) {
-          llmObject = obj.data;
-          break;
+        if (obj && obj.data) {
+          // Match by object hash (stored in obj.hash)
+          if (obj.hash === request.llmId) {
+            llmObject = obj.data;
+            break;
+          }
         }
       }
 
       if (!llmObject) {
+        console.error('[LLMConfigPlan] LLM not found with hash:', request.llmId);
         return {
           success: false,
           error: 'LLM configuration not found',
@@ -727,20 +746,20 @@ export class LLMConfigPlan {
         };
       }
 
-      // Encrypt API key
-      let encryptedApiKey: string;
+      // Store API key in SettingsModel (encrypted by ONE.core)
+      const settingsKey = `llm.${llmObject.modelName}.apiKey`;
       try {
-        encryptedApiKey = this.encryptToken(request.apiKey);
+        await this.settings.setValue(settingsKey, request.apiKey);
+        console.log(`[LLMConfigPlan] Updated API key in settings: ${settingsKey}`);
       } catch (error: any) {
         return {
           success: false,
-          error: `API key encryption failed: ${error.message}`,
-          errorCode: 'ENCRYPTION_ERROR',
+          error: `Failed to store API key: ${error.message}`,
+          errorCode: 'STORAGE_ERROR',
         };
       }
 
-      // Update the API key
-      llmObject.encryptedApiKey = encryptedApiKey;
+      // Update modification timestamp
       llmObject.modified = Date.now();
 
       // Store updated object
