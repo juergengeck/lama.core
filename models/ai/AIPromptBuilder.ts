@@ -18,6 +18,14 @@ import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.j
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type { IAIPromptBuilder, IAIMessageProcessor } from './interfaces.js';
 import type { PromptResult, RestartContext } from './types.js';
+import {
+  buildContextWithinBudget,
+  formatForAnthropicWithCaching,
+  formatForStandardAPI,
+  type PromptParts
+} from '../../services/context-budget-manager.js';
+import { calculateAbstractionLevel } from '../../services/abstraction-level-calculator.js';
+import type { SubjectForSummary } from '../../services/subject-summarizer.js';
 
 export class AIPromptBuilder implements IAIPromptBuilder {
   // Circular dependency - injected via setter
@@ -56,106 +64,119 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
   /**
    * Build a prompt for a message with conversation history
+   * Now uses abstraction-based context management with prompt caching
    */
   async buildPrompt(
     topicId: string,
     newMessage: string,
     _senderId: SHA256IdHash<Person>
   ): Promise<PromptResult> {
-    console.log(`[AIPromptBuilder] Building prompt for topic: ${topicId}`);
+    console.log(`[AIPromptBuilder] Building prompt for topic: ${topicId} (abstraction-based)`);
 
     try {
-      // Get messages from cache or load fresh
-      const messages = await this.getCachedMessages(topicId);
+      // Get model context window
+      const modelId = this.topicManager.getModelIdForTopic(topicId);
+      const model = this.getModelById(modelId);
+      const contextWindow = model?.contextLength || 200000; // Default to Claude-scale
 
-      // Check if context window restart is needed
-      const { needsRestart, restartContext } = await this.checkContextWindowAndPrepareRestart(
-        topicId,
-        messages
-      );
+      // Get system prompt (will be Part 1)
+      const systemPrompt = await this.buildSystemPrompt(topicId);
 
-      // Build message history with proper role detection
-      const history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+      // Get past subjects from other topics (will be Part 2)
+      const pastSubjects = await this.getPastSubjectsWithAbstraction(topicId);
+      console.log(`[AIPromptBuilder] Retrieved ${pastSubjects.length} past subjects`);
 
-      if (needsRestart && restartContext) {
-        // Use summary-based restart context
-        history.push({
-          role: 'system',
-          content: restartContext,
-        });
-        console.log('[AIPromptBuilder] Using summary-based restart context');
+      // Get messages from current topic (will be Part 3)
+      const allMessages = await this.getCachedMessages(topicId);
+      const currentSubjectMessages = this.formatMessagesForContext(allMessages);
 
-        // Only include very recent messages (last 3) after restart
-        const veryRecentMessages = messages.slice(-3);
-        for (const msg of veryRecentMessages) {
-          const text = (msg as any).data?.text || (msg as any).text;
-          const msgSender = (msg as any).data?.sender || (msg as any).author;
-          const isAI = this.isAIMessage(msgSender);
+      // Build context using budget manager with abstraction-based compression
+      const promptParts = buildContextWithinBudget({
+        modelId: modelId || 'unknown',
+        modelContextWindow: contextWindow,
+        systemPrompt,
+        pastSubjects,
+        currentSubjectMessages,
+        currentMessage: newMessage,
+        targetPastSubjectCount: 20,
+        targetMessageLimit: 30
+      });
 
-          if (text && text.trim()) {
-            history.push({
-              role: isAI ? 'assistant' : 'user',
-              content: text,
-            });
-          }
-        }
-      } else {
-        // Normal context enrichment flow
-        if (this.contextEnrichmentService) {
-          try {
-            const contextHints = await this.contextEnrichmentService.buildEnhancedContext(
-              topicId,
-              messages
-            );
-            if (contextHints) {
-              history.push({
-                role: 'system',
-                content: contextHints,
-              });
-              console.log(`[AIPromptBuilder] Added context hints: ${String(contextHints).substring(0, 100)}...`);
-            }
-          } catch (error) {
-            console.warn('[AIPromptBuilder] Context enrichment failed:', error);
-          }
-        }
+      // Log budget info
+      console.log(`[AIPromptBuilder] Context budget:`, {
+        total: promptParts.totalTokens,
+        part1: promptParts.part1.tokens,
+        part2: promptParts.part2.tokens,
+        part3: promptParts.part3.tokens,
+        part4: promptParts.part4.tokens,
+        compression: promptParts.budget.compressionMode,
+        pastSubjects: promptParts.budget.pastSubjectCount,
+        messages: promptParts.budget.currentMessageLimit
+      });
 
-        // Get last 10 messages for context
-        const recentMessages = messages.slice(-10);
-        for (const msg of recentMessages) {
-          const text = (msg as any).data?.text || (msg as any).text;
-          const msgSender = (msg as any).data?.sender || (msg as any).author;
-          const isAI = this.isAIMessage(msgSender);
-
-          if (text && text.trim()) {
-            history.push({
-              role: isAI ? 'assistant' : 'user',
-              content: text,
-            });
-          }
-        }
-      }
-
-      // Add the new message if not already in history
-      const lastHistoryMsg = history[history.length - 1];
-      if (!lastHistoryMsg || lastHistoryMsg.content !== newMessage) {
-        history.push({
-          role: 'user',
-          content: newMessage,
-        });
-      }
-
-      console.log(`[AIPromptBuilder] Built prompt with ${history.length} messages`);
-
+      // Return prompt parts directly
+      // llm-manager will handle provider-specific formatting
       return {
-        messages: history,
-        needsRestart,
-        restartContext: restartContext || undefined,
+        messages: [], // Deprecated - use promptParts instead
+        needsRestart: false,
+        restartContext: undefined,
+        promptParts // LLM manager uses this for provider-specific formatting
       };
     } catch (error) {
       console.error('[AIPromptBuilder] Failed to build prompt:', error);
       throw error;
     }
   }
+
+  /**
+   * Build system prompt (Part 1)
+   */
+  private async buildSystemPrompt(topicId: string): Promise<string> {
+    let systemPrompt = `You are a private AI assistant with access to the owner's conversation history and knowledge base.\n\n`;
+    systemPrompt += `You can use MCP tools to retrieve detailed information:\n`;
+    systemPrompt += `- subject:list - Browse available subjects\n`;
+    systemPrompt += `- subject:get-messages - Get full messages for a subject\n`;
+    systemPrompt += `- keyword:search - Find subjects by keywords\n\n`;
+    systemPrompt += `Be helpful, concise, and maintain context across conversations.`;
+
+    // Add context enrichment if available
+    if (this.contextEnrichmentService) {
+      try {
+        const messages = await this.getCachedMessages(topicId);
+        const contextHints = await this.contextEnrichmentService.buildEnhancedContext(topicId, messages);
+        if (contextHints) {
+          systemPrompt += `\n\n${contextHints}`;
+        }
+      } catch (error) {
+        console.warn('[AIPromptBuilder] Context enrichment failed:', error);
+      }
+    }
+
+    return systemPrompt;
+  }
+
+  /**
+   * Format messages for context (Part 3)
+   */
+  private formatMessagesForContext(messages: any[]): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+    const formatted: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+
+    for (const msg of messages) {
+      const text = (msg as any).data?.text || (msg as any).text;
+      const msgSender = (msg as any).data?.sender || (msg as any).author;
+      const isAI = this.isAIMessage(msgSender);
+
+      if (text && text.trim()) {
+        formatted.push({
+          role: (isAI ? 'assistant' : 'user') as 'system' | 'user' | 'assistant',
+          content: text
+        });
+      }
+    }
+
+    return formatted;
+  }
+
 
   /**
    * Check if context window restart is needed
@@ -339,6 +360,96 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   private get topicAnalysisModel(): any {
     // This would be injected if needed - for now return undefined
     return undefined;
+  }
+
+  /**
+   * Retrieve past subjects from all topics with abstraction levels
+   */
+  private async getPastSubjectsWithAbstraction(currentTopicId: string): Promise<SubjectForSummary[]> {
+    if (!this.topicAnalysisModel) {
+      return [];
+    }
+
+    try {
+      // Get all topics
+      const allTopics = await this.topicAnalysisModel.getAllTopics?.();
+      if (!allTopics || allTopics.length === 0) {
+        return [];
+      }
+
+      const pastSubjects: SubjectForSummary[] = [];
+
+      // Get subjects from all topics except current
+      for (const topic of allTopics) {
+        if (topic.id === currentTopicId) continue; // Skip current topic
+
+        try {
+          const subjects = await this.topicAnalysisModel.getSubjects(topic.id);
+          if (!subjects) continue;
+
+          for (const subject of subjects) {
+            if (subject.archived) continue;
+
+            // Calculate abstraction level if not set
+            let abstractionLevel = subject.abstractionLevel;
+            if (!abstractionLevel) {
+              const keywords = subject.keywords || [];
+              const keywordTerms = await this.resolveKeywordTerms(keywords);
+              const analysis = calculateAbstractionLevel({
+                keywords: keywordTerms,
+                description: subject.description,
+                messageCount: subject.messageCount
+              });
+              abstractionLevel = analysis.level;
+            }
+
+            pastSubjects.push({
+              id: subject.id,
+              name: subject.keywordCombination || subject.id,
+              description: subject.description,
+              keywords: await this.resolveKeywordTerms(subject.keywords || []),
+              messageCount: subject.messageCount || 0,
+              abstractionLevel,
+              created: subject.createdAt,
+              lastSeenAt: subject.lastSeenAt
+            });
+          }
+        } catch (error) {
+          console.warn(`[AIPromptBuilder] Failed to get subjects for topic ${topic.id}:`, error);
+        }
+      }
+
+      // Sort by recency (last seen)
+      pastSubjects.sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
+
+      return pastSubjects;
+    } catch (error) {
+      console.error('[AIPromptBuilder] Failed to retrieve past subjects:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Resolve keyword ID hashes to terms
+   */
+  private async resolveKeywordTerms(keywordIds: any[]): Promise<string[]> {
+    if (!this.topicAnalysisModel || !keywordIds || keywordIds.length === 0) {
+      return [];
+    }
+
+    try {
+      const terms: string[] = [];
+      for (const keywordId of keywordIds) {
+        const keyword = await this.topicAnalysisModel.getKeywordById?.(keywordId);
+        if (keyword && keyword.term) {
+          terms.push(keyword.term);
+        }
+      }
+      return terms;
+    } catch (error) {
+      console.warn('[AIPromptBuilder] Failed to resolve keyword terms:', error);
+      return [];
+    }
   }
 
   /**

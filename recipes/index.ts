@@ -5,6 +5,8 @@
 
 import { LLMRecipe } from './LLMRecipe.js';
 import { GlobalLLMSettingsRecipe } from './GlobalLLMSettingsRecipe.js';
+import { AISettingsRecipe } from './AISettingsRecipe.js';
+import { AppSettingsRecipe } from './AppSettingsRecipe.js';
 import { ProposalConfigRecipe } from './ProposalConfigRecipe.js';
 import { SubjectRecipe } from '../one-ai/recipes/SubjectRecipe.js';
 import { KeywordRecipe } from '../one-ai/recipes/KeywordRecipe.js';
@@ -19,6 +21,8 @@ import { KeywordAccessStateRecipe } from '../one-ai/recipes/KeywordAccessState.j
 export const LAMA_CORE_RECIPES = [
     LLMRecipe,
     GlobalLLMSettingsRecipe,
+    AISettingsRecipe,
+    AppSettingsRecipe,
     ProposalConfigRecipe,
     SubjectRecipe,
     KeywordRecipe,
@@ -31,6 +35,8 @@ export const LAMA_CORE_RECIPES = [
 export {
     LLMRecipe,
     GlobalLLMSettingsRecipe,
+    AISettingsRecipe,
+    AppSettingsRecipe,
     ProposalConfigRecipe,
     SubjectRecipe,
     KeywordRecipe,

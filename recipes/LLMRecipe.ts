@@ -85,6 +85,14 @@ export const LLMRecipe = {
             optional: true
         },
         {
+            itemprop: 'owner',
+            itemtype: {
+                type: 'referenceToId',
+                allowedTypes: new Set(['Person', 'Instance'])
+            },
+            optional: true
+        },
+        {
             itemprop: 'capabilities',
             itemtype: {
                 type: 'array',

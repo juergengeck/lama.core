@@ -7,6 +7,7 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import type { PromptParts } from '../../services/context-budget-manager.js';
 
 /**
  * AI operating modes
@@ -64,7 +65,7 @@ export interface LLMModelInfo {
  * Result of prompt building with context
  */
 export interface PromptResult {
-  /** Messages array for LLM (system, user, assistant) */
+  /** @deprecated Use promptParts instead - messages will be empty when promptParts is present */
   messages: Array<{
     role: 'system' | 'user' | 'assistant';
     content: string;
@@ -75,6 +76,9 @@ export interface PromptResult {
 
   /** Optional summary context for conversation restart */
   restartContext?: string;
+
+  /** New: Abstraction-based context with budget management and caching support */
+  promptParts?: PromptParts;
 }
 
 /**

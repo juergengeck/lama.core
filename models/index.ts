@@ -6,5 +6,5 @@
 export { LLMObjectManager } from './LLMObjectManager.js';
 export type { LLMObjectManagerDeps, LLMObject } from './LLMObjectManager.js';
 
-export { GlobalLLMSettingsManager, DEFAULT_LLM_SETTINGS } from './GlobalLLMSettingsManager.js';
-export type { GlobalLLMSettingsManagerDeps } from './GlobalLLMSettingsManager.js';
+// Settings Managers - re-export from settings/
+export * from './settings/index.js';

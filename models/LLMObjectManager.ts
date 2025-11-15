@@ -24,6 +24,7 @@ export interface LLMObject {
     createdAt: string;
     lastUsed: string;
     personId?: SHA256IdHash<Person>;
+    owner?: SHA256IdHash<Person>;
     provider?: string;
     capabilities?: Array<'chat' | 'inference'>;
     maxTokens?: number;
@@ -37,6 +38,7 @@ export interface LLMObjectManagerDeps {
     storeVersionedObject: (obj: any) => Promise<any>;
     createAccess?: (accessRequests: any[]) => Promise<void>;
     queryAllLLMObjects?: () => AsyncIterable<LLMObject>;
+    getOwnerId: () => Promise<SHA256IdHash<Person>>;
 }
 
 interface CachedLLMObject extends LLMObject {
@@ -83,11 +85,22 @@ export class LLMObjectManager {
         }
 
         try {
-            console.log('[LLMObjectManager] Loading LLM objects from storage...');
+            console.log('[PERSIST-DEBUG] 📂 LOADING from storage...');
             const llmObjectsIterator = this.deps.queryAllLLMObjects();
 
             let loadedCount = 0;
+            let iterationCount = 0;
             for await (const llmObject of llmObjectsIterator) {
+                iterationCount++;
+                console.log(`[PERSIST-DEBUG] 🔍 Iterator #${iterationCount}:`, {
+                    type: llmObject?.$type$,
+                    name: llmObject?.name,
+                    modelId: llmObject?.modelId,
+                    personId: llmObject?.personId?.toString().substring(0,8),
+                    hasPersonId: !!llmObject?.personId,
+                    hasModelId: !!llmObject?.modelId
+                });
+
                 // Only cache LLM objects that have a personId (AI contacts)
                 if (llmObject.personId && llmObject.modelId) {
                     this.llmObjects.set(llmObject.modelId, {
@@ -96,11 +109,14 @@ export class LLMObjectManager {
                     });
                     loadedCount++;
                     console.log(
-                        `[LLMObjectManager] ✅ Loaded AI LLM: ${llmObject.modelId} (person: ${llmObject.personId.toString().substring(0, 8)}...)`
+                        `[PERSIST-DEBUG] ✅ CACHED: ${llmObject.modelId}`
                     );
+                } else {
+                    console.warn(`[PERSIST-DEBUG] ⚠️ SKIP - missing personId or modelId`);
                 }
             }
 
+            console.log(`[PERSIST-DEBUG] 📊 COMPLETE - yielded ${iterationCount}, cached ${loadedCount}`);
             console.log(`[LLMObjectManager] ✅ Loaded ${loadedCount} AI LLM objects from storage`);
             return loadedCount;
         } catch (error) {
@@ -132,6 +148,9 @@ export class LLMObjectManager {
         const now = Date.now();
         const nowISOString = new Date().toISOString();
 
+        // Get owner ID for reverse map indexing
+        const ownerId = await this.deps.getOwnerId();
+
         const llmObject: LLMObject = {
             $type$: 'LLM',
             modelId,
@@ -145,6 +164,7 @@ export class LLMObjectManager {
             createdAt: nowISOString,
             lastUsed: nowISOString,
             personId: ensureIdHash(aiPersonId),
+            owner: ownerId,
             provider: this.getProviderFromModelId(modelId),
             capabilities: ['chat', 'inference'],
             maxTokens: 4096,
@@ -155,8 +175,14 @@ export class LLMObjectManager {
         };
 
         // Store in ONE.core
+        console.log(`[PERSIST-DEBUG] 💾 STORING LLM:`, {
+            type: llmObject.$type$,
+            name: llmObject.name,
+            modelId: llmObject.modelId,
+            personId: llmObject.personId?.toString().substring(0,8)
+        });
         const result = await this.deps.storeVersionedObject(llmObject);
-        console.log(`[LLMObjectManager] Stored LLM object with hash: ${result.hash}`);
+        console.log(`[PERSIST-DEBUG] ✅ STORED - hash: ${result.hash?.toString().substring(0,8)}, idHash: ${result.idHash?.toString().substring(0,8)}, versionHash: ${result.versionHash?.toString().substring(0,8)}`);
 
         // Cache the object
         this.llmObjects.set(modelId, {

@@ -9,6 +9,8 @@ declare module '@OneObjectInterfaces' {
     // Add our custom versioned object types
     export interface OneVersionedObjectInterfaces {
         GlobalLLMSettings: GlobalLLMSettings;
+        AISettings: AISettings;
+        AppSettings: AppSettings;
         Keyword: Keyword;
         ProposalConfig: ProposalConfig;
         Proposal: Proposal;
@@ -35,6 +37,71 @@ declare module '@OneObjectInterfaces' {
         enableAutoSummary: boolean;
         enableAutoResponse: boolean;
         defaultPrompt: string;
+    }
+
+    export interface AISettings {
+        $type$: 'AISettings';
+        name: string; // Instance name - this is the ID field
+        defaultProvider: string;
+        autoSelectBestModel: boolean;
+        preferredModelIds: string[];
+        defaultModelId?: string;
+        temperature: number;
+        maxTokens: number;
+        systemPrompt?: string;
+        streamResponses: boolean;
+        autoSummarize: boolean;
+        enableMCP: boolean;
+    }
+
+    export interface AppSettings {
+        $type$: 'AppSettings';
+        owner: string; // Instance owner ID hash - this is the ID field
+        // App Settings
+        theme: string;
+        language: string;
+        notifications: boolean;
+        soundEnabled: boolean;
+        vibrationEnabled: boolean;
+        compactMode: boolean;
+        showTimestamps: boolean;
+        dateFormat: string;
+        // Device Settings
+        discoveryEnabled: boolean;
+        discoveryPort: number;
+        autoConnect: boolean;
+        addOnlyConnectedDevices: boolean;
+        showOfflineDevices: boolean;
+        discoveryTimeout: number;
+        // Network Settings
+        commServerUrl: string;
+        autoReconnect: boolean;
+        connectionTimeout: number;
+        enableWebSocket: boolean;
+        enableQUIC: boolean;
+        enableBluetooth: boolean;
+        // AI Settings
+        aiEnabled: boolean;
+        aiProvider: string;
+        aiModel: string;
+        aiTemperature: number;
+        aiMaxTokens: number;
+        aiStreamResponses: boolean;
+        aiAutoSummarize: boolean;
+        aiKeywordExtraction: boolean;
+        // Privacy Settings
+        encryptStorage: boolean;
+        requirePINOnStartup: boolean;
+        autoLockTimeout: number;
+        sendAnalytics: boolean;
+        sendCrashReports: boolean;
+        // Chat Settings
+        enterToSend: boolean;
+        showReadReceipts: boolean;
+        groupMessagesBy: string;
+        maxHistoryDays: number;
+        autoDownloadMedia: boolean;
+        maxMediaSize: number;
     }
 
     export interface LLM {

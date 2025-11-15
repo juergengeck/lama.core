@@ -243,6 +243,7 @@ export class LLMConfigPlan {
         modified: now,
         createdAt: new Date().toISOString(),
         lastUsed: new Date().toISOString(),
+        owner: this.nodeOneCore.ownerId, // Required for reverse map indexing
         // Auto-generate system prompt for this model
         systemPrompt: generateSystemPromptForModel(request.modelName, request.modelName),
       };

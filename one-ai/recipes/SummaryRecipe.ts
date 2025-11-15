@@ -40,6 +40,14 @@ export const SummaryRecipe = {
             }
         },
         {
+            itemprop: 'abstractionLevels',
+            itemtype: {
+                type: 'array',
+                item: { type: 'integer' } // Abstraction levels (1-42) of subjects
+            },
+            optional: true
+        },
+        {
             itemprop: 'version',
             itemtype: { type: 'integer' }
         },

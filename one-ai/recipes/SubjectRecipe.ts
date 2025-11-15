@@ -79,6 +79,45 @@ export const SubjectRecipe = {
             itemprop: 'dislikes',
             itemtype: { type: 'integer' },
             optional: true
+        },
+        {
+            itemprop: 'abstractionLevel',
+            itemtype: { type: 'integer' },
+            optional: true
+        },
+        {
+            itemprop: 'abstractionMetadata',
+            itemtype: {
+                type: 'object',
+                rules: [
+                    {
+                        itemprop: 'calculatedAt',
+                        itemtype: { type: 'integer' }
+                    },
+                    {
+                        itemprop: 'reasoning',
+                        itemtype: { type: 'string' },
+                        optional: true
+                    },
+                    {
+                        itemprop: 'parentLevels',
+                        itemtype: {
+                            type: 'array',
+                            item: { type: 'integer' }
+                        },
+                        optional: true
+                    },
+                    {
+                        itemprop: 'childLevels',
+                        itemtype: {
+                            type: 'array',
+                            item: { type: 'integer' }
+                        },
+                        optional: true
+                    }
+                ]
+            },
+            optional: true
         }
     ]
 };

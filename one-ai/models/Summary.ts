@@ -20,6 +20,8 @@ class Summary {
   public changeReason: any;
   public hash: any;
 
+  public abstractionLevels: any[];  // Abstraction levels of subjects
+
   constructor(data: any = {}) {
     this.$type$ = 'Summary';
     this.id = data.id || ''; // Same as topic ID for current summary
@@ -27,6 +29,7 @@ class Summary {
     this.content = data.content || '';
     this.subjects = data.subjects || []; // Subject IDs referenced in this summary
     this.keywords = data.keywords || []; // All keywords from all subjects
+    this.abstractionLevels = data.abstractionLevels || []; // Abstraction levels (1-42) of subjects
     this.version = data.version || 1;
     this.previousVersion = data.previousVersion || undefined; // Hash of previous summary version
     this.createdAt = data.createdAt || Date.now();
@@ -159,6 +162,7 @@ class Summary {
       content: this.content,
       subjects: this.subjects,
       keywords: this.keywords,
+      abstractionLevels: this.abstractionLevels,
       version: this.version,
       previousVersion: this.previousVersion,
       createdAt: this.createdAt,

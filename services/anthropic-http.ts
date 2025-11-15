@@ -15,7 +15,11 @@ export interface AnthropicChatOptions {
   apiKey: string;
   model: string;
   messages: AnthropicMessage[];
-  system?: string;
+  system?: string | Array<{
+    type: 'text';
+    text: string;
+    cache_control?: { type: 'ephemeral' };
+  }>;
   max_tokens?: number;
   temperature?: number;
   tools?: any[];

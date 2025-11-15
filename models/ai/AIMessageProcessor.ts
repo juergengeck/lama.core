@@ -21,6 +21,7 @@ import type { IAIMessageProcessor, IAIPromptBuilder, IAITaskManager } from './in
 import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
 import OneObjectCache from '@refinio/one.models/lib/api/utils/caches/OneObjectCache.js';
+import { formatForStandardAPI } from '../../services/context-budget-manager.js';
 
 export class AIMessageProcessor implements IAIMessageProcessor {
   // Circular dependencies - injected via setters
@@ -172,9 +173,19 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         throw new Error('[AIMessageProcessor] PromptBuilder not set - cannot build prompt');
       }
 
-      const { messages: history } = await this.promptBuilder.buildPrompt(topicId, message, senderId);
+      const { promptParts } = await this.promptBuilder.buildPrompt(topicId, message, senderId);
 
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Prompt built - sending ${history.length} messages to LLM`);
+      // CRITICAL: Use promptParts instead of deprecated messages field
+      // promptParts contains: {part1: systemPrompt, part2: pastSubjects, part3: messages, part4: newMessage}
+      if (!promptParts) {
+        throw new Error('[AIMessageProcessor] PromptBuilder returned no promptParts');
+      }
+
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Prompt built - ${promptParts.totalTokens} tokens (system: ${promptParts.part1.tokens}, pastSubjects: ${promptParts.part2.tokens}, messages: ${promptParts.part3.tokens}, new: ${promptParts.part4.tokens})`);
+
+      // Convert promptParts to messages array for chatWithAnalysis
+      const { messages: history } = formatForStandardAPI(promptParts);
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Converted to ${history.length} messages for LLM`);
 
       // Generate message ID for streaming
       const messageId = `ai-${Date.now()}`;

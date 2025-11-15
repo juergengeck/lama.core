@@ -322,6 +322,46 @@ const result = await storeVersionedObject(subject);
 await channelManager.postToChannel(topicId, subject);
 ```
 
+### Retrieving Versioned Objects: getIdObject vs getObjectByIdHash
+
+**CRITICAL**: These are different functions for different purposes. Using the wrong one causes bugs.
+
+**`getIdObject(idHash)`** - Returns ONLY ID properties
+```typescript
+import { getIdObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+
+const idObj = await getIdObject(groupIdHash);
+// Returns: { $type$: 'Group', name: 'conversation-hi' }
+// Only properties marked with isId: true in the recipe
+// Does NOT include hashGroup, members, or other non-ID properties
+```
+
+**`getObjectByIdHash(idHash)`** - Returns complete latest version
+```typescript
+import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+
+const result = await getObjectByIdHash(groupIdHash);
+const group = result.obj;  // Extract .obj property!
+// Returns: { obj: Group, idHash, versionHash }
+// obj contains the FULL object with all properties including hashGroup
+```
+
+**Common Bug Pattern**:
+```typescript
+// ❌ WRONG - getIdObject only returns ID properties
+const group = await getIdObject(groupIdHash) as Group;
+if (group.hashGroup) { ... }  // Always undefined! hashGroup is not an ID property
+
+// ✅ CORRECT - getObjectByIdHash returns full object in .obj field
+const result = await getObjectByIdHash(groupIdHash);
+const group = result.obj as Group;
+if (group.hashGroup) { ... }  // Works correctly
+```
+
+**When to use each**:
+- **getIdObject**: When you only need to know the identity/ID properties of an object
+- **getObjectByIdHash**: When you need the full object with all its data (most common case)
+
 ## Testing Strategy
 
 Currently: No test suite (deferred)

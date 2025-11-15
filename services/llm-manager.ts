@@ -2,6 +2,31 @@
  * LLM Manager (Platform-Agnostic)
  * Handles AI model operations with optional MCP integration
  * Can run in Node.js or browser environments
+ *
+ * TODO: Implement PromptParts handling for abstraction-based context management
+ *
+ * AIPromptBuilder now returns PromptParts structure:
+ * {
+ *   part1: { content: string, tokens: number, cacheable: true, cacheKey: string }  // System prompt
+ *   part2: { content: string, tokens: number, cacheable: true, cacheKey: string }  // Past subjects
+ *   part3: { messages: [], tokens: number, cacheable: boolean }                    // Current messages
+ *   part4: { message: string, tokens: number, cacheable: false }                   // New message
+ * }
+ *
+ * LLM Manager should:
+ * 1. Detect provider from modelId (Anthropic, OpenAI, Ollama)
+ * 2. Format PromptParts appropriately:
+ *    - Anthropic: Use formatForAnthropicWithCaching() → system array with cache_control
+ *    - OpenAI/Ollama: Use formatForStandardAPI() → messages array
+ * 3. Include cache_control metadata in Anthropic API calls
+ *
+ * Example Anthropic integration:
+ *   import { formatForAnthropicWithCaching } from './context-budget-manager.js';
+ *   const formatted = formatForAnthropicWithCaching(promptParts);
+ *   await chatWithAnthropicHTTP(modelId, {
+ *     system: formatted.system,  // Array with cache_control
+ *     messages: formatted.messages
+ *   });
  */
 
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
@@ -14,6 +39,7 @@ import { chatWithOpenAIHTTP, testOpenAIApiKey as testOpenAIKey } from './openai-
 import * as lmstudio from './lmstudio.js';
 import { SystemPromptBuilder } from './system-prompt-builder.js';
 import type { SystemPromptContext } from './system-prompt-builder.js';
+import { formatForAnthropicWithCaching, formatForStandardAPI, type PromptParts } from './context-budget-manager.js';
 
 /**
  * LLM connection health status
@@ -556,7 +582,21 @@ class LLMManager {
       throw new Error(`Model ${effectiveModelId} not found. Available models: ${Array.from(this.models.keys()).join(', ')}`)
     }
 
-    console.log(`[LLMManager] Chat with ${(model as any).id} (${messages.length} messages), ${this.mcpTools.size} MCP tools available`)
+    // Detect if messages is a PromptResult with promptParts
+    let promptParts: PromptParts | undefined;
+    let actualMessages: any[];
+
+    if (messages && typeof messages === 'object' && 'promptParts' in messages && messages.promptParts) {
+      // New path: Using abstraction-based context management
+      promptParts = messages.promptParts;
+      actualMessages = messages.messages; // Will be empty, but keep for compatibility
+      console.log(`[LLMManager] Chat with ${(model as any).id} using PromptParts (abstraction-based context), ${this.mcpTools.size} MCP tools available`);
+      console.log(`[LLMManager] Context budget: ${promptParts.totalTokens} tokens, compression: ${promptParts.budget.compressionMode}, past subjects: ${promptParts.budget.pastSubjectCount}`);
+    } else {
+      // Legacy path: Using message array directly
+      actualMessages = messages;
+      console.log(`[LLMManager] Chat with ${(model as any).id} (${actualMessages.length} messages), ${this.mcpTools.size} MCP tools available`);
+    }
 
     // Check if structured output is requested
     if ((options as any)?.format) {
@@ -578,8 +618,18 @@ class LLMManager {
       console.log(`[LLMManager] ABOUT TO ENHANCE MESSAGES`)
     }
 
-    // Add tool descriptions to system message (unless explicitly disabled)
-    const enhancedMessages = shouldDisableTools ? messages : await this.enhanceMessagesWithContext(messages, {})
+    // Prepare messages for LLM call
+    let enhancedMessages: any[];
+
+    if (promptParts) {
+      // New path: Format PromptParts based on provider
+      // Enhancement not needed - context is already built into PromptParts
+      console.log(`[LLMManager] Skipping enhanceMessagesWithContext - using PromptParts directly`)
+      enhancedMessages = []; // Will be replaced by provider-specific formatting
+    } else {
+      // Legacy path: Add tool descriptions to system message (unless explicitly disabled)
+      enhancedMessages = shouldDisableTools ? actualMessages : await this.enhanceMessagesWithContext(actualMessages, {})
+    }
     console.log(`[LLMManager] ENHANCEMENT ${shouldDisableTools ? 'SKIPPED' : 'COMPLETE'}`)
 
     // Inject API key for Anthropic if not provided
@@ -619,13 +669,13 @@ class LLMManager {
 
     try {
       if ((model as any).provider === 'ollama') {
-        response = await this.chatWithOllama(model as any, enhancedMessages, options)
+        response = await this.chatWithOllama(model as any, enhancedMessages, { ...options, promptParts })
       } else if ((model as any).provider === 'lmstudio') {
         response = await this.chatWithLMStudio(model as any, enhancedMessages, options)
       } else if ((model as any).provider === 'anthropic') {
-        response = await this.chatWithClaude(model as any, enhancedMessages, options)
+        response = await this.chatWithClaude(model as any, enhancedMessages, { ...options, promptParts })
       } else if ((model as any).provider === 'openai') {
-        response = await this.chatWithOpenAI(model as any, enhancedMessages, options)
+        response = await this.chatWithOpenAI(model as any, enhancedMessages, { ...options, promptParts })
       } else {
         throw new Error(`Unsupported provider: ${(model as any).provider}`)
       }
@@ -959,9 +1009,21 @@ class LLMManager {
 
   async chatWithOllama(model: any, messages: any, options: any = {}): Promise<unknown> {
     try {
+      // Check if we have PromptParts for optimized context
+      let ollamaMessages: any[];
+
+      if (options.promptParts) {
+        console.log('[LLMManager] Using PromptParts with standard formatting (Ollama)');
+        const formatted = formatForStandardAPI(options.promptParts);
+        ollamaMessages = formatted.messages;
+      } else {
+        // Legacy path: Use messages directly
+        ollamaMessages = messages;
+      }
+
       return await chatWithOllama(
         model.parameters.modelName,
-        messages,
+        ollamaMessages,
         {
           temperature: model.parameters.temperature,
           max_tokens: model.parameters.maxTokens,
@@ -1030,10 +1092,41 @@ class LLMManager {
 
     console.log(`[LLMManager] Calling Claude with model ID: ${baseModelId} (HTTP-based, browser-compatible)`)
 
+    // Check if we have PromptParts for caching support
+    if (options.promptParts) {
+      console.log('[LLMManager] Using PromptParts with Anthropic caching');
+      const formatted = formatForAnthropicWithCaching(options.promptParts);
+
+      // Get MCP tools if available and not explicitly disabled
+      const tools = !options.disableTools && this.mcpManager
+        ? this.mcpManager.getClaudeTools?.()
+        : undefined;
+
+      if (tools && Array.isArray(tools) && tools.length > 0) {
+        console.log(`[LLMManager] Passing ${tools.length} MCP tools to Claude`);
+      }
+
+      return await chatWithAnthropicHTTP({
+        apiKey,
+        model: baseModelId,
+        messages: formatted.messages,
+        system: formatted.system,  // Array with cache_control
+        temperature: model.parameters.temperature,
+        max_tokens: model.parameters.maxTokens,
+        tools,
+        onStream: options.onStream,
+        signal: options.signal,
+        proxyUrl: this.corsProxyUrl
+      });
+    }
+
+    // Legacy path: Standard message array
+    console.log('[LLMManager] Using legacy message format (no caching)');
+
     // Convert messages to Anthropic format
     const anthropicMessages = messages
       .filter((m: any) => m.role !== 'system')
-      .map((m: any) => ({ role: m.role, content: m.content }));
+      .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
     // Extract system message
     const systemMessage = messages.find((m: any) => m.role === 'system')?.content || options.system;
@@ -1074,11 +1167,21 @@ class LLMManager {
 
     console.log(`[LLMManager] Calling OpenAI with model ID: ${baseModelId} (HTTP-based, browser-compatible)`)
 
-    // OpenAI format includes system messages in the messages array
-    const openaiMessages = messages.map((m: any) => ({
-      role: m.role,
-      content: m.content
-    }));
+    // Check if we have PromptParts for optimized context
+    let openaiMessages: any[];
+
+    if (options.promptParts) {
+      console.log('[LLMManager] Using PromptParts with standard formatting (OpenAI)');
+      const formatted = formatForStandardAPI(options.promptParts);
+      openaiMessages = formatted.messages;
+    } else {
+      // Legacy path: Standard message array
+      console.log('[LLMManager] Using legacy message format');
+      openaiMessages = messages.map((m: any) => ({
+        role: m.role,
+        content: m.content
+      }));
+    }
 
     // Get MCP tools if available and not explicitly disabled (OpenAI format)
     const tools = !options.disableTools && this.mcpManager

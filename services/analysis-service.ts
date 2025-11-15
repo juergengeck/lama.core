@@ -280,10 +280,18 @@ export class LLMAnalysisService implements AnalysisService {
    * Build system prompt with existing subjects context
    */
   private buildSystemPrompt(existingSubjects: Subject[]): string {
-    let prompt = `Extract subjects and concepts from this content. Return ONLY JSON:
+    let prompt = `Extract subjects and keywords from this conversation. Return JSON matching this structure:
 {
-  "subjects": [{"name": "subject-name", "concepts": ["concept1", "concept2"]}],
-  "summary": "brief summary"
+  "response": "Brief acknowledgment of what you analyzed",
+  "analysis": {
+    "subjects": [{
+      "name": "subject-name",
+      "description": "Brief explanation of the subject",
+      "isNew": true,
+      "keywords": [{"term": "keyword", "confidence": 0.8}]
+    }],
+    "summaryUpdate": "Brief summary of the conversation"
+  }
 }`;
 
     // Include existing subjects for consistency
@@ -293,7 +301,7 @@ export class LLMAnalysisService implements AnalysisService {
         const keywords = s.keywords.map(k => k.term).join(', ');
         prompt += `- ${s.name}: ${keywords}\n`;
       });
-      prompt += `\nIf the content relates to existing subjects, use the same subject names for consistency.`;
+      prompt += `\nIf the content relates to existing subjects, use the same subject names and set "isNew": false.`;
     }
 
     return prompt;

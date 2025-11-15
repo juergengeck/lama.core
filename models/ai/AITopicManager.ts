@@ -14,7 +14,7 @@
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
-import { getIdObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
@@ -270,7 +270,8 @@ export class AITopicManager implements IAITopicManager {
       // Check if topic has a group (3+ participants)
       if ((topic as any).group) {
         // Topic exists in storage - try to determine its model from group members
-        const group = await getIdObject((topic as any).group) as Group;
+        const groupResult = await getObjectByIdHash((topic as any).group);
+        const group = groupResult.obj as Group;
 
         // NEW one.core structure: Group.hashGroup → HashGroup.person
         if (group.hashGroup) {
@@ -530,7 +531,8 @@ export class AITopicManager implements IAITopicManager {
 
           if (groupIdHash) {
             console.log(`[AITopicManager]   ↳ Topic is a group topic, checking participants...`);
-            const group = await getIdObject(groupIdHash) as Group;
+            const groupResult = await getObjectByIdHash(groupIdHash);
+            const group = groupResult.obj as Group;
 
             // NEW one.core structure: Group.hashGroup → HashGroup.person
             if (group.hashGroup) {

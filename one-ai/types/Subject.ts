@@ -21,4 +21,16 @@ export interface Subject {
   lastSeenAt: number;
   description?: string; // LLM-generated description of the subject
   archived?: boolean;
+
+  // Abstraction level (1-42)
+  // 1 = atomic/technical details, 42 = philosophical/existential
+  abstractionLevel?: number;
+
+  // Metadata for abstraction-based context management
+  abstractionMetadata?: {
+    calculatedAt: number;          // When level was calculated
+    reasoning?: string;             // Why this level was assigned
+    parentLevels?: number[];        // Higher abstraction parents
+    childLevels?: number[];         // Lower abstraction children
+  };
 }
