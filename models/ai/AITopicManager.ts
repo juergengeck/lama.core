@@ -233,12 +233,17 @@ export class AITopicManager implements IAITopicManager {
         throw new Error(`Failed to register private model variant for ${this.defaultModelId}: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      // For private model, use the base model's display name
-      const privateDisplayName = `${displayName} (Private)`;
-      const privateAiPersonId = await aiContactManager.ensureAIContactForModel(privateModelId, privateDisplayName);
-      if (!privateAiPersonId) {
-        throw new Error(`Could not create AI contact for private model: ${privateModelId}`);
-      }
+      // CRITICAL: -private is an alias/additional ID for the SAME model/person
+      // Create an LLM alias that maps the privateModelId to the same Person
+      await aiContactManager.createLLMAlias(
+        privateModelId,
+        this.defaultModelId,
+        `${displayName} (Private)`
+      );
+
+      // Use the same person ID as the base model
+      const privateAiPersonId = aiPersonId;
+
       await this.ensureLamaChat(privateModelId, privateAiPersonId, onTopicCreated);
     } // End LAMA creation block
   }

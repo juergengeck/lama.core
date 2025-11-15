@@ -352,6 +352,41 @@ export class AIContactManager implements IAIContactManager {
   }
 
   /**
+   * Create an LLM alias for an existing AI contact
+   * Used for -private variants that share the same Person but have different modelIds
+   */
+  async createLLMAlias(
+    aliasModelId: string,
+    baseModelId: string,
+    displayName: string
+  ): Promise<void> {
+    console.log(`[AIContactManager] Creating LLM alias ${aliasModelId} for base model ${baseModelId}`);
+
+    // Get the Person ID from the base model
+    const personId = this.aiContacts.get(baseModelId);
+    if (!personId) {
+      throw new Error(`Cannot create alias - base model ${baseModelId} not found in cache`);
+    }
+
+    // Cache the alias → same personId mapping
+    this.aiContacts.set(aliasModelId, personId);
+    console.log(`[AIContactManager] Cached alias ${aliasModelId} → person ${personId.toString().substring(0, 8)}...`);
+
+    // Create LLM object for the alias
+    if (!this.llmObjectManager) {
+      throw new Error(`[AIContactManager] llmObjectManager not initialized - required for LLM alias creation`);
+    }
+
+    await this.llmObjectManager.create({
+      modelId: aliasModelId,
+      name: displayName,
+      aiPersonId: personId
+    });
+
+    console.log(`[AIContactManager] Created LLM object for alias ${aliasModelId}`);
+  }
+
+  /**
    * Create LLM object for AI contact (platform-specific storage)
    * This is called if llmObjectManager is available
    */
