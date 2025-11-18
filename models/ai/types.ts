@@ -15,6 +15,40 @@ import type { PromptParts } from '../../services/context-budget-manager.js';
 export type AIMode = 'assistant' | 'iom' | 'knowledge';
 
 /**
+ * LLM resource type for concurrency management
+ */
+export enum LLMResourceType {
+  /** Remote API (Claude, OpenAI, etc.) - can run in parallel */
+  REMOTE_API = 'remote-api',
+
+  /** Remote Ollama or LM Studio server - can run in parallel */
+  REMOTE_SERVER = 'remote-server',
+
+  /** Local Ollama or LM Studio instance - limited concurrency */
+  LOCAL_SERVER = 'local-server'
+}
+
+/**
+ * LLM concurrency configuration
+ */
+export interface LLMConcurrencyConfig {
+  /** Resource type determining parallelization */
+  resourceType: LLMResourceType;
+
+  /** Concurrency group ID (unique per local instance) */
+  concurrencyGroupId: string;
+
+  /** Maximum concurrent requests for this group (null = unlimited) */
+  maxConcurrent: number | null;
+
+  /** Provider identifier (anthropic, openai, ollama, lmstudio) */
+  provider: string;
+
+  /** Base URL for server-based LLMs */
+  baseUrl?: string;
+}
+
+/**
  * AI task types for Information over Messages (IoM)
  */
 export type AITaskType =
@@ -107,6 +141,9 @@ export interface MessageQueueEntry {
 
   /** Timestamp when queued */
   queuedAt: number;
+
+  /** Priority level (1-10, higher = more urgent, default = 5) */
+  priority?: number;
 }
 
 /**

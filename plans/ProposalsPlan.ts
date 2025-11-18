@@ -434,10 +434,10 @@ export class ProposalsPlan {
         throw new Error('SUBJECT_NOT_FOUND: Past subject no longer exists');
       }
 
-      const pastSubject = result.obj;
+      const pastSubject = result.obj as Subject;
 
       // Get subject name, description, and keywords
-      const subjectName = pastSubject.id || 'Unknown Subject';
+      const subjectName = pastSubject.topic || 'Unknown Subject';
       const description = pastSubject.description; // Human-readable description if available
       const keywords: string[] = [];
 

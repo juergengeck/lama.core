@@ -48,6 +48,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
     private topicModel: any, // Shared TopicModel instance
     private llmManager: any, // LLMManager interface
     private topicManager: any, // AITopicManager
+    private aiManager: any, // AIManager for Person → LLM resolution
     private contextEnrichmentService?: any // Optional - for past conversation hints
   ) {
     this.lastRestartPoint = new Map();
@@ -74,10 +75,19 @@ export class AIPromptBuilder implements IAIPromptBuilder {
     console.log(`[AIPromptBuilder] Building prompt for topic: ${topicId} (abstraction-based)`);
 
     try {
-      // Get model context window
-      const modelId = this.topicManager.getModelIdForTopic(topicId);
-      const model = this.getModelById(modelId);
-      const contextWindow = model?.contextLength || 200000; // Default to Claude-scale
+      // Get model context window by resolving AI Person → Model ID
+      const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+      let modelId: string | null = null;
+      if (aiPersonId) {
+        try {
+          modelId = await this.aiManager.getLLMId(aiPersonId);
+        } catch (error) {
+          console.warn(`[AIPromptBuilder] Could not resolve model ID for topic ${topicId}, using defaults:`, error);
+        }
+      }
+
+      const model = await this.getModelById(modelId);
+      const contextWindow = model?.contextLength || 8192; // Default to Ollama-scale (most local models)
 
       // Get system prompt (will be Part 1)
       const systemPrompt = await this.buildSystemPrompt(topicId);
@@ -130,14 +140,12 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
   /**
    * Build system prompt (Part 1)
+   * Uses Phase 1 prompt (natural language) - Phase 2 analytics happens separately
    */
   private async buildSystemPrompt(topicId: string): Promise<string> {
-    let systemPrompt = `You are a private AI assistant with access to the owner's conversation history and knowledge base.\n\n`;
-    systemPrompt += `You can use MCP tools to retrieve detailed information:\n`;
-    systemPrompt += `- subject:list - Browse available subjects\n`;
-    systemPrompt += `- subject:get-messages - Get full messages for a subject\n`;
-    systemPrompt += `- keyword:search - Find subjects by keywords\n\n`;
-    systemPrompt += `Be helpful, concise, and maintain context across conversations.`;
+    // Import Phase 1 system prompt (natural language, no JSON structure)
+    const { PHASE1_SYSTEM_PROMPT } = await import('../../constants/system-prompts.js');
+    let systemPrompt = PHASE1_SYSTEM_PROMPT;
 
     // Add context enrichment if available
     if (this.contextEnrichmentService) {
@@ -185,9 +193,22 @@ export class AIPromptBuilder implements IAIPromptBuilder {
     topicId: string,
     messages: any[]
   ): Promise<RestartContext> {
-    // Get the model's context window size
-    const modelId = this.topicManager.getModelIdForTopic(topicId);
-    const model = this.getModelById(modelId);
+    // Get the model's context window size by resolving AI Person → LLM Person → Model ID
+    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    let modelId: string | null = null;
+    if (aiPersonId && this.aiManager.isAI(aiPersonId)) {
+      try {
+        const llmPersonId = await this.aiManager.resolveLLMPerson(aiPersonId);
+        const llmId = this.aiManager.getEntityId(llmPersonId);
+        if (llmId && llmId.startsWith('llm:')) {
+          modelId = llmId.replace(/^llm:/, '');
+        }
+      } catch (error) {
+        console.error(`[AIPromptBuilder] Failed to resolve model ID for topic ${topicId}:`, error);
+      }
+    }
+
+    const model = await this.getModelById(modelId);
 
     // Get context window from model definition, default to conservative 4k
     const contextWindow = model?.contextLength || 4096;
@@ -333,25 +354,25 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   /**
    * Get model by ID (helper method)
    */
-  private getModelById(modelId: string | null): any {
+  private async getModelById(modelId: string | null): Promise<any> {
     if (!modelId) {
       return null;
     }
 
-    const models = this.llmManager?.getAvailableModels();
+    const models = await this.llmManager?.getAvailableModels();
     return models?.find((m: any) => m.id === modelId);
   }
 
   /**
    * Check if a message is from an AI (requires messageProcessor)
    */
-  private isAIMessage(personId: SHA256IdHash<Person> | string): boolean {
+  private async isAIMessage(personId: SHA256IdHash<Person> | string): Promise<boolean> {
     if (!this.messageProcessor) {
       console.warn('[AIPromptBuilder] MessageProcessor not set, cannot check if AI message');
       return false;
     }
 
-    return this.messageProcessor.isAIContact(personId);
+    return await this.messageProcessor.isAIContact(personId);
   }
 
   /**
@@ -405,8 +426,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
             pastSubjects.push({
               id: subject.id,
-              name: subject.keywordCombination || subject.id,
-              description: subject.description,
+              description: subject.description || subject.keywordCombination || subject.id,
               keywords: await this.resolveKeywordTerms(subject.keywords || []),
               messageCount: subject.messageCount || 0,
               abstractionLevel,

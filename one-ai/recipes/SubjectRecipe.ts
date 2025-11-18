@@ -2,7 +2,16 @@
  * ONE.core Recipe for Subject objects
  *
  * Subject represents a distinct discussion topic within a conversation
- * Identified by topic + keyword combination
+ * Identified by keyword combination (keywords are the ID property)
+ *
+ * WHAT ONE.CORE DOES (automatic):
+ * - Generates deterministic SHA256IdHash<Subject> from sorted keywords (isId: true)
+ * - Subjects with identical keywords get same ID hash (automatic deduplication)
+ *
+ * WHAT APPLICATION LOGIC MUST DO (see Subject.ts):
+ * - Detect semantic collisions (same keywords, different concepts)
+ * - Add differentiating keywords when concepts diverge
+ * - Compare descriptions to determine if versions align
  *
  * Tracks temporal spans when the subject was discussed via timeRanges array
  */
@@ -10,11 +19,6 @@ export const SubjectRecipe = {
     $type$: 'Recipe',
     name: 'Subject',
     rule: [
-        {
-            itemprop: 'id',
-            itemtype: { type: 'string' },
-            isId: true // This makes Subject a versioned object
-        },
         {
             itemprop: 'topic',
             itemtype: { type: 'string' }
@@ -27,7 +31,9 @@ export const SubjectRecipe = {
                     type: 'referenceToId',
                     allowedTypes: new Set(['Keyword'])
                 }
-            }
+            },
+            isId: true, // Keywords determine identity - ONE.core auto-generates ID hash
+            optional: true // Allow Subjects without keywords (for migration/legacy data)
         },
         {
             itemprop: 'timeRanges',

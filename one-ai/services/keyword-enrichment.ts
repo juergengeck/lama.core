@@ -130,11 +130,17 @@ async function enrichSubjectsWithMetadata(subjects, allSubjects = null) {
 
     const enriched = subjects.map(subject => {
         // Calculate places mentioned (number of distinct topics referencing this keyword combination)
-        // NOTE: Subject objects from storage use 'id' for keywordCombination and 'topic' for topicId
-        const keywordCombo = subject.keywordCombination || subject.id;
+        // NOTE: Subject.id no longer exists - ONE.core generates ID from keywords array
+        // Generate keyword combination string from keywords for comparison
+        const keywordCombo = subject.keywordCombination ||
+                            (Array.isArray(subject.keywords) ? subject.keywords.sort().join('+') : '');
         const placesMentioned = new Set(
             subjectsToAnalyze
-                .filter(s => (s.keywordCombination || s.id) === keywordCombo)
+                .filter(s => {
+                    const sCombo = s.keywordCombination ||
+                                  (Array.isArray(s.keywords) ? s.keywords.sort().join('+') : '');
+                    return sCombo === keywordCombo;
+                })
                 .map(s => s.topicId || s.topic)
         ).size;
 

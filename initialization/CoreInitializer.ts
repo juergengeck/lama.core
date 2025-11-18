@@ -74,14 +74,13 @@ export async function initializeCoreModels(
         console.log('[CoreInitializer] ✅ LLMObjectManager initialized');
     }
 
-    // NOTE: LLMManager.init() is called by the platform after CoreInitializer completes
-    // This allows platforms to control when model discovery happens (e.g., after settings are loaded)
-    // Browser: Calls llmManager.init() immediately after CoreInitializer
-    // Electron: May defer until user configures API keys
-    console.log('[CoreInitializer] ⏭️  Skipping LLMManager.init() - platform will call it after CoreInitializer');
+    // Discover LLM models BEFORE initializing AIAssistantPlan
+    // This ensures AIAssistantPlan.init() can create default chats with discovered models
+    await deps.llmManager.init();
+    console.log('[CoreInitializer] ✅ LLMManager initialized - models discovered');
 
     // Initialize AI Assistant Plan (populates LLM contact cache)
-    // Note: init() will skip AI contact creation until LLM models are discovered
+    // Now that models are discovered, init() will create default chats
     if (deps.aiAssistantModel?.init) {
         await deps.aiAssistantModel.init();
         console.log('[CoreInitializer] ✅ AIAssistantPlan initialized');
@@ -91,6 +90,12 @@ export async function initializeCoreModels(
     onProgress?.({ stage: 'channels', percent: 50, message: 'Initializing message channels...' });
     await deps.channelManager.init();
     console.log('[CoreInitializer] ✅ ChannelManager initialized');
+
+    // Step 3.5: Scan existing conversations NOW that channels are loaded
+    // This registers AI topics in the in-memory registry
+    console.log('[CoreInitializer] Scanning existing conversations for AI topics...');
+    const scannedCount = await deps.aiAssistantModel.scanExistingConversations();
+    console.log(`[CoreInitializer] ✅ Scanned and registered ${scannedCount} AI topics`);
 
     // Step 4: TopicModel (conversations)
     onProgress?.({ stage: 'topics', percent: 60, message: 'Initializing conversations...' });

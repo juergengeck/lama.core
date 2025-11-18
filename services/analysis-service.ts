@@ -282,7 +282,7 @@ export class LLMAnalysisService implements AnalysisService {
   private buildSystemPrompt(existingSubjects: Subject[]): string {
     let prompt = `Extract subjects and keywords from this conversation. Return JSON matching this structure:
 {
-  "response": "Brief acknowledgment of what you analyzed",
+  "response": "Brief acknowledgment of what you analyzed (Keep under 2000 characters)",
   "analysis": {
     "subjects": [{
       "name": "subject-name",
@@ -292,7 +292,9 @@ export class LLMAnalysisService implements AnalysisService {
     }],
     "summaryUpdate": "Brief summary of the conversation"
   }
-}`;
+}
+
+Keep your "response" field under 2000 characters for reliability.`;
 
     // Include existing subjects for consistency
     if (existingSubjects.length > 0) {
@@ -358,7 +360,7 @@ export class LLMAnalysisService implements AnalysisService {
    * @param excludeModels - Model IDs to exclude (already failed)
    */
   private getDefaultAnalysisModel(excludeModels: string[] = []): string {
-    const availableModels = this.llmManager.getModels();
+    const availableModels = this.llmManager.getAllModels();
 
     if (availableModels.length === 0) {
       throw new Error('No models available for analysis');

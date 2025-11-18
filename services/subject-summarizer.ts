@@ -6,7 +6,6 @@
  */
 
 import type { Subject } from '../one-ai/types/Subject.js';
-import type { SubjectAssembly } from '../../memory.core/src/plans/MemoryPlan.js';
 import { getLevelName } from './abstraction-level-calculator.js';
 
 export type CompressionMode = 'rich' | 'balanced' | 'minimal' | 'extreme';
@@ -19,8 +18,7 @@ export interface SubjectSummary {
 
 export interface SubjectForSummary {
   id?: string;
-  name?: string;
-  description?: string;
+  description?: string;  // Subject uses description, not name
   keywords?: string[] | any[]; // Can be string[] or IdHash[]
   messageCount?: number;
   abstractionLevel?: number;
@@ -36,23 +34,22 @@ export function summarizeSubject(
   mode: CompressionMode = 'balanced'
 ): SubjectSummary {
   const level = subject.abstractionLevel ?? 20; // Default to middle level
-  const name = subject.name || 'Unknown Subject';
+  const description = subject.description || 'Unknown Subject';  // Use description
   const keywords = extractKeywordStrings(subject.keywords);
-  const primaryKeyword = keywords[0] || name.toLowerCase();
+  const primaryKeyword = keywords[0] || description.toLowerCase();
   const messageCount = subject.messageCount || 0;
-  const description = subject.description;
 
   let text: string;
 
   switch (mode) {
     case 'rich':
-      // Full details: name, level, description, keywords, message count
-      text = formatRich({ name, level, description, keywords, messageCount });
+      // Full details: description, level, keywords, message count
+      text = formatRich({ name: description, level, description, keywords, messageCount });
       break;
 
     case 'balanced':
-      // Name and level with optional primary keyword
-      text = formatBalanced({ name, level, primaryKeyword });
+      // Description and level with optional primary keyword
+      text = formatBalanced({ name: description, level, primaryKeyword });
       break;
 
     case 'minimal':
@@ -66,7 +63,7 @@ export function summarizeSubject(
       break;
 
     default:
-      text = formatBalanced({ name, level, primaryKeyword });
+      text = formatBalanced({ name: description, level, primaryKeyword });
   }
 
   const estimatedTokens = estimateTokens(text);

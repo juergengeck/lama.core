@@ -20,7 +20,7 @@ import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
-import { AIContactManager, type AIContactManagerDeps } from '../models/ai/AIContactManager.js';
+import { AIManager, type AIManagerDeps } from '../models/ai/AIManager.js';
 import { AITopicManager } from '../models/ai/AITopicManager.js';
 import { AITaskManager } from '../models/ai/AITaskManager.js';
 import { AIPromptBuilder } from '../models/ai/AIPromptBuilder.js';
@@ -87,8 +87,8 @@ export interface AIAssistantPlanDependencies {
   /** Optional: MCP manager for memory context (Node.js only) */
   mcpManager?: any;
 
-  /** Storage functions for AIContactManager (to avoid module duplication in Vite worker) */
-  storageDeps: AIContactManagerDeps;
+  /** Storage functions for AIManager (to avoid module duplication in Vite worker) */
+  storageDeps: AIManagerDeps;
 }
 
 /**
@@ -96,7 +96,7 @@ export interface AIAssistantPlanDependencies {
  */
 export class AIAssistantPlan {
   // Component instances
-  private contactManager: AIContactManager;
+  private aiManager: AIManager;
   private topicManager: AITopicManager;
   private taskManager: AITaskManager;
   private promptBuilder: AIPromptBuilder;
@@ -113,7 +113,7 @@ export class AIAssistantPlan {
     this.deps = deps;
 
     // Phase 1: Construct components with non-circular dependencies
-    this.contactManager = new AIContactManager(deps.leuteModel, deps.storageDeps, deps.llmObjectManager);
+    this.aiManager = new AIManager(deps.leuteModel, deps.storageDeps);
 
     this.topicManager = new AITopicManager(
       deps.topicModel,
@@ -121,7 +121,8 @@ export class AIAssistantPlan {
       deps.leuteModel,
       deps.llmManager,
       deps.topicGroupManager,
-      deps.assemblyManager
+      deps.assemblyManager,
+      deps.llmObjectManager
     );
 
     this.taskManager = new AITaskManager(deps.channelManager, deps.topicAnalysisModel);
@@ -132,6 +133,7 @@ export class AIAssistantPlan {
       deps.topicModel,
       deps.llmManager,
       this.topicManager,
+      this.aiManager,
       deps.contextEnrichmentService
     );
 
@@ -140,7 +142,7 @@ export class AIAssistantPlan {
       deps.llmManager,
       deps.leuteModel,
       this.topicManager,
-      this.contactManager,
+      this.aiManager,
       deps.topicModel,
       deps.stateManager,
       deps.platform,
@@ -152,6 +154,35 @@ export class AIAssistantPlan {
 
     // CRITICAL: Inject self into messageProcessor so it calls through us, not llmManager directly
     this.messageProcessor.setAIAssistant(this);
+  }
+
+  /**
+   * Extract model family name from model ID for AI Person naming
+   * Examples:
+   * - "claude-sonnet-4-5" → "Claude"
+   * - "gpt-4" → "GPT"
+   * - "gpt-oss-20b" → "GPT"
+   * - "llama-3" → "Llama"
+   * @private
+   */
+  private _extractModelFamily(modelId: string): string {
+    const parts = modelId.split('-');
+    if (parts.length === 0) return modelId;
+
+    // Get the first part (model family)
+    const family = parts[0];
+
+    // Capitalize appropriately
+    if (family === 'gpt' || family === 'llm') {
+      return family.toUpperCase(); // GPT, LLM
+    } else if (family === 'claude') {
+      return 'Claude';
+    } else if (family === 'llama') {
+      return 'Llama';
+    } else {
+      // Capitalize first letter
+      return family.charAt(0).toUpperCase() + family.slice(1);
+    }
   }
 
   /**
@@ -215,27 +246,16 @@ export class AIAssistantPlan {
       }
 
       // Get available models from LLM manager
-      const models: LLMModelInfo[] = this.deps.llmManager?.getAvailableModels() || [];
+      const models: LLMModelInfo[] = await this.deps.llmManager?.getAvailableModels() || [];
       console.log(`[AIAssistantPlan] Found ${models.length} available models`);
 
-      // Load existing AI contacts
-      const contactCount = await this.contactManager.loadExistingAIContacts(models);
-      console.log(`[AIAssistantPlan] Loaded ${contactCount} existing AI contacts`);
+      // Load existing AI and LLM Persons from storage
+      const { aiCount, llmCount } = await this.aiManager.loadExisting();
+      console.log(`[AIAssistantPlan] Loaded ${aiCount} AI Persons, ${llmCount} LLM Persons`);
 
-      // DO NOT create contacts for all models - contacts are only created when user selects a model
-      console.log(`[AIAssistantPlan] ${models.length} models available`);
-
-      // Update model info with personIds
-      for (const model of models) {
-        const personId = this.contactManager.getPersonIdForModel(model.id);
-        if (personId) {
-          model.personId = personId;
-        }
-      }
-
-      // Set available models in message processor (AFTER personIds are populated)
+      // Set available models in message processor
       this.messageProcessor.setAvailableLLMModels(models);
-      console.log(`[AIAssistantPlan] Updated message processor with ${models.length} models (with personIds)`);
+      console.log(`[AIAssistantPlan] Updated message processor with ${models.length} models`);
 
       // Load saved default model from persistence - BUT only if default chats already exist
       // If chats don't exist, user must select via UI (which creates chats)
@@ -260,25 +280,26 @@ export class AIAssistantPlan {
               this.topicManager.setDefaultModel(savedDefaultModel);
               console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel} (chats already exist)`);
 
-              // Ensure AI contacts exist for this model only (the one that was selected)
+              // Ensure AI and LLM Persons exist for this model
               const model = models.find(m => m.id === savedDefaultModel);
               if (model) {
                 const displayName = model.displayName || model.name || savedDefaultModel;
+                const provider = model.provider || 'unknown';
 
-                // Check if contact already exists before creating
-                const existingPersonId = this.contactManager.getPersonIdForModel(savedDefaultModel);
-                if (!existingPersonId) {
-                  await this.contactManager.ensureAIContactForModel(savedDefaultModel, displayName);
-                  console.log(`[AIAssistantPlan] Created AI contact for restored model: ${savedDefaultModel}`);
-                }
+                // Create LLM Profile (createLLM returns Profile hash, not Person hash)
+                const llmProfileId = await this.aiManager.createLLM(savedDefaultModel, displayName, provider);
+                console.log(`[AIAssistantPlan] Created/retrieved LLM Profile for ${savedDefaultModel}`);
 
-                // Check private variant
-                const privateModelId = savedDefaultModel + '-private';
-                const privateDisplayName = `${displayName} (Private)`;
-                const existingPrivatePersonId = this.contactManager.getPersonIdForModel(privateModelId);
-                if (!existingPrivatePersonId) {
-                  await this.contactManager.ensureAIContactForModel(privateModelId, privateDisplayName);
-                  console.log(`[AIAssistantPlan] Created private AI contact for restored model`);
+                // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
+                const familyName = this._extractModelFamily(savedDefaultModel);
+
+                // Create AI Person that delegates to LLM Profile (use family name, not full model name)
+                const aiId = `started-as-${savedDefaultModel}`;
+                let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
+                if (!aiPersonId) {
+                  // AIManager.createAI() accepts Profile hash for delegation
+                  aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
+                  console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
                 }
 
                 // Ensure topics exist and AI participants are in groups (this registers them)
@@ -295,12 +316,12 @@ export class AIAssistantPlan {
         }
       }
 
-      // Removed: Auto-selection disabled - user must select model via UI
-      // if (!this.topicManager.getDefaultModel() && models.length > 0) {
-      //   const firstModel = models[0];
-      //   console.log(`[AIAssistantPlan] Auto-selecting first available model: ${firstModel.id}`);
-      //   await this.setDefaultModel(firstModel.id);
-      // }
+      // Auto-select first available model on first run (when no saved default exists)
+      if (!this.topicManager.getDefaultModel() && models.length > 0) {
+        const firstModel = models[0];
+        console.log(`[AIAssistantPlan] Auto-selecting first available model: ${firstModel.id}`);
+        await this.setDefaultModel(firstModel.id);
+      }
 
       if (this.topicManager.getDefaultModel()) {
         console.log(`[AIAssistantPlan] Default model configured: ${this.topicManager.getDefaultModel()}`);
@@ -308,14 +329,11 @@ export class AIAssistantPlan {
         console.log(`[AIAssistantPlan] No default model set - user will be prompted to select one`);
       }
 
-      // Scan existing conversations to register AI topics
-      // This rebuilds the in-memory topic registry from ONE.core storage
-      console.log('[AIAssistantPlan] Scanning existing conversations for AI participants...');
-      const scannedCount = await this.scanExistingConversations();
-      console.log(`[AIAssistantPlan] ✅ Scan complete - registered ${scannedCount} additional AI topics`);
+      // Note: Scan is NOT called here because ChannelManager hasn't loaded channels yet
+      // The scan will be called by CoreInitializer AFTER ChannelManager.init()
 
       this.initialized = true;
-      console.log('[AIAssistantPlan] ✅ Initialization complete');
+      console.log('[AIAssistantPlan] ✅ Initialization complete (scan deferred until after ChannelManager)');
     } catch (error) {
       console.error('[AIAssistantPlan] Initialization failed:', error);
       throw error;
@@ -337,25 +355,15 @@ export class AIAssistantPlan {
     console.log(`[AIAssistantPlan] Using default model: ${defaultModel}`);
 
     await this.topicManager.ensureDefaultChats(
-      this.contactManager,
-      async (topicId: string, modelId: string) => {
+      this.aiManager,
+      async (topicId: string, aiPersonId: SHA256IdHash<Person>) => {
         // Callback when topic is created - generate welcome message
-        await this.messageProcessor.handleNewTopic(topicId, modelId);
+        await this.messageProcessor.handleNewTopic(topicId, aiPersonId);
       }
     );
 
     // Refresh message processor's model list after chat creation
-    // because private variants may have been registered during topic creation
-    const updatedModels: LLMModelInfo[] = this.deps.llmManager?.getAvailableModels() || [];
-
-    // Update model info with personIds (including newly created private variants)
-    for (const model of updatedModels) {
-      const personId = this.contactManager.getPersonIdForModel(model.id);
-      if (personId) {
-        model.personId = personId;
-      }
-    }
-
+    const updatedModels: LLMModelInfo[] = await this.deps.llmManager?.getAvailableModels() || [];
     this.messageProcessor.setAvailableLLMModels(updatedModels);
     console.log(`[AIAssistantPlan] ✅ Default chats created with ${updatedModels.length} models`);
   }
@@ -365,7 +373,7 @@ export class AIAssistantPlan {
    */
   async scanExistingConversations(): Promise<number> {
     console.log('[AIAssistantPlan] Scanning existing conversations...');
-    const count = await this.topicManager.scanExistingConversations(this.contactManager);
+    const count = await this.topicManager.scanExistingConversations(this.aiManager);
     return count;
   }
 
@@ -392,17 +400,36 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Get the model ID for a topic
+   * Get the model ID for a topic by resolving AI Person → LLM Person → Model ID
    */
-  getModelIdForTopic(topicId: string): string | null {
-    return this.topicManager.getModelIdForTopic(topicId);
+  async getModelIdForTopic(topicId: string): Promise<string | null> {
+    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    if (!aiPersonId) {
+      return null;
+    }
+
+    try {
+      // Resolve AI Person → LLM Person (follows delegation chain)
+      const llmPersonId = await this.aiManager.resolveLLMPerson(aiPersonId);
+
+      // Get LLM entity ID (llm:modelId)
+      const llmId = this.aiManager.getEntityId(llmPersonId);
+      if (!llmId || !llmId.startsWith('llm:')) {
+        return null;
+      }
+
+      return llmId.replace(/^llm:/, ''); // Strip llm: prefix
+    } catch (error) {
+      console.error(`[AIAssistantPlan] Failed to resolve model ID for topic ${topicId}:`, error);
+      return null;
+    }
   }
 
   /**
    * Check if a person ID is an AI person
    */
   isAIPerson(personId: SHA256IdHash<Person>): boolean {
-    return this.contactManager.isAIPerson(personId);
+    return this.aiManager.isAI(personId);
   }
 
   /**
@@ -417,25 +444,63 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Get model ID for a person ID (reverse lookup)
+   * Get entity ID for a person ID (reverse lookup)
+   * Returns "ai:{aiId}" or "llm:{modelId}"
    */
-  getModelIdForPersonId(personId: SHA256IdHash<Person>): string | null {
-    return this.contactManager.getModelIdForPersonId(personId);
+  getEntityIdForPersonId(personId: SHA256IdHash<Person>): string | null {
+    return this.aiManager.getEntityId(personId);
   }
 
   /**
-   * Ensure an AI contact exists for a specific model
+   * Get model ID for a person ID (reverse lookup)
+   * Extracts the model ID from the entity ID naming convention
+   *
+   * @param personId - Person ID hash to look up
+   * @returns Model ID (e.g., "gpt-oss:20b") or null if not found
    */
-  async ensureAIContactForModel(modelId: string): Promise<SHA256IdHash<Person>> {
+  getModelIdForPersonId(personId: SHA256IdHash<Person>): string | null {
+    return this.aiManager.getModelIdForPersonId(personId);
+  }
+
+  /**
+   * Ensure an AI Person exists for a specific model
+   * Creates both LLM Person and AI Person with delegation
+   */
+  async ensureAIForModel(modelId: string): Promise<SHA256IdHash<Person>> {
     // Find model info
-    const models = this.deps.llmManager?.getAvailableModels() || [];
+    const models = await this.deps.llmManager?.getAvailableModels() || [];
     const model = models.find((m: any) => m.id === modelId);
 
     if (!model) {
       throw new Error(`[AIAssistantPlan] Model ${modelId} not found in available models`);
     }
 
-    return await this.contactManager.ensureAIContactForModel(modelId, model.displayName || model.name);
+    const displayName = model.displayName || model.name || modelId;
+    const provider = model.provider || 'unknown';
+
+    // Create LLM Profile if doesn't exist (keep detailed name for LLM)
+    // createLLM now returns Profile hash, not Person hash
+    console.log(`[AIAssistantPlan] Calling createLLM with: modelId="${modelId}", name="${displayName}", provider="${provider}"`);
+    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
+    console.log(`[AIAssistantPlan] createLLM returned: ${llmProfileId ? llmProfileId.toString().substring(0, 16) + '...' : 'UNDEFINED'}`);
+
+    if (!llmProfileId) {
+      throw new Error(`[AIAssistantPlan] createLLM returned undefined for model: ${modelId}`);
+    }
+
+    // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
+    const familyName = this._extractModelFamily(modelId);
+
+    // Create AI Person if doesn't exist (use family name, not full model name)
+    const aiId = `started-as-${modelId}`;
+    let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
+    if (!aiPersonId) {
+      // AIManager.createAI() accepts Profile hash for delegation
+      aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
+      console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
+    }
+
+    return aiPersonId;
   }
 
   /**
@@ -453,6 +518,11 @@ export class AIAssistantPlan {
       await this.deps.settingsPersistence.setDefaultModelId(modelId);
     }
 
+    // CRITICAL: Ensure AI and LLM Persons exist before creating chats
+    // This sets up the delegation chain needed for welcome message generation
+    console.log(`[AIAssistantPlan] Ensuring AI Person exists for model: ${modelId}`);
+    await this.ensureAIForModel(modelId);
+
     // Wait for topics to be created so they appear in conversation list immediately
     // (Welcome messages still generate in background via callbacks)
     try {
@@ -466,23 +536,120 @@ export class AIAssistantPlan {
   }
 
   /**
+   * Switch a topic to use a different LLM model
+   * Keeps the same AI Person (conversation identity) but changes which LLM it delegates to
+   */
+  async switchTopicModel(topicId: string, modelId: string): Promise<void> {
+    console.log(`[AIAssistantPlan] Switching topic ${topicId} to LLM model ${modelId}`);
+
+    // Verify topic is an AI topic
+    if (!this.topicManager.isAITopic(topicId)) {
+      throw new Error(`Cannot switch model - topic ${topicId} is not an AI topic`);
+    }
+
+    // Get the AI Person for this topic
+    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    if (!aiPersonId) {
+      throw new Error(`No AI Person found for topic ${topicId}`);
+    }
+
+    // Get the AI ID from the Person
+    const aiId = this.aiManager.getEntityId(aiPersonId);
+    if (!aiId || !aiId.startsWith('ai:')) {
+      throw new Error(`Invalid AI Person for topic ${topicId}`);
+    }
+
+    // Get or create LLM Profile for the new model
+    const models = await this.deps.llmManager?.getAvailableModels() || [];
+    const model = models.find((m: any) => m.id === modelId);
+    if (!model) {
+      throw new Error(`Model ${modelId} not found in available models`);
+    }
+
+    const displayName = model.displayName || model.name || modelId;
+    const provider = model.provider || 'unknown';
+
+    // Get or create LLM Profile
+    // createLLM now returns Profile hash, not Person hash
+    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
+
+    // Update the AI's delegation to point to the new LLM Profile
+    await this.aiManager.setAIDelegation(aiId.replace('ai:', ''), llmProfileId);
+
+    console.log(`[AIAssistantPlan] ✅ Topic ${topicId} AI ${aiId} now delegates to LLM Profile ${modelId}`);
+  }
+
+  /**
    * Get the default AI model
    */
-  getDefaultModel(): any | null {
+  async getDefaultModel(): Promise<any | null> {
     const modelId = this.topicManager.getDefaultModel();
     if (!modelId) {
       return null;
     }
 
-    const models = this.deps.llmManager?.getAvailableModels() || [];
+    const models = await this.deps.llmManager?.getAvailableModels() || [];
     return models.find((m: any) => m.id === modelId) || null;
   }
 
   /**
-   * Register an AI topic
+   * Register an AI topic with its AI Person
    */
-  registerAITopic(topicId: string, modelId: string): void {
-    this.topicManager.registerAITopic(topicId, modelId);
+  registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): void {
+    this.topicManager.registerAITopic(topicId, aiPersonId);
+  }
+
+  /**
+   * Rename an AI chat, preserving past identities
+   * Creates a new Person/Profile while keeping the old one as a past identity
+   *
+   * @param topicId - Topic ID to rename
+   * @param newName - New display name
+   */
+  async renameAIChat(topicId: string, newName: string): Promise<void> {
+    console.log(`[AIAssistantPlan] Renaming AI chat: ${topicId} → ${newName}`);
+
+    // Get the AI Person for this topic
+    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    if (!aiPersonId) {
+      throw new Error(`[AIAssistantPlan] Topic ${topicId} is not an AI topic`);
+    }
+
+    // Get the AI entity ID
+    const aiId = this.aiManager.getEntityId(aiPersonId);
+    if (!aiId || !aiId.startsWith('ai:')) {
+      throw new Error(`[AIAssistantPlan] Invalid AI entity ID: ${aiId}`);
+    }
+
+    // Rename the AI (creates new Person/Profile, preserves old as past identity)
+    const aiIdWithoutPrefix = aiId.replace(/^ai:/, '');
+    await this.aiManager.renameAI(aiIdWithoutPrefix, newName);
+
+    console.log(`[AIAssistantPlan] ✅ AI chat renamed: ${topicId}`);
+  }
+
+  /**
+   * Get past identities for an AI chat
+   *
+   * @param topicId - Topic ID
+   * @returns Array of {personId, name} for past identities
+   */
+  async getPastIdentities(topicId: string): Promise<Array<{personId: SHA256IdHash<Person>, name: string}>> {
+    // Get the AI Person for this topic
+    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    if (!aiPersonId) {
+      return [];
+    }
+
+    // Get the AI entity ID
+    const aiId = this.aiManager.getEntityId(aiPersonId);
+    if (!aiId || !aiId.startsWith('ai:')) {
+      return [];
+    }
+
+    // Get past identities
+    const aiIdWithoutPrefix = aiId.replace(/^ai:/, '');
+    return await this.aiManager.getPastIdentities(aiIdWithoutPrefix);
   }
 
   /**
@@ -503,12 +670,12 @@ export class AIAssistantPlan {
    * Handle a new topic creation by sending a welcome message
    */
   async handleNewTopic(topicId: string): Promise<void> {
-    const modelId = this.topicManager.getModelIdForTopic(topicId);
-    if (!modelId) {
-      throw new Error(`[AIAssistantPlan] No model ID for topic: ${topicId}`);
+    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    if (!aiPersonId) {
+      throw new Error(`[AIAssistantPlan] No AI Person for topic: ${topicId}`);
     }
 
-    await this.messageProcessor.handleNewTopic(topicId, modelId);
+    await this.messageProcessor.handleNewTopic(topicId, aiPersonId);
   }
 
   /**
@@ -548,20 +715,26 @@ export class AIAssistantPlan {
    * Chat with LLM and get analysis (response + subjects/keywords)
    * This is the ONLY way AIMessageProcessor should get analyzed responses
    *
+   * NON-BLOCKING: Returns immediately after starting Phase 1 streaming
+   * Phase 2 analytics run in background and deliver results via onAnalysis callback
+   *
    * @param history - Conversation history
    * @param modelId - LLM model ID
    * @param options - Streaming and analysis options
-   * @param topicId - Topic ID for analysis context
-   * @returns {response, analysis, thinking} with subjects, keywords, and thinking trace
+   * @returns {streaming: true, topicId} immediately while streaming continues
    */
   async chatWithAnalysis(
     history: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     modelId: string,
     options?: {
+      topicId?: string;
+      priority?: number;
       onStream?: (chunk: string) => void;
       onThinkingStream?: (chunk: string) => void;
-    },
-    topicId?: string
+      onProgress?: (status: string) => void;
+      onAnalysis?: (analysis: { keywords: string[]; description?: string }) => void;
+      onComplete?: (result: { response: string; thinking?: string; analysis?: any }) => void;
+    }
   ): Promise<any> {
     if (!this.initialized) {
       throw new Error('[AIAssistantPlan] Plan not initialized - call init() first');
@@ -572,138 +745,188 @@ export class AIAssistantPlan {
     }
 
     const startTime = Date.now();
-    console.log(`[AIAssistantPlan] chatWithAnalysis starting for model: ${modelId}`);
+    const topicId = options?.topicId;
+    console.log(`[AIAssistantPlan] chatWithAnalysis (THREE-PHASE NON-BLOCKING) starting for model: ${modelId}, topicId: ${topicId || 'none'}`);
 
-    // Emit thinking status: preparing to call LLM
-    if (topicId && this.deps.platform?.emitThinkingStatus) {
-      this.deps.platform.emitThinkingStatus(topicId, 'Preparing request...');
-    }
+    // ═══════════════════════════════════════════════════════════════════
+    // THREE-PHASE REACT PATTERN WITH TRANSPARENT PROGRESS
+    // ═══════════════════════════════════════════════════════════════════
+    // PHASE 0: Tool Evaluation & Context Gathering
+    //          - Check if MCP tools should be used
+    //          - Execute tools with progress updates
+    //          - Collect results for Phase 1 context
+    // PHASE 1: Stream natural language response
+    //          - Real-time UX via onStream callback
+    //          - Uses tool results from Phase 0
+    //          - Caches context automatically
+    // PHASE 2: Background analytics (structured output)
+    //          - Extract keywords/subjects
+    //          - Results via onAnalysis callback
+    // ═══════════════════════════════════════════════════════════════════
 
-    // OPTION 1: Stream response first, then analyze in background
-    // Step 1: Stream the response (fast UX)
-    let fullResponse = '';
-    let fullThinking = '';
+    // ✅ PHASE 0: Tool evaluation and context gathering
+    console.log('[AIAssistantPlan] 🔧 PHASE 0: Evaluating MCP tools...');
+    options?.onProgress?.('Analyzing context...');
 
-    // Emit thinking status: calling LLM
-    if (topicId && this.deps.platform?.emitThinkingStatus) {
-      this.deps.platform.emitThinkingStatus(topicId, 'Calling LLM...');
-    }
+    let toolResults: string | null = null;
+    let enhancedHistory = [...history];
 
-    const rawResponse = await this.deps.llmManager.chat(history, modelId, {
-      ...options,
-      // Tools enabled - LLM can use MCP tools. Tool calls are filtered from streaming below.
-      onStream: (chunk: string) => {
-        fullResponse += chunk;
+    // Check if we should use MCP tools (only if tools are available and enabled)
+    const hasMCPTools = this.deps.llmManager.getMCPToolCount && this.deps.llmManager.getMCPToolCount() > 0;
 
-        // Don't stream tool call JSON to user - let processToolCalls handle it
-        // Tool calls look like: {"tool":"...", "parameters":{...}} or ```json\n{...}\n```
-        const looksLikeToolCall = chunk.includes('"tool"') && chunk.includes('"parameters"');
-        if (!looksLikeToolCall) {
-          options?.onStream?.(chunk);
+    if (hasMCPTools && topicId) {
+      try {
+        options?.onProgress?.('Checking recent subjects...');
+        console.log('[AIAssistantPlan] Phase 0: Calling LLM to determine tool usage...');
+
+        // Call LLM to determine if tools should be used and which ones
+        // This uses the normal chat flow which includes tool processing
+        const toolEvalResponse = await this.deps.llmManager.chat(history, modelId, {
+          topicId,
+          temperature: 0.3, // Lower temp for more deterministic tool selection
+          // Don't disable tools here - we WANT tool calls in Phase 0
+        });
+
+        // Extract tool results if any were executed
+        if (typeof toolEvalResponse === 'object' && toolEvalResponse !== null) {
+          if ('_toolResults' in toolEvalResponse) {
+            toolResults = (toolEvalResponse as any)._toolResults;
+            options?.onProgress?.('Context gathered successfully');
+            console.log('[AIAssistantPlan] Phase 0: Tool results collected');
+          } else if ('content' in toolEvalResponse) {
+            // Response has content but no tool results - that's fine
+            console.log('[AIAssistantPlan] Phase 0: No tools needed for this request');
+          }
         }
-      },
-      onThinkingStream: (chunk: string) => {
-        fullThinking += chunk;
-        options?.onThinkingStream?.(chunk);
+
+        // Add tool results to conversation history for Phase 1
+        if (toolResults) {
+          enhancedHistory = [
+            ...history,
+            {
+              role: 'user' as const,
+              content: `Context from analysis:\n${toolResults}\n\nPlease use this context to provide a natural, conversational response.`
+            }
+          ];
+        }
+
+        const phase0Time = Date.now() - startTime;
+        console.log(`[AIAssistantPlan] ✅ PHASE 0 complete (${phase0Time}ms)${toolResults ? ' - context gathered' : ' - no tools needed'}`);
+      } catch (error) {
+        console.error('[AIAssistantPlan] ⚠️  PHASE 0 tool evaluation failed:', error);
+        options?.onProgress?.('Continuing without additional context...');
+        // Continue to Phase 1 anyway - don't block on tool failures
       }
+    } else {
+      console.log('[AIAssistantPlan] Phase 0: Skipping (no MCP tools available or no topicId)');
+    }
+
+    // ✅ PHASE 1: Start streaming (DON'T AWAIT - non-blocking)
+    console.log('[AIAssistantPlan] 📡 PHASE 1: Starting non-blocking stream...');
+    options?.onProgress?.('Generating response...');
+
+    const responsePromise = this.deps.llmManager.chat(enhancedHistory, modelId, {
+      topicId, // CRITICAL: Enables context caching
+      onStream: options?.onStream, // UI gets chunks in real-time
+      onThinkingStream: options?.onThinkingStream, // Thinking stream
+      temperature: 0.7, // Normal temp for user-facing response
+      disableTools: true // ✅ Disable tools to get clean streaming text (not JSON)
     });
 
-    // Handle both string and object responses (with thinking metadata)
-    if (typeof rawResponse === 'object' && (rawResponse as any)._hasThinking) {
-      fullResponse = (rawResponse as any).content;
-      fullThinking = (rawResponse as any).thinking || '';
-      console.log('[AIAssistantPlan] Response includes thinking metadata (length:', fullThinking.length, 'chars)');
-    } else if (typeof rawResponse === 'string') {
-      fullResponse = rawResponse;
-    } else {
-      fullResponse = String(rawResponse || '');
-    }
+    // ✅ Background: Chain Phase 2 after Phase 1 completes
+    responsePromise.then(async (response) => {
+      const phase1Time = Date.now() - startTime;
+      console.log(`[AIAssistantPlan] ✅ PHASE 1 complete (${phase1Time}ms) - context cached`);
 
-    console.log(`[AIAssistantPlan] Response streaming complete (${Date.now() - startTime}ms), starting background analysis`);
+      // Extract actual response content and thinking
+      let actualResponse = '';
+      let thinking: string | undefined;
+      if (typeof response === 'object' && response !== null && 'content' in response) {
+        actualResponse = (response as any).content; // Handle {content, thinking, context} format
+        thinking = (response as any).thinking;
+      } else {
+        actualResponse = String(response);
+      }
 
-    // Return immediately - don't block on analysis
-    const immediateResult = {
-      response: fullResponse,
-      thinking: fullThinking || undefined, // Include thinking trace if present
-      analysis: { subjects: [], summaryUpdate: '', keywords: [] }, // Empty - will be updated async
+      let analysis: any = undefined;
+
+      // ✅ PHASE 2: Run analytics with cached context (if topicId provided)
+      if (topicId && options?.onAnalysis) {
+        console.log('[AIAssistantPlan] 🔍 PHASE 2: Running analytics with cached context...');
+
+        try {
+          // Import Phase 2 analytics prompt (JSON structured output)
+          const { PHASE2_ANALYTICS_PROMPT } = await import('../constants/system-prompts.js');
+
+          // Build analytics conversation with structured prompt
+          const analyticsHistory = [
+            { role: 'system' as const, content: PHASE2_ANALYTICS_PROMPT },
+            ...history.slice(-3) // Use recent conversation for context
+          ];
+
+          // Use cached context for analytics (3-12x faster!)
+          const analyticsResponse = await this.deps.llmManager.chat(
+            analyticsHistory,
+            modelId,
+            {
+              topicId, // Reuses cached context from Phase 1
+              temperature: 0.3, // Lower temp for deterministic extraction
+              disableTools: true // No tool calls needed for analytics
+            }
+          );
+
+          const jsonResponse = typeof analyticsResponse === 'string'
+            ? analyticsResponse
+            : (typeof analyticsResponse === 'object' && 'content' in analyticsResponse)
+              ? (analyticsResponse as any).content
+              : JSON.stringify(analyticsResponse);
+
+          const parsedAnalysis = JSON.parse(jsonResponse);
+          analysis = {
+            keywords: parsedAnalysis.keywords || [],
+            description: parsedAnalysis.description
+          };
+
+          const totalTime = Date.now() - startTime;
+          console.log(`[AIAssistantPlan] ✅ PHASE 2 complete (${totalTime}ms total) - keywords: ${analysis.keywords.length}`);
+
+          // ✅ Deliver analysis to UI via callback
+          options.onAnalysis(analysis);
+
+        } catch (error) {
+          console.error('[AIAssistantPlan] ⚠️  PHASE 2 analytics failed:', error);
+          // Deliver empty analysis on error
+          analysis = { keywords: [] };
+          if (options.onAnalysis) {
+            options.onAnalysis(analysis);
+          }
+        }
+      } else if (!topicId) {
+        console.log('[AIAssistantPlan] ⚠️  No topicId - skipping Phase 2 analytics');
+      } else if (!options?.onAnalysis) {
+        console.log('[AIAssistantPlan] ⚠️  No onAnalysis callback - skipping Phase 2 analytics');
+      }
+
+      // ✅ COMPLETION: Call onComplete with consolidated state (response + thinking + analysis)
+      if (options?.onComplete) {
+        console.log('[AIAssistantPlan] 🎯 Calling onComplete with consolidated state');
+        options.onComplete({
+          response: actualResponse,
+          thinking,
+          analysis
+        });
+      }
+    }).catch(error => {
+      console.error('[AIAssistantPlan] ❌ PHASE 1 failed:', error);
+      // Phase 1 failed - can't run Phase 2
+    });
+
+    // ✅ Return immediately - streaming already started
+    console.log(`[AIAssistantPlan] ⚡ Returning immediately (non-blocking) - streaming in progress`);
+    return {
+      streaming: true,
       topicId
     };
-
-    // Step 2: Analyze in background (non-blocking)
-    // Use setTimeout for browser compatibility (setImmediate is Node.js only)
-    setTimeout(async () => {
-      try {
-        console.log(`[AIAssistantPlan] Background analysis starting for topic: ${topicId}`);
-
-        // Create analysis service with progress callback
-        const progressCallback = (message: string) => {
-          console.log(`[AIAssistantPlan] Analysis progress: ${message}`);
-        };
-        const analysisService = new (this.analysisService.constructor as any)(
-          this.deps.llmManager,
-          this.deps.mcpManager,
-          progressCallback
-        );
-
-        const analysisContent: AnalysisContent = {
-          type: 'chat',
-          messages: [
-            ...history,
-            { role: 'assistant', content: fullResponse }
-          ]
-        };
-
-        const analysisContext: AnalysisContext = {
-          // Don't specify modelId - let AnalysisService auto-select a model that supports structured output
-          temperature: 0,
-          topicId,
-          disableTools: true
-        };
-
-        // AnalysisService automatically:
-        // 1. Fetches existing subjects from memory via MCP
-        // 2. Includes them in prompt for consistency
-        // 3. Returns structured analysis
-        const result = await analysisService.analyze(analysisContent, analysisContext);
-
-        console.log(`[AIAssistantPlan] Background analysis complete (${Date.now() - startTime}ms total)`);
-        console.log(`[AIAssistantPlan] Analysis results: ${result.subjects?.length || 0} subjects, ${result.keywords?.length || 0} keywords`);
-
-        // Store the extracted subjects and keywords using TopicAnalysisModel
-        if (result.subjects && result.subjects.length > 0 && this.deps.topicAnalysisModel) {
-          console.log(`[AIAssistantPlan] Storing ${result.subjects.length} subjects to ONE.core...`);
-          for (const subject of result.subjects.slice(0, 5)) {
-            try {
-              const subjectId = subject.keywords.map((k: any) => k.term).join('+');
-              const createdSubject = await this.deps.topicAnalysisModel.createSubject(
-                topicId as any,
-                subject.keywords.map((k: any) => k.term),
-                subjectId,
-                subject.description,
-                subject.keywords[0]?.confidence || 0.8
-              );
-              // Add keywords to subject
-              for (const keyword of subject.keywords) {
-                await this.deps.topicAnalysisModel.addKeywordToSubject(
-                  topicId as any,
-                  keyword.term,
-                  createdSubject.idHash
-                );
-              }
-            } catch (error) {
-              console.warn(`[AIAssistantPlan] Failed to store subject:`, error);
-            }
-          }
-          console.log(`[AIAssistantPlan] ✅ Subjects stored successfully`);
-        }
-
-        // Analysis complete - could emit event here if needed for UI updates
-      } catch (error: any) {
-        console.warn('[AIAssistantPlan] Background analysis failed:', error?.message || error);
-      }
-    });
-
-    return immediateResult;
   }
 
   /**
@@ -729,10 +952,10 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Get contact manager (for testing/debugging)
+   * Get AI manager (for testing/debugging)
    */
-  getContactManager(): AIContactManager {
-    return this.contactManager;
+  getAIManager(): AIManager {
+    return this.aiManager;
   }
 
   /**
@@ -764,16 +987,17 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Get all AI contacts with their model information
-   * Returns array of {modelId, name, personId} for compatibility with chat plan
+   * Get all AI Persons with their delegation information
+   * Returns array of {aiId, name, aiPersonId, llmPersonId} for chat plan
    */
-  getAllContacts(): Array<{ modelId: string; name: string; personId: string | null }> {
-    const models = this.deps.llmManager.getAvailableModels();
-
-    return models.map((model: any) => ({
-      modelId: model.id,
-      name: model.name,
-      personId: this.contactManager.getPersonIdForModel(model.id)
-    }));
+  async getAllAIPersons(): Promise<Array<{
+    aiId: string;
+    name: string;
+    aiPersonId: SHA256IdHash<Person>;
+    llmPersonId: SHA256IdHash<Person> | null;
+  }>> {
+    // This would require iterating through all AI Persons in storage
+    // For now, return empty array - proper implementation needed
+    return [];
   }
 }

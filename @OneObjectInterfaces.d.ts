@@ -11,6 +11,7 @@ declare module '@OneObjectInterfaces' {
         GlobalLLMSettings: GlobalLLMSettings;
         AISettings: AISettings;
         AppSettings: AppSettings;
+        Subject: Subject; // Topic analysis
         Keyword: Keyword;
         ProposalConfig: ProposalConfig;
         Proposal: Proposal;
@@ -145,11 +146,49 @@ declare module '@OneObjectInterfaces' {
         encryptedAuthToken?: string;
     }
 
+    export interface AI {
+        $type$: 'AI';
+        aiId: string; // ID field - AI identifier (e.g., "started-as-gpt-oss-20b")
+        displayName: string;
+        personId: string; // AI Person ID
+        llmProfileId: string; // LLM Profile ID hash that this AI delegates to
+        modelId: string; // Model identifier (e.g., "gpt-oss:20b")
+        owner: string; // Owner Person/Instance ID
+        created: number;
+        modified: number;
+        active: boolean;
+        deleted: boolean;
+    }
+
+    export interface Subject {
+        $type$: 'Subject';
+        topic: string; // reference to parent topic (channel ID)
+        keywords?: import('@refinio/one.core/lib/util/type-checks.js').SHA256IdHash<Keyword>[]; // Array of Keyword ID hashes - THIS IS THE ID PROPERTY (isId: true in recipe)
+        timeRanges: Array<{
+            start: number;
+            end: number;
+        }>;
+        messageCount: number;
+        createdAt: number;
+        lastSeenAt: number;
+        description?: string; // LLM-generated description
+        archived?: boolean;
+        likes?: number;
+        dislikes?: number;
+        abstractionLevel?: number; // 1-42 scale
+        abstractionMetadata?: {
+            calculatedAt: number;
+            reasoning?: string;
+            parentLevels?: number[];
+            childLevels?: number[];
+        };
+    }
+
     export interface Keyword {
         $type$: 'Keyword';
         term: string; // ID property - normalized keyword term
         frequency: number;
-        subjects: string[]; // Array of subject IDs
+        subjects: import('@refinio/one.core/lib/util/type-checks.js').SHA256IdHash<Subject>[]; // Array of Subject IdHashes (matches recipe)
         score?: number;
         createdAt: number; // Unix timestamp
         lastSeen: number; // Unix timestamp

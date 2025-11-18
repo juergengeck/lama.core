@@ -40,6 +40,7 @@ import * as lmstudio from './lmstudio.js';
 import { SystemPromptBuilder } from './system-prompt-builder.js';
 import type { SystemPromptContext } from './system-prompt-builder.js';
 import { formatForAnthropicWithCaching, formatForStandardAPI, type PromptParts } from './context-budget-manager.js';
+import { LLMConcurrencyManager } from './llm-concurrency-manager.js';
 
 /**
  * LLM connection health status
@@ -76,7 +77,7 @@ class LLMManager {
   parameters: any;
   capabilities: any;
   close: any;
-  models: Map<string, any>;
+  channelManager?: any; // ONE.core channel manager for storage access
   modelSettings: Map<string, any>;
   mcpClients: Map<string, any>;
   mcpTools: Map<string, any>;
@@ -94,6 +95,12 @@ class LLMManager {
   private lastHealthCheck: Map<string, number>; // modelId → timestamp
   private readonly HEALTH_CHECK_CACHE_MS = 30000; // Cache health status for 30s
 
+  // Concurrency management
+  private concurrencyManager: LLMConcurrencyManager;
+
+  // Ollama context cache for conversation continuation and analytics
+  private ollamaContextCache: Map<string, number[]>; // topicId → context array
+
   constructor(
     platform?: LLMPlatform,
     mcpManager?: any,
@@ -106,7 +113,7 @@ class LLMManager {
     this.mcpManager = mcpManager
     this.forwardLog = forwardLog
     this.userSettingsManager = userSettingsManager
-    this.models = new Map()
+    this.channelManager = channelManager // Store for storage access
     this.modelSettings = new Map()
     this.mcpClients = new Map()
     this.mcpTools = new Map()
@@ -116,6 +123,12 @@ class LLMManager {
     // Initialize health tracking
     this.modelHealth = new Map()
     this.lastHealthCheck = new Map()
+
+    // Initialize concurrency manager
+    this.concurrencyManager = new LLMConcurrencyManager()
+
+    // Initialize Ollama context cache
+    this.ollamaContextCache = new Map()
 
     // Initialize system prompt builder
     this.systemPromptBuilder = new SystemPromptBuilder(
@@ -139,6 +152,7 @@ class LLMManager {
     console.log('[LLMManager] Updating SystemPromptBuilder dependencies')
     console.log(`[LLMManager] userSettingsManager passed: ${userSettingsManager ? 'YES' : 'NO (undefined)'}`)
     this.userSettingsManager = userSettingsManager
+    this.channelManager = channelManager // Update channel manager
     console.log(`[LLMManager] this.userSettingsManager after assignment: ${this.userSettingsManager ? 'SET' : 'NOT SET'}`)
     this.systemPromptBuilder = new SystemPromptBuilder(
       this.mcpManager,
@@ -148,6 +162,61 @@ class LLMManager {
     )
     console.log('[LLMManager] ✅ SystemPromptBuilder dependencies updated')
 }
+
+  /**
+   * Get all LLMs from ONE.core storage
+   */
+  private async getAllLLMsFromStorage(): Promise<any[]> {
+    if (!this.channelManager) {
+      console.warn('[LLMManager] channelManager not available - cannot read LLMs from storage')
+      return []
+    }
+
+    try {
+      const llms: any[] = []
+      const iterator = this.channelManager.objectIteratorWithType('LLM', {
+        channelId: 'lama',
+      })
+
+      for await (const obj of iterator) {
+        if (obj && obj.data && !obj.data.deleted) {
+          llms.push(obj.data)
+        }
+      }
+
+      return llms
+    } catch (error) {
+      console.error('[LLMManager] Failed to read LLMs from storage:', error)
+      return []
+    }
+  }
+
+  /**
+   * Get specific LLM from ONE.core storage by modelId
+   */
+  private async getLLMFromStorage(modelId: string): Promise<any | null> {
+    if (!this.channelManager) {
+      console.warn('[LLMManager] channelManager not available - cannot read LLM from storage')
+      return null
+    }
+
+    try {
+      const iterator = this.channelManager.objectIteratorWithType('LLM', {
+        channelId: 'lama',
+      })
+
+      for await (const obj of iterator) {
+        if (obj && obj.data && !obj.data.deleted && obj.data.modelId === modelId) {
+          return obj.data
+        }
+      }
+
+      return null
+    } catch (error) {
+      console.error('[LLMManager] Failed to read LLM from storage:', error)
+      return null
+    }
+  }
 
   /**
    * Load active Ollama configuration
@@ -212,8 +281,10 @@ class LLMManager {
       const authHeaders = await this.getOllamaAuthHeaders()
 
       // Send a minimal ping to Ollama to establish connection
-      // Use first available model for pre-warming
-      const modelToWarm = Array.from(this.models.keys())[0] || 'llama3.2:latest'
+      // Use first available model from storage for pre-warming
+      const allLLMs = await this.getAllLLMsFromStorage()
+      const firstLLM = allLLMs.find(llm => llm.provider === 'ollama')
+      const modelToWarm = firstLLM?.modelId || 'llama3.2:latest'
 
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -249,7 +320,7 @@ class LLMManager {
       return
     }
 
-    console.log('[LLMManager] Initializing in main process...')
+    console.log('[LLMManager] Initializing...')
 
     try {
       // Cancel any pending Ollama requests from before restart
@@ -262,14 +333,14 @@ class LLMManager {
       // Load saved settings
       await this.loadSettings()
 
-      // Register available models
-      await this.registerModels()
+      // Models are now read from ONE.core storage - no registration needed
+      // LLM objects are stored via LLMConfigPlan.setConfig() and read on demand
 
       // MCP initialization moved to MCPInitializationPlan (after NodeOneCore exists)
       // await this.initializeMCP()
 
       this.isInitialized = true
-      console.log('[LLMManager] Initialized successfully with MCP support')
+      console.log('[LLMManager] Initialized successfully (models read from storage)')
 
       // Pre-warm LLM connection in background (don't await)
       this.preWarmConnection().catch(err => {
@@ -287,199 +358,10 @@ class LLMManager {
     }
   }
 
-  async registerModels(): Promise<any> {
-    // Discover Ollama models (checks what's actually running)
-    await this.discoverOllamaModels()
 
-    // Discover LM Studio models (checks what's actually running)
-    await this.discoverLMStudioModels()
 
-    // Discover Claude models if API key is configured
-    if (this.userSettingsManager) {
-      const claudeApiKey = await this.userSettingsManager.getApiKey('anthropic')
-      if (claudeApiKey) {
-        await this.discoverClaudeModels(claudeApiKey)
-      } else {
-        console.log('[LLMManager] No Claude API key found, skipping Claude model discovery')
-      }
-    }
 
-    // Discover OpenAI models if API key is configured
-    if (this.userSettingsManager) {
-      const openaiApiKey = await this.userSettingsManager.getApiKey('openai')
-      if (openaiApiKey) {
-        await this.discoverOpenAIModels(openaiApiKey)
-      } else {
-        console.log('[LLMManager] No OpenAI API key found, skipping OpenAI model discovery')
-      }
-    }
 
-    console.log(`[LLMManager] Registered ${this.models.size} total models`)
-  }
-
-  async discoverOllamaModels(): Promise<any> {
-    try {
-      const ollamaModels: any = await getLocalOllamaModels()
-
-      if (ollamaModels.length > 0) {
-        console.log(`[LLMManager] Discovered ${ollamaModels.length} Ollama models`)
-
-        for (const rawModel of ollamaModels) {
-          const parsedModel = parseOllamaModel(rawModel)
-
-          // All Ollama models get base capabilities
-          const capabilities = ['chat', 'completion'];
-
-          // Register the base model
-          this.models.set(parsedModel.id, {
-            id: parsedModel.id,
-            name: parsedModel.displayName,
-            provider: 'ollama',
-            description: `${parsedModel.description} (${parsedModel.size})`,
-            capabilities,
-            contextLength: 8192,
-            size: parsedModel.sizeBytes, // Numeric size in bytes for sorting/display
-            parameters: {
-              modelName: parsedModel.name, // The actual Ollama model name
-              temperature: 0.7,
-              maxTokens: 1024  // Reduced from 2048 - reasoning models expand this significantly
-            }
-          })
-
-          console.log(`[LLMManager] Registered Ollama model: ${parsedModel.id}`)
-        }
-      } else {
-        console.log('[LLMManager] No Ollama models found')
-      }
-    } catch (error) {
-      console.log('[LLMManager] Failed to discover Ollama models:', (error as Error).message)
-    }
-  }
-
-  async discoverLMStudioModels(): Promise<any> {
-    try {
-      const isLMStudioAvailable: any = await lmstudio.isLMStudioRunning()
-
-      if (isLMStudioAvailable) {
-        console.log('[LLMManager] LM Studio is available')
-        const lmStudioModels: any = await lmstudio.getAvailableModels()
-
-        if (lmStudioModels.length > 0) {
-          // Register each available LM Studio model
-          for (const model of lmStudioModels) {
-            this.models.set(`lmstudio:${model.id}`, {
-              id: `lmstudio:${model.id}`,
-              name: `${model.id} (LM Studio)`,
-              provider: 'lmstudio',
-              description: 'Local model via LM Studio',
-              capabilities: ['chat', 'completion', 'streaming'],
-              contextLength: model.context_length || 4096,
-              parameters: {
-                modelName: model.id,
-                temperature: 0.7,
-                maxTokens: 2048
-              }
-            })
-          }
-
-          // Also register a default LM Studio option
-          this.models.set('lmstudio:default', {
-            id: 'lmstudio:default',
-            name: 'LM Studio (Active Model)',
-            provider: 'lmstudio',
-            description: 'Currently loaded model in LM Studio',
-            capabilities: ['chat', 'completion', 'streaming'],
-            contextLength: 4096,
-            parameters: {
-              modelName: 'default',
-              temperature: 0.7,
-              maxTokens: 2048
-            }
-          })
-
-          console.log(`[LLMManager] Registered ${lmStudioModels.length} LM Studio models`)
-        }
-      }
-    } catch (error) {
-      console.log('[LLMManager] LM Studio not available:', (error as Error).message)
-    }
-  }
-
-  async discoverClaudeModels(providedApiKey?: string): Promise<any> {
-    try {
-      // Platform layer must provide API key - lama.core is platform-agnostic
-      if (!providedApiKey) {
-        console.log('[LLMManager] No Claude API key provided, skipping Claude model registration')
-        return
-      }
-
-      console.log('[LLMManager] Registering Claude models from model registry (HTTP-based, browser-compatible)')
-
-      // Import model registry to get Claude model definitions
-      const { getModelsByProvider } = await import('../constants/model-registry.js')
-      const claudeModels = getModelsByProvider('anthropic')
-
-      console.log(`[LLMManager] Found ${claudeModels.length} Claude models in registry`)
-
-      for (const modelConfig of claudeModels) {
-        // Use model ID without provider prefix for consistency with rest of codebase
-        const modelId = modelConfig.id
-
-        this.models.set(modelId, {
-          id: modelId,
-          name: modelConfig.name,
-          provider: 'anthropic',
-          description: modelConfig.description,
-          capabilities: modelConfig.capabilities || ['chat', 'inference', 'streaming'],
-          contextLength: modelConfig.contextWindow || 200000,
-          parameters: {
-            temperature: modelConfig.defaultTemperature || 0.7,
-            maxTokens: 8192 // Claude 4+ default
-          }
-        })
-
-        console.log(`[LLMManager] Registered Claude model: ${modelId} (${modelConfig.name})`)
-      }
-    } catch (error) {
-      console.log('[LLMManager] Failed to register Claude models:', (error as Error).message)
-    }
-  }
-
-  async discoverOpenAIModels(providedApiKey?: string): Promise<any> {
-    try {
-      if (!providedApiKey) {
-        console.log('[LLMManager] No OpenAI API key provided, skipping OpenAI model registration')
-        return
-      }
-
-      console.log('[LLMManager] Registering OpenAI models from model registry (API discovery not supported in browser)')
-
-      // Import model registry to get OpenAI model definitions
-      const { getModelsByProvider } = await import('../constants/model-registry.js')
-      const openaiModels = getModelsByProvider('openai')
-
-      console.log(`[LLMManager] Found ${openaiModels.length} OpenAI models in registry`)
-
-      for (const modelConfig of openaiModels) {
-        this.models.set(modelConfig.id, {
-          id: modelConfig.id,
-          name: modelConfig.name,
-          provider: 'openai',
-          description: modelConfig.description,
-          capabilities: modelConfig.capabilities || ['chat', 'inference', 'streaming'],
-          contextLength: modelConfig.contextWindow || 128000,
-          parameters: {
-            temperature: modelConfig.defaultTemperature || 0.7,
-            maxTokens: 4096
-          }
-        })
-
-        console.log(`[LLMManager] Registered OpenAI model: ${modelConfig.id} (${modelConfig.name})`)
-      }
-    } catch (error) {
-      console.log('[LLMManager] Failed to register OpenAI models:', (error as Error).message)
-    }
-  }
 
   async initializeMCP(): Promise<any> {
     console.log('[LLMManager] Initializing MCP servers...')
@@ -577,9 +459,30 @@ class LLMManager {
       throw new Error('Model ID is required for chat')
     }
     const effectiveModelId = modelId
-    const model = this.models.get(effectiveModelId)
-    if (!model) {
-      throw new Error(`Model ${effectiveModelId} not found. Available models: ${Array.from(this.models.keys()).join(', ')}`)
+
+    // Read model from ONE.core storage instead of in-memory Map
+    const llmObject = await this.getLLMFromStorage(effectiveModelId)
+    if (!llmObject) {
+      const allLLMs = await this.getAllLLMsFromStorage()
+      const availableIds = allLLMs.map(llm => llm.modelId).join(', ')
+      throw new Error(`Model ${effectiveModelId} not found in storage. Available: ${availableIds}`)
+    }
+
+    // Use LLM object directly (storage is source of truth)
+    const model = {
+      id: llmObject.modelId,
+      name: llmObject.name || llmObject.modelId,
+      provider: llmObject.provider,
+      baseUrl: llmObject.server, // Ollama server address
+      systemPrompt: llmObject.systemPrompt,
+      // Defaults for fields that may not be in storage
+      capabilities: ['chat', 'completion'],
+      contextLength: 8192,
+      parameters: {
+        modelName: llmObject.modelId,
+        temperature: 0.7,
+        maxTokens: 4096  // Increased for longer structured output responses
+      }
     }
 
     // Detect if messages is a PromptResult with promptParts
@@ -665,6 +568,11 @@ class LLMManager {
       }
     }
 
+    // Acquire concurrency slot (waits if necessary based on resource constraints)
+    const topicId = options.topicId || 'unknown';
+    const topicPriority = options.priority || 5;
+    const requestId = await this.concurrencyManager.acquireSlot(effectiveModelId, topicId, topicPriority);
+
     let response
 
     try {
@@ -687,7 +595,7 @@ class LLMManager {
       this.markModelUnhealthy(effectiveModelId, error);
 
       // Create enhanced error with recovery context
-      const errorContext = this.createErrorContext(effectiveModelId, error, options.topicId);
+      const errorContext = await this.createErrorContext(effectiveModelId, error, options.topicId);
 
       // Attach error context to the error object for platform layer
       (error as any).llmErrorContext = errorContext;
@@ -699,6 +607,9 @@ class LLMManager {
       }
 
       throw error;
+    } finally {
+      // Release concurrency slot when done
+      this.concurrencyManager.releaseSlot(requestId);
     }
 
     // Build context for tool execution
@@ -710,13 +621,26 @@ class LLMManager {
     }
 
     // Process tool calls if present (ReACT pattern - tool results go back to LLM)
-    response = await this.processToolCalls(response, context, enhancedMessages, modelId, options)
+    // CRITICAL: Skip tool processing when tools are explicitly disabled (Phase 1 streaming)
+    // This prevents JSON tool calls from being parsed and displayed to users
+    if (shouldDisableTools) {
+      console.log('[LLMManager] Skipping processToolCalls - tools explicitly disabled for clean streaming');
+    } else {
+      response = await this.processToolCalls(response, context, enhancedMessages, modelId, options)
+    }
 
     return response
   }
 
   getToolDescriptions(): any {
     return this.mcpManager?.getToolDescriptions() || null
+  }
+
+  /**
+   * Get the number of available MCP tools
+   */
+  getMCPToolCount(): number {
+    return this.mcpTools?.size || 0;
   }
 
 
@@ -932,6 +856,18 @@ class LLMManager {
           const finalResponse = await this.chat(conversationWithToolResult, modelId, reactOptions)
 
           console.log('[LLMManager] ReACT: Got natural response from recursive chat()')
+
+          // Attach tool results to response for Phase 0 extraction
+          if (typeof finalResponse === 'object' && finalResponse !== null) {
+            (finalResponse as any)._toolResults = toolResultText;
+          } else {
+            // If response is a string, convert to object with tool results
+            return {
+              content: finalResponse,
+              _toolResults: toolResultText
+            };
+          }
+
           return finalResponse
         }
 
@@ -1021,7 +957,10 @@ class LLMManager {
         ollamaMessages = messages;
       }
 
-      return await chatWithOllama(
+      // Get cached context for this topic (if available)
+      const cachedContext = options.topicId ? this.ollamaContextCache.get(options.topicId) : undefined;
+
+      const response = await chatWithOllama(
         model.parameters.modelName,
         ollamaMessages,
         {
@@ -1030,9 +969,22 @@ class LLMManager {
           onStream: options.onStream,
           onThinkingStream: options.onThinkingStream,  // Pass through thinking stream callback
           format: options.format,  // Pass through structured output schema
-          topicId: options.topicId  // Pass through topicId for request tracking and cancellation
+          topicId: options.topicId,  // Pass through topicId for request tracking and cancellation
+          context: cachedContext  // Pass cached context for conversation continuation
+        },
+        model.baseUrl || 'http://localhost:11434'  // Use custom baseUrl if available
+      );
+
+      // Extract and cache context from response (if present)
+      if (options.topicId && typeof response === 'object' && response !== null && '_hasContext' in response) {
+        const contextArray = (response as any).context;
+        if (contextArray && Array.isArray(contextArray)) {
+          this.ollamaContextCache.set(options.topicId, contextArray);
+          console.log(`[LLMManager] 💾 Cached context for topic ${options.topicId} (${contextArray.length} tokens)`);
         }
-      )
+      }
+
+      return response;
     } catch (error: any) {
       // If structured output was requested and failed, cache this
       if (options.format && error.message?.includes('generated no response')) {
@@ -1231,54 +1183,53 @@ class LLMManager {
     console.log(`[LLMManager] API key set for ${provider}`)
   }
 
-  getModels(): any {
-    return Array.from(this.models.values())
+  async getAllModels(): Promise<any[]> {
+    return await this.getAllLLMsFromStorage()
   }
 
-  getModel(id: any): any {
-    return this.models.get(id)
+  async getModel(id: any): Promise<any | null> {
+    return await this.getLLMFromStorage(id)
   }
 
   /**
    * Get available models for external consumers
    */
-  getAvailableModels(): any {
-    return Array.from(this.models.values()).map((model: any) => ({
-      id: model.id,
-      name: model.name,
-      provider: model.provider,
-      description: model.description,
-      contextLength: model.contextLength || 4096,
-      maxTokens: model.parameters?.maxTokens || 2048,
-      capabilities: model.capabilities || [],
+  async getAvailableModels(): Promise<any[]> {
+    const llms = await this.getAllLLMsFromStorage()
+    return llms.map((llm: any) => ({
+      id: llm.modelId,
+      name: llm.name || llm.modelId,
+      provider: llm.provider,
+      description: llm.description || '',
+      contextLength: llm.contextLength || 4096,
+      maxTokens: llm.maxTokens || 2048,
+      capabilities: llm.capabilities || [],
       // Determine modelType: local for Ollama, remote for API-based services
-      modelType: model.provider === 'ollama' ? 'local' : 'remote',
-      size: model.size, // Include size if available
-      isLoaded: model.isLoaded || false, // Include load status
-      isDefault: model.isDefault || false // Include default status
+      modelType: llm.provider === 'ollama' ? 'local' : 'remote',
+      size: llm.size, // Include size if available
+      isLoaded: llm.isLoaded || false, // Include load status
+      isDefault: llm.isDefault || false // Include default status
     }))
   }
   
   /**
    * Set the personId for a model (used by AIAssistantModel)
    */
-  setModelPersonId(modelId: any, personId: any): any {
-    const model = this.models.get(modelId)
-    if (model) {
-      model.personId = personId
-      console.log(`[LLMManager] Set personId for ${modelId}: ${personId?.toString().substring(0, 8)}...`)
-    }
+  async setModelPersonId(modelId: any, personId: any): Promise<void> {
+    // This functionality is deprecated - personId is now stored in LLM object via storage
+    console.warn('[LLMManager] setModelPersonId is deprecated - personId should be stored via LLMConfigPlan')
   }
-  
+
   /**
    * Check if a personId belongs to an AI model
    */
-  isAIPersonId(personId: any): any {
+  async isAIPersonId(personId: any): Promise<boolean> {
     const personIdStr = personId?.toString()
     if (!personIdStr) return false
-    
-    for (const model of this.models.values()) {
-      if (model.personId?.toString() === personIdStr) {
+
+    const llms = await this.getAllLLMsFromStorage()
+    for (const llm of llms) {
+      if (llm.personId?.toString() === personIdStr) {
         return true
       }
     }
@@ -1314,40 +1265,135 @@ class LLMManager {
   }
 
   /**
-   * Register a -private variant of a model for LAMA conversations
+   * Discover Claude models from Anthropic API
+   * Registers available Claude models for use in the application
    */
-  registerPrivateVariant(modelId: any): any {
-    const baseModel = this.models.get(modelId)
-    if (!baseModel) {
-      console.warn(`[LLMManager] Cannot create private variant - base model ${modelId} not found`)
-      return null
-    }
+  async discoverClaudeModels(apiKey?: string): Promise<void> {
+    console.log('[LLMManager] Discovering Claude models...');
 
-    const privateModelId = `${modelId}-private`
-    const privateModel = {
-      ...baseModel,
-      id: privateModelId,
-      name: `${baseModel.name}-private`,
-      description: `${baseModel.description} (Private for LAMA)`
-    }
+    try {
+      // Get API key from user settings if not provided
+      let effectiveApiKey = apiKey;
+      if (!effectiveApiKey && this.userSettingsManager) {
+        effectiveApiKey = await this.userSettingsManager.getApiKey('anthropic');
+      }
 
-    this.models.set(privateModelId, privateModel)
-    console.log(`[LLMManager] Registered private variant: ${privateModelId}`)
-    return privateModelId
+      if (!effectiveApiKey) {
+        console.log('[LLMManager] No Claude API key available, skipping Claude model discovery');
+        return;
+      }
+
+      // Test the API key first
+      const isValid = await this.testClaudeApiKey(effectiveApiKey);
+      if (!isValid) {
+        throw new Error('Invalid Claude API key');
+      }
+
+      // Define available Claude models
+      // These are the current Anthropic models as of 2025
+      const claudeModels = [
+        {
+          modelId: 'claude:claude-sonnet-4.5-20250929',
+          name: 'Claude Sonnet 4.5',
+          provider: 'anthropic',
+          description: 'Latest Claude Sonnet model with extended thinking',
+          contextLength: 200000,
+          maxTokens: 8192,
+          capabilities: ['chat', 'completion', 'extended-thinking']
+        },
+        {
+          modelId: 'claude:claude-3-5-sonnet-20241022',
+          name: 'Claude 3.5 Sonnet',
+          provider: 'anthropic',
+          description: 'Balanced intelligence and speed',
+          contextLength: 200000,
+          maxTokens: 8192,
+          capabilities: ['chat', 'completion']
+        },
+        {
+          modelId: 'claude:claude-3-5-haiku-20241022',
+          name: 'Claude 3.5 Haiku',
+          provider: 'anthropic',
+          description: 'Fastest Claude model for quick responses',
+          contextLength: 200000,
+          maxTokens: 8192,
+          capabilities: ['chat', 'completion']
+        },
+        {
+          modelId: 'claude:claude-3-opus-20240229',
+          name: 'Claude 3 Opus',
+          provider: 'anthropic',
+          description: 'Most capable Claude model for complex tasks',
+          contextLength: 200000,
+          maxTokens: 4096,
+          capabilities: ['chat', 'completion']
+        }
+      ];
+
+      // Store models in ONE.core storage via channelManager
+      if (!this.channelManager) {
+        console.warn('[LLMManager] channelManager not available - cannot store Claude models');
+        return;
+      }
+
+      console.log(`[LLMManager] Registering ${claudeModels.length} Claude models...`);
+
+      for (const model of claudeModels) {
+        try {
+          // Check if model already exists
+          const existing = await this.getLLMFromStorage(model.modelId);
+          if (existing) {
+            console.log(`[LLMManager] Model ${model.modelId} already exists, skipping`);
+            continue;
+          }
+
+          // Create LLM object in storage
+          const llmObject = {
+            $type$: 'LLM',
+            modelId: model.modelId,
+            name: model.name,
+            provider: model.provider,
+            description: model.description,
+            contextLength: model.contextLength,
+            maxTokens: model.maxTokens,
+            capabilities: model.capabilities,
+            server: undefined, // API-based, no server URL
+            deleted: false
+          };
+
+          await this.channelManager.createObject(llmObject, {
+            channelId: 'lama'
+          });
+
+          console.log(`[LLMManager] Registered Claude model: ${model.name}`);
+        } catch (error) {
+          console.error(`[LLMManager] Failed to register model ${model.modelId}:`, error);
+        }
+      }
+
+      console.log('[LLMManager] ✅ Claude model discovery complete');
+    } catch (error: any) {
+      console.error('[LLMManager] Claude model discovery failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Register a -private variant that REFERENCES base model config
+   * -private is a separate identity (Person) but uses same model config
+   * DEPRECATED: -private variants are now created via LLMConfigPlan, not in-memory Map
+   */
+  async registerPrivateVariant(modelId: any): Promise<string | null> {
+    console.warn(`[LLMManager] registerPrivateVariant is deprecated - private variants should be created via LLMConfigPlan`)
+    return null
   }
 
   /**
    * Register private variant for LAMA conversations
-   * Called by AI assistant when needed
+   * DEPRECATED: -private variants are now created via LLMConfigPlan, not in-memory Map
    */
-  registerPrivateVariantForModel(modelId: any): any {
-    const model = this.models.get(modelId)
-    if (!model) {
-      throw new Error(`Model ${modelId} not found`)
-    }
-
-    this.registerPrivateVariant(modelId)
-    console.log(`[LLMManager] Registered private variant for: ${modelId}`)
+  async registerPrivateVariantForModel(modelId: any): Promise<void> {
+    console.warn(`[LLMManager] registerPrivateVariantForModel is deprecated - private variants should be created via LLMConfigPlan`)
   }
 
   /**
@@ -1409,10 +1455,13 @@ class LLMManager {
   /**
    * Get available healthy alternative models
    */
-  getHealthyAlternatives(currentModelId: string): string[] {
+  async getHealthyAlternatives(currentModelId: string): Promise<string[]> {
     const alternatives: string[] = [];
+    const llms = await this.getAllLLMsFromStorage();
 
-    for (const [modelId, model] of this.models.entries()) {
+    for (const llm of llms) {
+      const modelId = llm.modelId;
+
       // Skip current model
       if (modelId === currentModelId) continue;
 
@@ -1432,10 +1481,10 @@ class LLMManager {
   /**
    * Create error context with recovery information
    */
-  createErrorContext(modelId: string, error: Error, topicId?: string): LLMErrorContext {
+  async createErrorContext(modelId: string, error: Error, topicId?: string): Promise<LLMErrorContext> {
     const healthStatus = this.getModelHealth(modelId);
     const isRetryable = healthStatus !== LLMHealthStatus.FAILED;
-    const alternativeModels = this.getHealthyAlternatives(modelId);
+    const alternativeModels = await this.getHealthyAlternatives(modelId);
 
     return {
       modelId,
@@ -1445,6 +1494,97 @@ class LLMManager {
       alternativeModels,
       topicId
     };
+  }
+
+  /**
+   * Get cached context for a topic
+   */
+  getCachedContext(topicId: string): number[] | undefined {
+    return this.ollamaContextCache.get(topicId);
+  }
+
+  /**
+   * Clear cached context for a topic
+   */
+  clearCachedContext(topicId: string): void {
+    if (this.ollamaContextCache.delete(topicId)) {
+      console.log(`[LLMManager] 🗑️  Cleared cached context for topic ${topicId}`);
+    }
+  }
+
+  /**
+   * Clear all cached contexts
+   */
+  clearAllCachedContexts(): void {
+    const count = this.ollamaContextCache.size;
+    this.ollamaContextCache.clear();
+    console.log(`[LLMManager] 🗑️  Cleared all cached contexts (${count} topics)`);
+  }
+
+  /**
+   * Analyze using cached context (for analytics/topic extraction)
+   * Uses cached KV state to avoid reprocessing the entire conversation
+   *
+   * @param topicId - Topic ID with cached context
+   * @param prompt - Analytics prompt (e.g., "Extract keywords from this conversation")
+   * @param modelId - Model to use for analysis
+   * @param options - Additional options
+   * @returns Analysis result
+   */
+  async analyzeWithCache(
+    topicId: string,
+    prompt: string,
+    modelId: string,
+    options: any = {}
+  ): Promise<string> {
+    console.log(`[LLMManager] 🔍 Analyzing with cached context for topic ${topicId}`);
+
+    // Get cached context
+    const cachedContext = this.ollamaContextCache.get(topicId);
+    if (!cachedContext) {
+      throw new Error(`No cached context found for topic ${topicId}. Run a regular chat first.`);
+    }
+
+    // Read model from storage
+    const llmObject = await this.getLLMFromStorage(modelId);
+    if (!llmObject) {
+      throw new Error(`Model ${modelId} not found in storage`);
+    }
+
+    // Use LLM object directly
+    const model = {
+      id: llmObject.modelId,
+      name: llmObject.name || llmObject.modelId,
+      provider: llmObject.provider,
+      baseUrl: llmObject.server,
+      parameters: {
+        modelName: llmObject.modelId,
+        temperature: 0.3, // Lower temp for analytics (more deterministic)
+        maxTokens: 2048
+      }
+    };
+
+    console.log(`[LLMManager] 🔄 Reusing ${cachedContext.length} tokens of cached context`);
+
+    // Use single-message format with cached context
+    const response = await chatWithOllama(
+      model.parameters.modelName,
+      [{ role: 'user', content: prompt }],
+      {
+        temperature: model.parameters.temperature,
+        max_tokens: model.parameters.maxTokens,
+        context: cachedContext, // Reuse cached KV state
+        topicId, // For tracking
+        format: options.format // Support structured output for analytics
+      },
+      model.baseUrl || 'http://localhost:11434'
+    );
+
+    // Extract content from response
+    if (typeof response === 'object' && response !== null && 'content' in response) {
+      return (response as any).content;
+    }
+    return response as string;
   }
 
   async shutdown(): Promise<any> {
@@ -1462,11 +1602,29 @@ class LLMManager {
 
     this.mcpClients.clear()
     this.mcpTools.clear()
-    this.models.clear()
     this.modelSettings.clear()
     this.isInitialized = false
 
     console.log('[LLMManager] Shutdown complete')
+  }
+
+  /**
+   * Get concurrency statistics for monitoring
+   */
+  getConcurrencyStats(): {
+    activeByGroup: Record<string, number>;
+    pendingByGroup: Record<string, number>;
+    totalActive: number;
+    totalPending: number;
+  } {
+    return this.concurrencyManager.getStats();
+  }
+
+  /**
+   * Check if a model can run immediately without queuing
+   */
+  canModelRunImmediately(modelId: string): boolean {
+    return this.concurrencyManager.canRunImmediately(modelId);
   }
 }
 

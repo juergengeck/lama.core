@@ -40,13 +40,13 @@ class TopicAnalyzer {
       this.clearCacheForTopic(topicId);
     }
 
-    // Extract keywords from all messages
-    const allKeywords: any = await this.extractKeywordsFromMessages(messages);
+    // Extract keywords from all messages (uses cached context if available)
+    const allKeywords: any = await this.extractKeywordsFromMessages(messages, topicId);
 
     // Identify subjects based on keyword combinations
     const subjects = await this.identifySubjects(topicId, messages, allKeywords);
 
-    // Generate or update summary
+    // Generate or update summary (uses cached context if available)
     const summary: any = await this.generateSummary(topicId, subjects, messages);
 
     return {
@@ -59,11 +59,11 @@ class TopicAnalyzer {
   /**
    * Extract keywords from multiple messages
    */
-  async extractKeywordsFromMessages(messages: any): Promise<any> {
+  async extractKeywordsFromMessages(messages: any, topicId?: string): Promise<any> {
     const allKeywords = new Map(); // keyword text -> Keyword object
 
     for (const message of messages) {
-      const keywords: any = await this.extractKeywords(message.text);
+      const keywords: any = await this.extractKeywords(message.text, 10, [], topicId);
 
       for (const keywordText of keywords) {
         const normalized = Keyword.normalize(keywordText);
@@ -94,7 +94,7 @@ class TopicAnalyzer {
   /**
    * Extract keywords from text using LLM
    */
-  async extractKeywords(text: any, maxKeywords = 10, existingKeywords = []): Promise<unknown> {
+  async extractKeywords(text: any, maxKeywords = 10, existingKeywords = [], topicId?: string): Promise<unknown> {
     if (!text || text.trim().length === 0) {
       return [];
     }
@@ -121,11 +121,22 @@ class TopicAnalyzer {
 
         Return keywords as a JSON array of strings, e.g. ["keyword1", "keyword2", "compound keyword"]`;
 
-      const response: any = await this.llmManager.chat({
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        maxTokens: 200
-      });
+      // Use cached context if available (much faster than reprocessing)
+      let response: any;
+      const hasCache = topicId && this.llmManager.getCachedContext?.(topicId);
+      if (hasCache) {
+        console.log('[TopicAnalyzer] 🔄 Using cached context for keyword extraction');
+        // Get default model from llmManager
+        const models = await this.llmManager.getAllModels();
+        const defaultModel = models.find((m: any) => m.provider === 'ollama') || models[0];
+        response = await this.llmManager.analyzeWithCache(topicId, prompt, defaultModel.modelId);
+      } else {
+        response = await this.llmManager.chat({
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3,
+          maxTokens: 200
+        });
+      }
 
       // Parse response
       let keywords = [];
@@ -280,11 +291,22 @@ Create a comprehensive summary that:
 Summary:`;
 
     try {
-      const response: any = await this.llmManager.chat({
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.5,
-        maxTokens: 300
-      });
+      // Use cached context if available (much faster for summaries)
+      let response: any;
+      const hasCache = topicId && this.llmManager.getCachedContext?.(topicId);
+      if (hasCache) {
+        console.log('[TopicAnalyzer] 🔄 Using cached context for summary generation');
+        // Get default model from llmManager
+        const models = await this.llmManager.getAllModels();
+        const defaultModel = models.find((m: any) => m.provider === 'ollama') || models[0];
+        response = await this.llmManager.analyzeWithCache(topicId, prompt, defaultModel.modelId);
+      } else {
+        response = await this.llmManager.chat({
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.5,
+          maxTokens: 300
+        });
+      }
 
       const summary = new Summary({
         id: topicId,

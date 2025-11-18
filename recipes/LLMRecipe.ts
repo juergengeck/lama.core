@@ -17,6 +17,11 @@ export const LLMRecipe = {
             isId: true
         },
         {
+            itemprop: 'server',
+            itemtype: { type: 'string' },
+            isId: true
+        },
+        {
             itemprop: 'modelId',
             itemtype: { type: 'string' },
             optional: true

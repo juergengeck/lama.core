@@ -13,7 +13,7 @@ import { getModelProvider, modelRequiresApiKey } from '../constants/model-regist
 
 // Re-export types for convenience
 export interface TestConnectionRequest {
-  baseUrl: string;
+  server: string; // Ollama server address
   authToken?: string;
   serviceName?: string; // Service name for logging (e.g., 'Ollama', 'LM Studio')
 }
@@ -28,7 +28,7 @@ export interface TestConnectionResponse {
 
 export interface SetOllamaConfigRequest {
   modelType: 'local' | 'remote';
-  baseUrl?: string;
+  server?: string; // Ollama server address (default: http://localhost:11434)
   authType?: 'none' | 'bearer';
   authToken?: string;
   modelName: string;
@@ -51,7 +51,7 @@ export interface GetOllamaConfigResponse {
   success: boolean;
   config?: {
     modelType: string;
-    baseUrl: string;
+    server: string; // Ollama server address
     authType: string;
     hasAuthToken: boolean;
     modelName: string;
@@ -64,7 +64,7 @@ export interface GetOllamaConfigResponse {
 }
 
 export interface GetAvailableModelsRequest {
-  baseUrl?: string;
+  server?: string; // Ollama server address
   authToken?: string;
 }
 
@@ -99,9 +99,8 @@ export class LLMConfigPlan {
   private nodeOneCore: any;
   private llmManager: any;
   private settings: any; // PropertyTreeStore from ONE.models
-  private testOllamaConnection: (baseUrl: string, authToken?: string, serviceName?: string) => Promise<TestConnectionResponse>;
-  private fetchOllamaModels: (baseUrl: string, authToken?: string) => Promise<any[]>;
-  private computeBaseUrl: (modelType: string, baseUrl?: string) => string;
+  private testOllamaConnection: (server: string, authToken?: string, serviceName?: string) => Promise<TestConnectionResponse>;
+  private fetchOllamaModels: (server: string, authToken?: string) => Promise<any[]>;
 
   constructor(
     nodeOneCore: any,
@@ -109,11 +108,8 @@ export class LLMConfigPlan {
     llmManager: any,
     settings: any, // PropertyTreeStore from ONE.models
     ollamaValidator: {
-      testOllamaConnection: (baseUrl: string, authToken?: string, serviceName?: string) => Promise<TestConnectionResponse>;
-      fetchOllamaModels: (baseUrl: string, authToken?: string) => Promise<any[]>;
-    },
-    configManager: {
-      computeBaseUrl: (modelType: string, baseUrl?: string) => string;
+      testOllamaConnection: (server: string, authToken?: string, serviceName?: string) => Promise<TestConnectionResponse>;
+      fetchOllamaModels: (server: string, authToken?: string) => Promise<any[]>;
     }
   ) {
     this.nodeOneCore = nodeOneCore;
@@ -123,18 +119,23 @@ export class LLMConfigPlan {
     this.settings = settings;
     this.testOllamaConnection = ollamaValidator.testOllamaConnection;
     this.fetchOllamaModels = ollamaValidator.fetchOllamaModels;
-    this.computeBaseUrl = configManager.computeBaseUrl;
   }
 
   /**
    * Test connection to Ollama-compatible server (Ollama, LM Studio, etc.)
+   * Returns server info only - use getAllConfigs() to see stored models
    */
   async testConnection(request: TestConnectionRequest): Promise<TestConnectionResponse> {
-    console.log('[LLMConfigPlan] Testing connection to:', request.baseUrl);
+    console.log('[LLMConfigPlan] Testing connection to:', request.server);
 
     try {
-      const result = await this.testOllamaConnection(request.baseUrl, request.authToken, request.serviceName);
-      return result;
+      const result = await this.testOllamaConnection(request.server, request.authToken, request.serviceName);
+      return {
+        success: result.success,
+        version: result.version,
+        error: result.error,
+        errorCode: result.errorCode,
+      };
     } catch (error: any) {
       console.error('[LLMConfigPlan] Test connection error:', error);
       return {
@@ -146,12 +147,63 @@ export class LLMConfigPlan {
   }
 
   /**
+   * Test connection AND discover models from Ollama server
+   * Returns list of models available on the Ollama server
+   *
+   * IMPORTANT: On HTTPS deployments, connection test will fail due to mixed content (HTTP Ollama from HTTPS page)
+   */
+  async testConnectionAndDiscoverModels(request: TestConnectionRequest): Promise<TestConnectionResponse> {
+    console.log('[LLMConfigPlan] Testing connection and discovering models from:', request.server);
+
+    try {
+      // Test connection
+      const connectionResult = await this.testOllamaConnection(request.server, request.authToken, request.serviceName);
+
+      if (!connectionResult.success) {
+        console.warn('[LLMConfigPlan] Connection test failed:', connectionResult.error);
+        return {
+          success: false,
+          error: connectionResult.error || 'Connection failed',
+          errorCode: connectionResult.errorCode,
+        };
+      }
+
+      // Fetch models directly from the tested server
+      console.log('[LLMConfigPlan] Connection successful, fetching models from:', request.server);
+      const models = await this.fetchOllamaModels(request.server, request.authToken);
+
+      console.log(`[LLMConfigPlan] Fetched ${models.length} models from ${request.server}`);
+
+      return {
+        success: true,
+        version: connectionResult.version,
+        models: models.map((m: any) => ({
+          name: m.name || m.model,
+          model: m.name || m.model,
+          size: m.size,
+          sizeBytes: m.size,
+          digest: m.digest,
+          modified_at: m.modified_at,
+          details: m.details
+        })),
+      };
+    } catch (error: any) {
+      console.error('[LLMConfigPlan] Test connection and discover models failed:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to discover models',
+        errorCode: 'NETWORK_ERROR',
+      };
+    }
+  }
+
+  /**
    * Save Ollama configuration to ONE.core storage
    */
   async setConfig(request: SetOllamaConfigRequest): Promise<SetOllamaConfigResponse> {
     console.log('[LLMConfigPlan] Saving config:', {
       modelType: request.modelType,
-      baseUrl: request.baseUrl,
+      server: request.server,
       modelName: request.modelName,
       setAsActive: request.setAsActive,
     });
@@ -161,11 +213,11 @@ export class LLMConfigPlan {
       // Check if model requires API key (cloud provider)
       const requiresApiKey = modelRequiresApiKey(request.modelName);
 
-      // Validation: remote Ollama (not cloud API) requires baseUrl
-      if (request.modelType === 'remote' && !request.baseUrl && !requiresApiKey) {
+      // Validation: remote Ollama (not cloud API) requires server
+      if (request.modelType === 'remote' && !request.server && !requiresApiKey) {
         return {
           success: false,
-          error: 'Remote Ollama requires baseUrl',
+          error: 'Remote Ollama requires server address',
           errorCode: 'VALIDATION_FAILED',
         };
       }
@@ -228,11 +280,28 @@ export class LLMConfigPlan {
       // Get provider from model registry
       const provider = getModelProvider(request.modelName);
 
+      // Get or create the LLM Person ID
+      let llmPersonId: string | undefined;
+      if (this.nodeOneCore.aiAssistantModel) {
+        const aiManager = this.nodeOneCore.aiAssistantModel.getAIManager();
+        // createLLM is idempotent and returns Profile ID
+        await aiManager.createLLM(request.modelName, request.modelName, provider);
+        // Get the Person ID (now guaranteed to exist in cache)
+        const personId = aiManager.getPersonId(`llm:${request.modelName}`);
+        if (personId) {
+          llmPersonId = String(personId);
+          console.log(`[LLMConfigPlan] LLM Person ID for ${request.modelName}:`, llmPersonId.substring(0, 8));
+        } else {
+          console.error(`[LLMConfigPlan] Failed to get Person ID after createLLM for ${request.modelName}`);
+        }
+      }
+
       // Build LLM object
       const now = Date.now();
       const llmObject: any = {
         $type$: 'LLM',
         name: request.modelName,
+        server: request.server || 'http://localhost:11434', // Required ID field - Ollama server address
         filename: request.modelName,
         modelId: request.modelName, // Required field for identification
         modelType: request.modelType,
@@ -244,14 +313,12 @@ export class LLMConfigPlan {
         createdAt: new Date().toISOString(),
         lastUsed: new Date().toISOString(),
         owner: this.nodeOneCore.ownerId, // Required for reverse map indexing
+        personId: llmPersonId, // Link to LLM Person created by AIManager
         // Auto-generate system prompt for this model
         systemPrompt: generateSystemPromptForModel(request.modelName, request.modelName),
       };
 
-      // Add network fields if provided (tokens/keys stored in settings, not objects)
-      if (request.baseUrl) {
-        llmObject.baseUrl = request.baseUrl;
-      }
+      // Add auth type if provided (tokens/keys stored in settings, not objects)
       if (request.authType) {
         llmObject.authType = request.authType;
       }
@@ -275,14 +342,11 @@ export class LLMConfigPlan {
       console.log('[LLMConfigPlan] Posted LLM config to lama channel');
 
       // If setting as active, set it as the default model in AIAssistantPlan
-      // AIAssistantPlan will handle model registration via LLMManager
       // Access aiAssistantModel dynamically from nodeOneCore to avoid initialization order issues
       if (request.setAsActive && this.nodeOneCore.aiAssistantModel) {
         console.log(`[LLMConfigPlan] Setting ${request.modelName} as default model`);
         await this.nodeOneCore.aiAssistantModel.setDefaultModel(request.modelName);
         console.log(`[LLMConfigPlan] Successfully set ${request.modelName} as default model`);
-        // TODO: Implement deactivation of other configs
-        // This would require iterating through existing LLM objects and setting active=false
       } else if (request.setAsActive) {
         console.warn('[LLMConfigPlan] ⚠️ Cannot set default model - aiAssistantModel not yet initialized');
       }
@@ -347,15 +411,12 @@ export class LLMConfigPlan {
       // Return the first active config (or most recent if multiple)
       const config = filtered.sort((a, b) => b.modified - a.modified)[0];
 
-      // Compute effective baseUrl
-      const baseUrl = this.computeBaseUrl(config.modelType, config.baseUrl);
-
       // Build response (NEVER return decrypted token)
       return {
         success: true,
         config: {
           modelType: config.modelType,
-          baseUrl,
+          server: config.server, // Ollama server address
           authType: config.authType || 'none',
           hasAuthToken: !!config.encryptedAuthToken,
           modelName: config.name,
@@ -381,13 +442,13 @@ export class LLMConfigPlan {
     console.log('[LLMConfigPlan] Get available models:', request);
 
     try {
-      let baseUrl: string;
+      let server: string;
       let authToken: string | undefined;
       let source: 'active_config' | 'specified_url';
 
-      if (request.baseUrl) {
-        // Use specified URL
-        baseUrl = request.baseUrl;
+      if (request.server) {
+        // Use specified server
+        server = request.server;
         authToken = request.authToken;
         source = 'specified_url';
       } else {
@@ -402,31 +463,15 @@ export class LLMConfigPlan {
           };
         }
 
-        baseUrl = configResponse.config.baseUrl;
+        server = configResponse.config.server;
         source = 'active_config';
 
-        // Decrypt auth token if present
-        if (configResponse.config.hasAuthToken) {
-          // Need to load the actual object to get encrypted token
-          const llmObjects: any[] = [];
-          const iterator = this.nodeOneCore.channelManager.objectIteratorWithType('LLM', {
-            channelId: 'lama',
-          });
-
-          for await (const llmObj of iterator) {
-            if (llmObj && llmObj.data && llmObj.data.active && !llmObj.data.deleted) {
-              llmObjects.push(llmObj.data);
-              break;
-            }
-          }
-
-          // Auth tokens are now stored in SettingsModel (encrypted by ONE.core)
-          // Legacy encryptedAuthToken field is no longer used
-        }
+        // Auth tokens are stored in SettingsModel (encrypted by ONE.core)
+        // Load from settings if needed
       }
 
       // Fetch models
-      const models = await this.fetchOllamaModels(baseUrl, authToken);
+      const models = await this.fetchOllamaModels(server, authToken);
 
       return {
         success: true,

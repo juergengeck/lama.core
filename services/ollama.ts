@@ -170,11 +170,20 @@ async function chatWithOllama(
       keep_alive: -1,  // Keep model loaded indefinitely (prevents 15-20s reload delays)
       options: {
         temperature: options.temperature || 0.7,
-        num_predict: options.max_tokens || 2048,  // Reasonable default instead of unlimited
+        num_predict: options.max_tokens || 4096,  // Increased default for longer responses
         top_k: 40,
         top_p: 0.95
       }
     };
+
+    // Add context for conversation continuation (KV cache reuse)
+    if (options.context && Array.isArray(options.context)) {
+      requestBody.context = options.context;
+      console.log(`[Ollama-${requestId}] 🔄 Reusing cached context (${options.context.length} tokens) - skipping reprocessing`);
+    }
+
+    // DEBUG: Log the actual num_predict value being sent
+    console.log(`[Ollama-${requestId}] 🔧 Request config: model=${modelName}, num_predict=${requestBody.options.num_predict}, max_tokens=${options.max_tokens}, messages=${formattedMessages.length}`);
 
     // Add format parameter for structured outputs (Ollama native)
     if (options.format) {
@@ -207,11 +216,21 @@ async function chatWithOllama(
     // Non-streaming response (for structured outputs)
     if (!useStreaming) {
       const json = await response.json()
+
+      // Debug: Log the full response structure
+      console.log('[Ollama] ========== NON-STREAMING RESPONSE STRUCTURE ==========');
+      console.log('[Ollama] Response keys:', Object.keys(json));
+      console.log('[Ollama] Full response:', JSON.stringify(json, null, 2).substring(0, 1000));
+      console.log('[Ollama] =======================================================');
+
       // Handle different response formats
-      let content = json.message?.content || json.thinking || ''
-      console.log(`[Ollama] Non-streaming response: ${content.substring(0, 200)}...`)
+      let content = json.message?.content || json.response || json.thinking || ''
+      console.log(`[Ollama] Extracted content length: ${content.length}`)
+      console.log(`[Ollama] Non-streaming response preview: ${content.substring(0, 200)}...`)
+
       if (!content) {
-        throw new Error('Ollama generated no response')
+        console.error('[Ollama] No content found! Response structure:', JSON.stringify(json, null, 2));
+        throw new Error('Ollama generated no response - check response structure above')
       }
       return content
     }
@@ -219,6 +238,7 @@ async function chatWithOllama(
     // Process streaming response using ReadableStream (web standard)
     let fullResponse = ''
     let fullThinking = '' // Separate accumulation for thinking (reasoning models)
+    let contextArray: number[] | undefined = undefined // Ollama context for caching
     let firstChunkTime = null
     let buffer = ''
 
@@ -247,6 +267,11 @@ async function chatWithOllama(
 
           try {
             const json = JSON.parse(line)
+
+            // Extract context array for caching (if present)
+            if (json.context && Array.isArray(json.context)) {
+              contextArray = json.context
+            }
 
             // Handle different response formats:
             // 1. Regular models: json.message.content
@@ -318,6 +343,12 @@ async function chatWithOllama(
     if (buffer.trim()) {
       try {
         const json = JSON.parse(buffer)
+
+        // Extract context from final chunk
+        if (json.context && Array.isArray(json.context)) {
+          contextArray = json.context
+        }
+
         let content = ''
         let thinking = ''
 
@@ -358,17 +389,25 @@ async function chatWithOllama(
     const responseTime = Date.now() - startTime
     console.log(`[Ollama] ⏱️ Full response completed in ${responseTime}ms`)
 
-    // Handle empty response - fail fast, no fallback
-    if (!fullResponse || fullResponse === '') {
+    // Check if we got EITHER response OR thinking
+    const hasResponse = fullResponse && fullResponse !== '';
+    const hasThinking = fullThinking && fullThinking !== '';
+
+    if (!hasResponse && !hasThinking) {
+      // Completely empty - this is an actual error
       throw new Error('Ollama generated no response - model may not support structured output or failed to generate')
     }
 
     {
       console.log('[Ollama] ========== OLLAMA RESPONSE TRACE ==========')
-      console.log('[Ollama] Full response length:', fullResponse.length)
-      console.log('[Ollama] Full response (first 500 chars):', fullResponse.substring(0, 500))
-      console.log('[Ollama] Full response (last 200 chars):', fullResponse.substring(Math.max(0, fullResponse.length - 200)))
-      if (fullThinking) {
+      if (hasResponse) {
+        console.log('[Ollama] Full response length:', fullResponse.length)
+        console.log('[Ollama] Full response (first 500 chars):', fullResponse.substring(0, 500))
+        console.log('[Ollama] Full response (last 200 chars):', fullResponse.substring(Math.max(0, fullResponse.length - 200)))
+      } else {
+        console.log('[Ollama] No response content (thinking-only model)')
+      }
+      if (hasThinking) {
         console.log('[Ollama] Thinking captured (length):', fullThinking.length)
         console.log('[Ollama] Thinking (first 200 chars):', fullThinking.substring(0, 200))
       }
@@ -388,13 +427,15 @@ async function chatWithOllama(
     }
     console.log(`[Ollama] Completed request ${requestId}`)
 
-    // Return structured response with thinking as metadata
-    // If there's thinking, return object; otherwise return string for backwards compat
-    if (fullThinking) {
+    // Return structured response with thinking and context as metadata
+    // If there's thinking or context, return object; otherwise return string for backwards compat
+    if (fullThinking || contextArray) {
       return {
         content: fullResponse,
-        thinking: fullThinking,
-        _hasThinking: true
+        thinking: fullThinking || undefined,
+        context: contextArray,
+        _hasThinking: !!fullThinking,
+        _hasContext: !!contextArray
       }
     }
     return fullResponse

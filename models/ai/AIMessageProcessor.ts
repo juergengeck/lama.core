@@ -46,7 +46,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     private llmManager: any, // LLMManager interface
     _leuteModel: LeuteModel,
     private topicManager: any, // AITopicManager
-    private contactManager: any, // AIContactManager
+    private aiManager: any, // AIManager (replaces AIContactManager)
     private topicModel: TopicModel, // For storing messages in ONE.core
     _stateManager?: any, // Optional state manager for tracking
     private platform?: LLMPlatform, // Optional platform for UI events
@@ -134,33 +134,36 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       if (!this.pendingMessageQueues.has(topicId)) {
         this.pendingMessageQueues.set(topicId, []);
       }
+      // Get topic priority from AITopicManager
+      const priority = this.topicManager.getTopicPriority(topicId);
       this.pendingMessageQueues.get(topicId)!.push({
         topicId,
         text: message,
         senderId,
         queuedAt: Date.now(),
+        priority,
       });
       return null; // Don't process now, will be processed after welcome
     }
 
     try {
-      // Get the model ID for this topic
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Getting model ID for topic ${topicId}`);
-      const modelId = this.topicManager.getModelIdForTopic(topicId);
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Model ID: ${modelId}`);
-      if (!modelId) {
-        console.log('[AIMessageProcessor] ❌ No AI model registered for this topic');
+      // Get the AI Person ID for this topic
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Getting AI Person for topic ${topicId}`);
+      const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: AI Person ID: ${aiPersonId?.toString().substring(0, 8)}...`);
+      if (!aiPersonId) {
+        console.log('[AIMessageProcessor] ❌ No AI Person registered for this topic');
         return null;
       }
 
-      // Get the AI person ID for this model (requires aiContactManager)
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Getting AI person ID for model ${modelId}`);
-      const aiPersonId = await this.getAIPersonIdForModel(modelId);
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: AI person ID: ${aiPersonId}`);
-      if (!aiPersonId) {
-        console.error('[AIMessageProcessor] ❌ Could not get AI person ID');
+      // Resolve AI Person → Model ID (getLLMId handles delegation chain)
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Resolving AI Person to LLM`);
+      const modelId = await this.aiManager.getLLMId(aiPersonId);
+      if (!modelId) {
+        console.error('[AIMessageProcessor] ❌ Could not get LLM ID from AI Person');
         return null;
       }
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Resolved to model: ${modelId}`);
 
       // Check if the message is from the AI itself
       if (senderId === aiPersonId) {
@@ -201,15 +204,34 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         this.platform.emitProgress(topicId, 0);
       }
 
+      // Get topic priority for LLM concurrency management
+      const topicPriority = this.topicManager.getTopicPriority(topicId);
+
       // Get AI response with analysis in a single call
       // CRITICAL: Call through aiAssistant handler (if set) instead of llmManager directly
       // This allows handler to add middleware, logging, etc.
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling chatWithAnalysis()`)
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling chatWithAnalysis() (priority: ${topicPriority})`)
+
+      // ✅ IMMEDIATE FEEDBACK: Inform user that AI is responding (before LLM processing starts)
+      if (this.platform) {
+        console.log(`[AIMessageProcessor] 💬 Emitting immediate 'responding' status to UI`);
+        this.platform.emitMessageUpdate(topicId, messageId, '', 'responding', modelId, modelName);
+      }
+
       const chatInterface = this.aiAssistant || this.llmManager;
       const result: any = await chatInterface?.chatWithAnalysis(
         history,
         modelId,
         {
+          topicId,  // Pass topicId for analysis
+          priority: topicPriority,  // Pass priority for concurrency management
+          onProgress: (status: string) => {
+            // Send Phase 0 progress updates to UI
+            if (this.platform) {
+              console.log(`[AIMessageProcessor] 🔧 Phase 0 progress: ${status}`);
+              this.platform.emitThinkingUpdate(topicId, messageId, status);
+            }
+          },
           onStream: (chunk: string) => {
             fullResponse += chunk;
 
@@ -235,65 +257,81 @@ export class AIMessageProcessor implements IAIMessageProcessor {
               console.error('[AIMessageProcessor] ❌ NO PLATFORM - cannot emit thinking stream!');
             }
           },
+          onAnalysis: (analysis: { keywords: string[]; description?: string }) => {
+            // Phase 2 analytics callback - receives keywords and description
+            console.log(`[AIMessageProcessor] 📊 Phase 2 analytics received: ${analysis.keywords.length} keywords`);
+            // Analysis will be included in onComplete callback
+          },
+          onComplete: async (completionResult: { response: string; thinking?: string; analysis?: any }) => {
+            // ✅ CONSOLIDATED PERSISTENCE: Store message with analytics after Phase 2 completes
+            console.log(`[AIMessageProcessor] 🎯 onComplete called - response: ${completionResult.response?.length || 0} chars, thinking: ${completionResult.thinking?.length || 0} chars, analysis: ${completionResult.analysis ? 'yes' : 'no'}`);
+
+            const response = completionResult.response;
+            const thinking = completionResult.thinking;
+            const analysis = completionResult.analysis;
+
+            // Emit completion via platform
+            if (this.platform) {
+              this.platform.emitMessageUpdate(topicId, messageId, response, 'complete', modelId, modelName);
+            }
+
+            // Process analysis in background (non-blocking)
+            if (analysis && this.taskManager) {
+              setTimeout(async () => {
+                try {
+                  console.log('[AIMessageProcessor] Processing analysis in background...');
+                  await this.processAnalysisResults(topicId, analysis);
+                } catch (error) {
+                  console.error('[AIMessageProcessor] Analysis processing failed:', error);
+                }
+              }, 0);
+            }
+
+            // CRITICAL: Store the AI's response to the channel with analytics
+            // This persists the message in ONE.core so it doesn't vanish after streaming
+            try {
+              const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+              if (topicRoom) {
+                console.log(`[AIMessageProcessor] 💾 STORING CONSOLIDATED STATE - response: ${response?.length || 0} chars, thinking: ${thinking?.length || 0} chars, analysis keywords: ${analysis?.keywords?.length || 0}`);
+                console.log(`[AIMessageProcessor] 📝 Response preview: ${response?.substring(0, 100)}...`);
+
+                // Post the AI's response to the channel
+                // - response: the AI's message text
+                // - aiPersonId: the author (AI's person ID)
+                // - aiPersonId: the channel owner (AI posts to its own channel)
+                // - thinking: optional reasoning trace (for models like DeepSeek R1)
+                // TODO: Attach analysis as structured data for signing
+                await topicRoom.sendMessage(response, aiPersonId, aiPersonId, thinking);
+                console.log(`[AIMessageProcessor] ✅ Stored AI response to channel ${topicId}${thinking ? ' (with thinking)' : ''}${analysis ? ' (with analytics)' : ''}`);
+
+                // Add message to cache so next buildPrompt() doesn't reload all messages
+                if (this.promptBuilder) {
+                  const messageObj = {
+                    data: {
+                      text: response,
+                      sender: aiPersonId
+                    },
+                    timestamp: Date.now()
+                  };
+                  this.promptBuilder.addMessageToCache(topicId, messageObj);
+                }
+              } else {
+                console.error(`[AIMessageProcessor] Could not enter topic room ${topicId}`);
+              }
+            } catch (error) {
+              console.error('[AIMessageProcessor] Failed to store AI response:', error);
+              // Don't throw - the response was already streamed to UI
+            }
+          }
         },
-        topicId // Pass topicId for analysis
+        topicId // NOTE: Moved to options object above
       );
 
-      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: chatWithAnalysis() completed`)
-      const response = result?.response;
-      const thinking = result?.thinking || fullThinking;
+      console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: chatWithAnalysis() returned (non-blocking, persistence will happen in onComplete)`)
 
-      // Process analysis in background (non-blocking)
-      // Use setTimeout for browser compatibility (setImmediate is Node.js only)
-      if (result?.analysis && this.taskManager) {
-        setTimeout(async () => {
-          try {
-            console.log('[AIMessageProcessor] Processing analysis in background...');
-            await this.processAnalysisResults(topicId, result.analysis);
-          } catch (error) {
-            console.error('[AIMessageProcessor] Analysis processing failed:', error);
-          }
-        }, 0);
-      }
-
-      // Emit completion via platform
-      if (this.platform) {
-        this.platform.emitMessageUpdate(topicId, messageId, response || fullResponse, 'complete', modelId, modelName);
-      }
-
-      // CRITICAL: Store the AI's response to the channel
-      // This persists the message in ONE.core so it doesn't vanish after streaming
-      try {
-        const topicRoom = await this.topicModel.enterTopicRoom(topicId);
-        if (topicRoom) {
-          // Post the AI's response to the channel
-          // - response: the AI's message text
-          // - aiPersonId: the author (AI's person ID)
-          // - aiPersonId: the channel owner (AI posts to its own channel)
-          // - thinking: optional reasoning trace (for models like DeepSeek R1)
-          await topicRoom.sendMessage(response || fullResponse, aiPersonId, aiPersonId, thinking);
-          console.log(`[AIMessageProcessor] ✅ Stored AI response to channel ${topicId}${thinking ? ' (with thinking trace)' : ''}`);
-
-          // Add message to cache so next buildPrompt() doesn't reload all messages
-          if (this.promptBuilder) {
-            const messageObj = {
-              data: {
-                text: response || fullResponse,
-                sender: aiPersonId
-              },
-              timestamp: Date.now()
-            };
-            this.promptBuilder.addMessageToCache(topicId, messageObj);
-          }
-        } else {
-          console.error(`[AIMessageProcessor] Could not enter topic room ${topicId}`);
-        }
-      } catch (error) {
-        console.error('[AIMessageProcessor] Failed to store AI response:', error);
-        // Don't throw - the response was already streamed to UI
-      }
-
-      return response || fullResponse;
+      // Return fullResponse for backwards compatibility
+      // Actual persistence happens in onComplete callback after Phase 2
+      return fullResponse;
     } catch (error) {
       console.error('[AIMessageProcessor] Failed to process message:', error);
 
@@ -309,31 +347,32 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   /**
    * Check if a message is from an AI
    */
-  isAIMessage(message: any): boolean {
+  async isAIMessage(message: any): Promise<boolean> {
     const senderId = (message as any).data?.sender || (message as any).author;
     if (!senderId) {
       return false;
     }
-    return this.isAIContact(senderId);
+    return await this.isAIContact(senderId);
   }
 
   /**
-   * Check if a person/profile ID is an AI contact
+   * Check if a person/profile ID is an AI contact (AI Person or LLM Person)
    */
-  isAIContact(personId: SHA256IdHash<Person> | string): boolean {
-    // This requires access to AIContactManager
-    // For now, check if personId exists in available models
-    return this.availableModels.some(m => m.personId === personId);
+  async isAIContact(personId: SHA256IdHash<Person> | string): Promise<boolean> {
+    // Check if personId is an AI Person or LLM Person using AIManager
+    const aiId = await this.aiManager.getAIId(personId);
+    const llmId = await this.aiManager.getLLMId(personId);
+    return aiId !== null || llmId !== null;
   }
 
   /**
    * Handle new topic creation by generating welcome message
    */
-  async handleNewTopic(topicId: string, modelId: string): Promise<void> {
-    console.log(`[AIMessageProcessor] Handling new topic: ${topicId} with model: ${modelId}`);
+  async handleNewTopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void> {
+    console.log(`[AIMessageProcessor] Handling new topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
 
     // Mark this topic as having welcome generation in progress
-    const welcomePromise = this.generateWelcomeMessage(topicId, modelId);
+    const welcomePromise = this.generateWelcomeMessage(topicId, aiPersonId);
     this.welcomeGenerationInProgress.set(topicId, welcomePromise);
 
     try {
@@ -349,10 +388,19 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
   /**
    * Generate welcome message for a new topic
+   * @param topicId - The topic ID
+   * @param aiPersonId - The AI Person ID for this topic
    */
-  private async generateWelcomeMessage(topicId: string, modelId: string): Promise<void> {
+  private async generateWelcomeMessage(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void> {
     const t0 = Date.now();
     console.log(`[AIMessageProcessor] ⏱️  T+0ms: Starting welcome message generation for topic: ${topicId}`);
+
+    // Resolve Person → Model ID (handles both AI Person → LLM Person delegation and direct LLM Person)
+    const llmId = await this.aiManager.getLLMId(aiPersonId);
+    if (!llmId) {
+      throw new Error('[AIMessageProcessor] Could not get LLM ID for Person');
+    }
+    const modelId = llmId; // llmId is already the model ID (e.g., "gpt-oss:20b")
 
     try {
       // Emit thinking indicator
@@ -376,7 +424,6 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         // Store the hardcoded message in ONE.core
         try {
           const topicRoom = await this.topicModel.enterTopicRoom(topicId);
-          const aiPersonId = await this.getAIPersonIdForModel(modelId);
           if (aiPersonId && topicRoom) {
             // Create the AI's channel first
             console.log(`[AIMessageProcessor] 🔍 Creating AI channel for hardcoded welcome - topic: ${topicId}, owner: ${aiPersonId.toString().substring(0, 16)}...`);
@@ -440,12 +487,17 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       let fullResponse = '';
       console.log(`[AIMessageProcessor] ⏱️  T+${Date.now() - t0}ms: Calling LLM...`);
 
+      // Get topic priority for LLM concurrency management
+      const topicPriority = this.topicManager.getTopicPriority(topicId);
+
       // Use regular chat (not chatWithAnalysis) - simple streaming with no special parsing
       // IMPORTANT: Disable MCP tools for welcome messages to avoid confusing the LLM
       const response = await this.llmManager?.chat(
         history,
         modelId,
         {
+          topicId,  // Pass topicId for concurrency tracking
+          priority: topicPriority,  // Pass priority for concurrency management
           onStream: (chunk: string) => {
             fullResponse += chunk;
 
@@ -489,10 +541,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         console.log(`[AIMessageProcessor] 🔍 About to store welcome message for topic: ${topicId}`);
         const topicRoom = await this.topicModel.enterTopicRoom(topicId);
         console.log(`[AIMessageProcessor] 🔍 topicRoom:`, topicRoom ? 'EXISTS' : 'NULL');
-        const aiPersonId = await this.getAIPersonIdForModel(modelId);
         console.log(`[AIMessageProcessor] 🔍 aiPersonId:`, aiPersonId ? aiPersonId.toString().substring(0, 16) + '...' : 'NULL');
 
-        if (aiPersonId && topicRoom) {
+        if (topicRoom) {
           // CRITICAL: Create the AI's channel BEFORE posting
           // Channels are for transport, not storage. We must create the channel first.
           console.log(`[AIMessageProcessor] 🔍 Creating AI channel for topic: ${topicId}, owner: ${aiPersonId.toString().substring(0, 16)}...`);
@@ -580,6 +631,7 @@ Ask what you can help them with today.`;
 
   /**
    * Process pending messages after welcome generation
+   * Messages are processed in priority order (highest priority first)
    */
   private async processPendingMessages(topicId: string): Promise<void> {
     const pendingMessages = this.pendingMessageQueues.get(topicId);
@@ -589,11 +641,25 @@ Ask what you can help them with today.`;
 
     console.log(`[AIMessageProcessor] Processing ${pendingMessages.length} pending messages for topic: ${topicId}`);
 
+    // Sort messages by priority (highest first), then by queuedAt (oldest first) for same priority
+    const sortedMessages = [...pendingMessages].sort((a, b) => {
+      const priorityA = a.priority || 5;
+      const priorityB = b.priority || 5;
+
+      // Higher priority comes first
+      if (priorityA !== priorityB) {
+        return priorityB - priorityA;
+      }
+
+      // Same priority: older message comes first
+      return a.queuedAt - b.queuedAt;
+    });
+
     // Clear the queue
     this.pendingMessageQueues.delete(topicId);
 
-    // Process each message in order
-    for (const entry of pendingMessages) {
+    // Process each message in priority order
+    for (const entry of sortedMessages) {
       try {
         await this.processMessage(entry.topicId, entry.text, entry.senderId);
       } catch (error) {
@@ -604,54 +670,120 @@ Ask what you can help them with today.`;
 
   /**
    * Process analysis results from LLM
+   * New format: {keywords, description?}
    */
   private async processAnalysisResults(topicId: string, analysis: any): Promise<void> {
-    if (!this.taskManager) {
+    if (!this.topicAnalysisModel) {
+      console.log('[AIMessageProcessor] No TopicAnalysisModel - skipping analysis processing');
       return;
     }
 
-    console.log('[AIMessageProcessor] Processing analysis results...');
+    console.log('[AIMessageProcessor] Processing analysis:', {
+      keywords: analysis.keywords?.length || 0,
+      hasDescription: !!analysis.description
+    });
 
-    let subjectsProcessed = false;
-    let keywordsProcessed = false;
+    const keywords = analysis.keywords || [];
+    const description = analysis.description;
 
-    // Process subjects if present
-    if (analysis.subjects && Array.isArray(analysis.subjects)) {
-      console.log(`[AIMessageProcessor] Processing ${analysis.subjects.length} subjects...`);
+    if (keywords.length === 0) {
+      console.log('[AIMessageProcessor] No keywords to process');
+      return;
+    }
 
-      for (const subjectData of analysis.subjects) {
-        try {
-          await this.processSubject(topicId, subjectData);
-          subjectsProcessed = true;
-          // processSubject also creates keywords, so mark those as processed too
-          if (subjectData.keywords && subjectData.keywords.length > 0) {
-            keywordsProcessed = true;
+    let subjectCreated = false;
+
+    // If description is present, subject has changed - create new subject
+    if (description) {
+      console.log('[AIMessageProcessor] Subject changed - creating new subject');
+      try {
+        const keywordCombination = keywords.sort().join('+');
+        const subject = await this.topicAnalysisModel.createSubject(
+          topicId,
+          keywords,
+          keywordCombination,
+          description,
+          1.0 // confidence
+        );
+
+        console.log(`[AIMessageProcessor] ✅ Created subject: ${keywordCombination}`);
+
+        // Prime cache to avoid race condition
+        const existingSubjects = await this.topicAnalysisModel.getSubjects(topicId);
+        this.topicAnalysisModel.setCachedSubjects(topicId, [...existingSubjects, subject]);
+
+        // Link keywords to subject
+        for (const keyword of keywords) {
+          try {
+            await this.topicAnalysisModel.addKeywordToSubject(
+              topicId,
+              keyword,
+              subject.idHash
+            );
+          } catch (error) {
+            console.warn(`[AIMessageProcessor] Failed to link keyword "${keyword}":`, error);
           }
-        } catch (error) {
-          console.warn('[AIMessageProcessor] Failed to process subject:', error);
         }
-      }
 
-      // Emit analysis update events using platform abstraction
-      if (this.platform?.emitAnalysisUpdate) {
-        if (subjectsProcessed && keywordsProcessed) {
-          this.platform.emitAnalysisUpdate(topicId, 'both');
-          console.log(`[AIMessageProcessor] Emitted 'both' analysis update for topic ${topicId}`);
-        } else if (subjectsProcessed) {
-          this.platform.emitAnalysisUpdate(topicId, 'subjects');
-          console.log(`[AIMessageProcessor] Emitted 'subjects' analysis update for topic ${topicId}`);
-        } else if (keywordsProcessed) {
-          this.platform.emitAnalysisUpdate(topicId, 'keywords');
-          console.log(`[AIMessageProcessor] Emitted 'keywords' analysis update for topic ${topicId}`);
+        subjectCreated = true;
+      } catch (error) {
+        console.error('[AIMessageProcessor] Failed to create subject:', error);
+      }
+    } else {
+      // Subject unchanged - link keywords to existing subject or create first subject
+      console.log('[AIMessageProcessor] Subject unchanged - finding current subject');
+      try {
+        // Get existing subjects for this topic
+        const subjects = await this.topicAnalysisModel.getSubjects(topicId);
+        let targetSubject;
+
+        if (subjects.length > 0) {
+          // Use the most recent subject
+          targetSubject = subjects[subjects.length - 1];
+          console.log(`[AIMessageProcessor] Linking keywords to existing subject: ${targetSubject.keywordCombination}`);
+        } else {
+          // No subjects yet - create the first one
+          console.log('[AIMessageProcessor] No subjects exist - creating first subject');
+          const keywordCombination = keywords.sort().join('+');
+          targetSubject = await this.topicAnalysisModel.createSubject(
+            topicId,
+            keywords,
+            keywordCombination,
+            'Initial conversation topic', // Default description for first subject
+            1.0
+          );
+          subjectCreated = true;
+          console.log(`[AIMessageProcessor] ✅ Created first subject: ${keywordCombination}`);
+
+          // Prime cache to avoid race condition with channel propagation
+          this.topicAnalysisModel.setCachedSubjects(topicId, [targetSubject]);
         }
+
+        // Link keywords to the target subject
+        for (const keyword of keywords) {
+          try {
+            await this.topicAnalysisModel.addKeywordToSubject(
+              topicId,
+              keyword,
+              targetSubject.idHash
+            );
+          } catch (error) {
+            console.warn(`[AIMessageProcessor] Failed to link keyword "${keyword}":`, error);
+          }
+        }
+        console.log(`[AIMessageProcessor] ✅ Linked ${keywords.length} keywords to subject`);
+      } catch (error) {
+        console.warn('[AIMessageProcessor] Failed to process keywords:', error);
       }
     }
 
-    // Process summary update if present
-    if (analysis.summaryUpdate) {
-      console.log('[AIMessageProcessor] Processing summary update...');
-      // Summary update would be handled by TopicAnalysisModel
-      // This is a placeholder for future implementation
+    // Emit analysis update event
+    if (this.platform?.emitAnalysisUpdate) {
+      if (subjectCreated) {
+        this.platform.emitAnalysisUpdate(topicId, 'both');
+      } else {
+        this.platform.emitAnalysisUpdate(topicId, 'keywords');
+      }
     }
   }
 
@@ -714,31 +846,6 @@ Ask what you can help them with today.`;
     } catch (error) {
       console.error('[AIMessageProcessor] Failed to create subject:', error);
       throw error;
-    }
-  }
-
-  /**
-   * Get AI person ID for a model (requires AIContactManager)
-   * This is a helper that would be injected or accessed via dependency
-   */
-  private async getAIPersonIdForModel(modelId: string): Promise<SHA256IdHash<Person> | null> {
-    // Use AIContactManager to get the person ID
-    // The contact should already exist (created by AITopicManager)
-    try {
-      // Get display name from llmManager for fallback contact creation
-      const models = this.llmManager?.getAvailableModels() || [];
-      // Strip -private suffix to find base model for display name
-      const baseModelId = modelId.replace(/-private$/, '');
-      const model = models.find((m: any) => m.id === baseModelId);
-      const displayName = model?.displayName || model?.name || modelId;
-      const fullDisplayName = modelId.endsWith('-private') ? `${displayName} (Private)` : displayName;
-
-      // Get person ID from contact manager (will use cache if available)
-      const personId = await this.contactManager.ensureAIContactForModel(modelId, fullDisplayName);
-      return personId;
-    } catch (error) {
-      console.error(`[AIMessageProcessor] Failed to get AI person ID for ${modelId}:`, error);
-      return null;
     }
   }
 

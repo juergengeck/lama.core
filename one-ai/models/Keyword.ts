@@ -212,6 +212,23 @@ export function getWords(keyword: any): string[] {
   return text.split(/[\s-]+/).filter((w: string) => w.length > 0);
 }
 
+/**
+ * Convert array of keyword strings to SHA256IdHash<Keyword>[]
+ * Creates and stores each keyword, returning their ID hashes
+ */
+export async function keywordsToHashes(keywords: string[]): Promise<any[]> {
+  const hashes = [];
+
+  for (const keyword of keywords) {
+    if (!keyword || keyword.trim() === '') continue;
+
+    const result = await createKeyword(keyword);
+    hashes.push(result.idHash);
+  }
+
+  return hashes;
+}
+
 // For compatibility
 const Keyword = {
   createKeyword,
@@ -229,7 +246,8 @@ const Keyword = {
   fromObject,
   getWeight,
   isCompound,
-  getWords
+  getWords,
+  keywordsToHashes
 };
 
 export default Keyword;

@@ -47,7 +47,7 @@ export class SystemPromptBuilder {
       name: 'base-identity',
       priority: 0,
       enabled: true,
-      generate: () => `You are a private AI assistant with access to the owner's conversations.`
+      generate: () => `You are a private AI assistant with access to the owner's conversations.\n\nIMPORTANT: When providing structured JSON responses, keep your response field under 2000 characters.`
     });
 
     // Section 2: User Preferences (Priority 10)

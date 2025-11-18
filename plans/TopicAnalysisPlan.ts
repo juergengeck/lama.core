@@ -167,17 +167,20 @@ export class TopicAnalysisPlan {
   private topicModel: TopicModel | null = null;
   private llmManager: any = null;
   private nodeOneCore: any = null;
+  private cubeStorage: any = null; // CubeStorage for dimensional indexing
 
   constructor(
     topicAnalysisModel?: TopicAnalysisModel,
     topicModel?: TopicModel,
     llmManager?: any,
-    nodeOneCore?: any
+    nodeOneCore?: any,
+    cubeStorage?: any
   ) {
     this.topicAnalysisModel = topicAnalysisModel || null;
     this.topicModel = topicModel || null;
     this.llmManager = llmManager || null;
     this.nodeOneCore = nodeOneCore || null;
+    this.cubeStorage = cubeStorage || null;
   }
 
   /**
@@ -187,12 +190,14 @@ export class TopicAnalysisPlan {
     topicAnalysisModel: TopicAnalysisModel,
     topicModel: TopicModel,
     llmManager?: any,
-    nodeOneCore?: any
+    nodeOneCore?: any,
+    cubeStorage?: any
   ): void {
     this.topicAnalysisModel = topicAnalysisModel;
     this.topicModel = topicModel;
     if (llmManager) this.llmManager = llmManager;
     if (nodeOneCore) this.nodeOneCore = nodeOneCore;
+    if (cubeStorage) this.cubeStorage = cubeStorage;
   }
 
   /**
@@ -249,7 +254,7 @@ export class TopicAnalysisPlan {
       // Get model ID from AI assistant model (source of truth)
       let modelId: string | null = null;
       if (this.nodeOneCore?.aiAssistantModel) {
-        modelId = this.nodeOneCore.aiAssistantModel.getModelIdForTopic(request.topicId);
+        modelId = await this.nodeOneCore.aiAssistantModel.getModelIdForTopic(request.topicId);
       }
 
       if (!modelId) {
@@ -325,6 +330,25 @@ ${String(conversationText).substring(0, 3000)}`;
           0.8
         );
         subjectsToStore.push({ idHash: createdSubject.idHash, keywords: subject.keywords, fullSubject: createdSubject });
+      }
+
+      // Index subjects in cube.core for efficient cross-topic queries
+      if (this.cubeStorage && subjectsToStore.length > 0) {
+        console.log(`[TopicAnalysisPlan] 📦 Indexing ${subjectsToStore.length} subjects in cube.core...`);
+        for (const subject of subjectsToStore) {
+          try {
+            // Store subject in cube with dimensional metadata
+            await this.cubeStorage.store(subject.fullSubject.hash, {
+              topic: request.topicId,
+              keyword: subject.keywords[0], // Primary keyword for indexing
+              subjectType: 'analyzed' // Classification dimension
+            });
+            console.log(`[TopicAnalysisPlan] ✅ Indexed subject: ${subject.keywords.join('+')} in cube`);
+          } catch (error) {
+            console.error(`[TopicAnalysisPlan] ❌ Failed to index subject in cube:`, error);
+            // Don't throw - indexing failure shouldn't break analysis
+          }
+        }
       }
 
       // Now create keywords with subject ID hashes
@@ -431,15 +455,13 @@ ${String(conversationText).substring(0, 3000)}`;
           return null;
         }));
 
-        // Filter out nulls, fall back to splitting the id field if needed
+        // Filter out nulls
         const validKeywords = resolvedKeywords.filter(k => k !== null);
-        const finalKeywords = validKeywords.length > 0
-          ? validKeywords
-          : (subject.id ? subject.id.split('+') : []);
 
+        // Return ONE.core Subject with resolved keyword terms
         return {
           ...subject,
-          keywords: finalKeywords
+          keywords: validKeywords
         };
       }));
 
@@ -602,7 +624,7 @@ ${String(conversationText).substring(0, 3000)}`;
       let modelId: string | null = null;
 
       if (this.nodeOneCore?.aiAssistantModel) {
-        modelId = this.nodeOneCore.aiAssistantModel.getModelIdForTopic(request.topicId);
+        modelId = await this.nodeOneCore.aiAssistantModel.getModelIdForTopic(request.topicId);
       }
 
       // If autoGenerate is true, use LLM to create a new summary
@@ -706,7 +728,7 @@ ${String(conversationText).substring(0, 3000)}`;
       // Get model ID for LLM processing
       let modelId: string | null = null;
       if (this.nodeOneCore?.aiAssistantModel) {
-        const aiContacts = this.nodeOneCore.aiAssistantModel.getAllContacts();
+        const aiContacts = await this.nodeOneCore.aiAssistantModel.getAllContacts();
         if (aiContacts.length > 0) {
           modelId = aiContacts[0].modelId;
         }
@@ -805,7 +827,7 @@ Return format: ["keyword1", "keyword2", ...]`;
 
       let modelId: string | null = null;
       if (this.nodeOneCore?.aiAssistantModel) {
-        const aiContacts = this.nodeOneCore.aiAssistantModel.getAllContacts();
+        const aiContacts = await this.nodeOneCore.aiAssistantModel.getAllContacts();
         if (aiContacts.length > 0) {
           modelId = aiContacts[0].modelId;
         }
@@ -883,7 +905,7 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
 
       let modelId: string | null = null;
       if (this.nodeOneCore?.aiAssistantModel) {
-        modelId = this.nodeOneCore.aiAssistantModel.getModelIdForTopic(request.topicId);
+        modelId = await this.nodeOneCore.aiAssistantModel.getModelIdForTopic(request.topicId);
       }
 
       if (!modelId) {

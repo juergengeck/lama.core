@@ -9,36 +9,8 @@ import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-c
 import type { Person } from '@refinio/one.core/lib/recipes.js';
 
 declare module '@OneObjectInterfaces' {
-    // Subject represents a distinct discussion topic within a conversation
-    // Tracks temporal ranges when the subject was discussed
-    export interface Subject {
-        $type$: 'Subject';
-        id: string; // keyword combination (e.g., "pizza+baker+career")
-        topic: string; // reference to parent topic (channel ID)
-        keywords: SHA256IdHash<Keyword>[]; // Array of Keyword ID hashes
-        timeRanges: Array<{
-            start: number;
-            end: number;
-        }>;
-        messageCount: number;
-        createdAt: number;
-        lastSeenAt: number;
-        description?: string; // LLM-generated description
-        archived?: boolean;
-        likes?: number;
-        dislikes?: number;
-    }
-
-    // Keyword extracted from message content
-    export interface Keyword {
-        $type$: 'Keyword';
-        term: string; // ID field - deterministic lookup
-        frequency: number;
-        subjects: SHA256IdHash<Subject>[]; // Array of Subject ID hashes
-        score?: number;
-        createdAt: number;
-        lastSeen: number;
-    }
+    // NOTE: Subject and Keyword types are now defined in @OneObjectInterfaces.d.ts
+    // to match the recipes exactly. Do not redefine them here.
 
     // Summary of a topic conversation with versioning support
     export interface Summary {
@@ -114,6 +86,21 @@ declare module '@OneObjectInterfaces' {
         provider?: string;
         downloadUrl?: string;
         systemPrompt?: string;
+    }
+
+    // AI object type - represents an AI assistant identity
+    export interface AI {
+        $type$: 'AI';
+        aiId: string; // ID field - AI identifier
+        displayName: string;
+        personId: SHA256IdHash<Person>; // AI Person ID
+        llmPersonId: SHA256IdHash<Person>; // LLM Person ID that this AI delegates to
+        modelId: string; // Model identifier
+        owner: SHA256IdHash<Person>; // Owner Person/Instance ID
+        created: number;
+        modified: number;
+        active: boolean;
+        deleted: boolean;
     }
 
     // GlobalLLMSettings - global settings for LLM management

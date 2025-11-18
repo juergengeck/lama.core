@@ -236,6 +236,7 @@ export class AIPlan {
         // Streaming mode - send chunks via event sender with analysis
         let fullResponse = '';
         const result: any = await (this.llmManager as any).chatWithAnalysis(request.messages, request.modelId, {
+          topicId: request.topicId,  // ✅ Pass topicId for context caching
           onStream: (chunk: string) => {
             fullResponse += chunk;
             // Send streaming chunk
@@ -311,7 +312,9 @@ export class AIPlan {
         };
       } else {
         // Non-streaming mode - wait for full response with analysis
-        const chatResult: any = await (this.llmManager as any).chatWithAnalysis(request.messages, request.modelId);
+        const chatResult: any = await (this.llmManager as any).chatWithAnalysis(request.messages, request.modelId, {
+          topicId: request.topicId  // ✅ Pass topicId for context caching
+        });
         const response = chatResult.response;
         const responseStr = String(response || '');
         console.log('[AIPlan] Got response:', responseStr.substring(0, 100) + '...');
@@ -399,7 +402,7 @@ export class AIPlan {
         await (this.llmManager as any).init();
       }
 
-      const models = (this.llmManager as any).getAvailableModels();
+      const models = await (this.llmManager as any).getAvailableModels();
       // Get default model from AI Assistant Model which is the single source of truth
       const defaultModel = this.nodeOneCore?.aiAssistantModel?.getDefaultModel();
       const defaultModelId = defaultModel?.id || null;

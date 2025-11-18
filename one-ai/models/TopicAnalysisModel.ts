@@ -8,6 +8,7 @@ import { Model } from '@refinio/one.models/lib/models/Model.js';
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
+import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import TopicAnalysisRoom from './TopicAnalysisRoom.js';
 import type { Subject } from '../types/Subject.js';
 import type { Keyword } from '../types/Keyword.js';
@@ -75,9 +76,9 @@ export default class TopicAnalysisModel extends Model {
         const now = Date.now();
         const subjectObj = {
             $type$: 'Subject' as const,
-            id: keywordCombination, // Use keyword combination as ID
+            // NO id field - ONE.core auto-generates ID hash from keywords (isId: true in recipe)
             topic: topicId, // Plain topic ID string (Topic is unversioned, not an ID object)
-            keywords: keywordIdHashes, // Array of Keyword ID hashes
+            keywords: keywordIdHashes, // Array of Keyword ID hashes (this IS the ID property)
             timeRanges: [
                 {
                     start: now,
@@ -143,7 +144,7 @@ export default class TopicAnalysisModel extends Model {
     /**
      * Create a Keyword with subject references
      */
-    async createKeywordWithSubjects(topicId: any, term: any, subjectIds: string[], frequency: any, score: any): Promise<any> {
+    async createKeywordWithSubjects(topicId: any, term: any, subjectIds: SHA256IdHash<Subject>[], frequency: any, score: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
         const now = Date.now();
@@ -151,7 +152,7 @@ export default class TopicAnalysisModel extends Model {
             $type$: 'Keyword' as const,
             term: term.toLowerCase().trim(),
             frequency: frequency || 1,
-            subjects: subjectIds || [],
+            subjects: subjectIds || [] as SHA256IdHash<Subject>[],
             score: score || undefined,
             createdAt: now,
             lastSeen: now
@@ -185,7 +186,8 @@ export default class TopicAnalysisModel extends Model {
 
         let existing;
         try {
-            existing = await getObjectByIdHash(keywordIdHash);
+            const result = await getObjectByIdHash(keywordIdHash);
+            existing = result.obj;  // Extract .obj from result
         } catch (error) {
             // Keyword doesn't exist yet
             existing = null;
@@ -239,7 +241,8 @@ export default class TopicAnalysisModel extends Model {
 
         let existing;
         try {
-            existing = await getObjectByIdHash(keywordIdHash);
+            const result = await getObjectByIdHash(keywordIdHash);
+            existing = result.obj;  // Extract .obj from result
         } catch (error) {
             // Keyword doesn't exist yet
             existing = null;
@@ -467,7 +470,7 @@ export default class TopicAnalysisModel extends Model {
         console.log('[TopicAnalysisModel] getAllTopics called');
 
         // Get all topics from TopicModel
-        const allTopics = await this.topicModel.getTopics();
+        const allTopics = await this.topicModel.topics.all();
 
         console.log('[TopicAnalysisModel] Found topics:', {
             topicCount: allTopics?.length || 0
@@ -487,7 +490,7 @@ export default class TopicAnalysisModel extends Model {
         console.log('[TopicAnalysisModel] getAllSubjects called');
 
         // Get all topics from TopicModel
-        const allTopics = await this.topicModel.getTopics();
+        const allTopics = await this.topicModel.topics.all();
 
         console.log('[TopicAnalysisModel] Found topics:', {
             topicCount: allTopics?.length || 0
@@ -531,7 +534,7 @@ export default class TopicAnalysisModel extends Model {
         console.log('[TopicAnalysisModel] getAllKeywords called');
 
         // Get all topics from TopicModel
-        const allTopics = await this.topicModel.getTopics();
+        const allTopics = await this.topicModel.topics.all();
 
         console.log('[TopicAnalysisModel] Found topics:', {
             topicCount: allTopics?.length || 0

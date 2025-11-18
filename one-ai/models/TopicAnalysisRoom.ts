@@ -61,16 +61,41 @@ export default class TopicAnalysisRoom {
             return [];
         }
 
-        const allSubjects = [];
+        // Import calculateIdHashOfObj to compute idHash from ID properties
+        const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+
+        // Use a Map to deduplicate by idHash (same subject in multiple channels)
+        const subjectsByIdHash = new Map();
+
         for await (const entry of this.channelManager.multiChannelObjectIterator(channelInfos)) {
-            if (entry.data && entry.data.$type$ === 'Subject') {
-                if (entry.data.topic === this.topicId) {
-                    allSubjects.push(entry.data);
+            // Accept both 'Subject' (lama.core) and 'SubjectAssembly' (memory.core)
+            if (entry.data && (entry.data.$type$ === 'Subject' || entry.data.$type$ === 'SubjectAssembly')) {
+                // Subject has 'topic' field, SubjectAssembly has 'sources' array
+                const matchesTopic = entry.data.$type$ === 'Subject'
+                    ? entry.data.topic === this.topicId
+                    : entry.data.sources?.some((s: any) => s.type === 'chat' && s.id === this.topicId);
+
+                if (matchesTopic) {
+                    // Calculate idHash from ID properties (keywords for Subject, per SubjectRecipe line 35)
+                    const idHash = await calculateIdHashOfObj({
+                        $type$: entry.data.$type$,
+                        keywords: entry.data.keywords  // ← FIXED: Use keywords (the actual ID property)
+                    } as any);
+
+                    // Deduplicate by idHash - keep most recent version
+                    const existing = subjectsByIdHash.get(idHash);
+                    if (!existing || entry.data.lastSeenAt > existing.lastSeenAt) {
+                        subjectsByIdHash.set(idHash, {
+                            ...entry.data,
+                            idHash: idHash,
+                            hash: entry.hash
+                        });
+                    }
                 }
             }
         }
 
-        return allSubjects;
+        return Array.from(subjectsByIdHash.values());
     }
 
     /**

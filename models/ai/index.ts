@@ -25,7 +25,6 @@ export type {
   IAITopicManager,
   IAIMessageProcessor,
   IAIPromptBuilder,
-  IAIContactManager,
   IAITaskManager,
 } from './interfaces.js';
 
@@ -33,6 +32,6 @@ export type {
 export { AITopicManager } from './AITopicManager.js';
 export { AIMessageProcessor } from './AIMessageProcessor.js';
 export { AIPromptBuilder } from './AIPromptBuilder.js';
-export { AIContactManager } from './AIContactManager.js';
 export { AITaskManager } from './AITaskManager.js';
 export { AIMessageListener } from './AIMessageListener.js';
+export { AIManager } from './AIManager.js';

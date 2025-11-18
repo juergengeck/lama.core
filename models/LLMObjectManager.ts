@@ -15,6 +15,7 @@ export interface LLMObject {
     $type$: 'LLM';
     modelId: string;
     name: string;
+    server: string;
     filename: string;
     modelType: 'local' | 'remote';
     active: boolean;
@@ -32,6 +33,17 @@ export interface LLMObject {
     contextSize?: number;
     batchSize?: number;
     threads?: number;
+
+    /**
+     * Model role in dual-model architecture
+     * - 'reasoning': Generates thinking/reasoning (no structured output, thinking stream only)
+     * - 'response': Generates user responses (supports structured output for analysis)
+     * - 'both': Can handle both reasoning and response (default for single-model mode)
+     *
+     * When set to 'reasoning' or 'response', the model is specialized for that phase.
+     * The system will automatically use the appropriate model for each phase.
+     */
+    role?: 'reasoning' | 'response' | 'both';
 }
 
 export interface LLMObjectManagerDeps {
@@ -132,9 +144,10 @@ export class LLMObjectManager {
     async create(params: {
         modelId: string;
         name: string;
+        server: string;
         aiPersonId: SHA256IdHash<Person>;
     }): Promise<void> {
-        const { modelId, name, aiPersonId } = params;
+        const { modelId, name, server, aiPersonId } = params;
 
         console.log(`[LLMObjectManager] Creating LLM object for ${name}`);
 
@@ -154,7 +167,8 @@ export class LLMObjectManager {
         const llmObject: LLMObject = {
             $type$: 'LLM',
             modelId,
-            name, // This is the ID field (isId: true in recipe)
+            name, // This is an ID field (isId: true in recipe)
+            server, // This is an ID field (isId: true in recipe) - makes LLMs server-specific
             filename: `${name.replace(/[\s:]/g, '-').toLowerCase()}.gguf`,
             modelType: modelId.startsWith('ollama:') ? 'local' : 'remote',
             active: true,
@@ -263,12 +277,13 @@ export class LLMObjectManager {
      * Cache AI person ID without creating LLM object
      * Used when AI contacts already exist
      */
-    cacheAIPersonId(modelId: string, personId: SHA256IdHash<Person>): void {
+    cacheAIPersonId(modelId: string, personId: SHA256IdHash<Person>, server: string = 'http://localhost:11434'): void {
         if (!this.llmObjects.has(modelId)) {
             this.llmObjects.set(modelId, {
                 $type$: 'LLM',
                 modelId,
                 name: modelId,
+                server,
                 filename: '',
                 modelType: 'local',
                 active: true,
@@ -282,7 +297,7 @@ export class LLMObjectManager {
                 cached: true,
             });
             console.log(
-                `[LLMObjectManager] Cached AI person ${personId.toString().substring(0, 8)}... for model ${modelId}`
+                `[LLMObjectManager] Cached AI person ${personId.toString().substring(0, 8)}... for model ${modelId} on ${server}`
             );
         }
     }

@@ -10,6 +10,7 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
 export interface ProposalConfig {
   matchWeight: number;
@@ -217,13 +218,20 @@ export class ProposalEngine {
           const createdAt = pastSubject.created || pastSubject.createdAt || Date.now();
           const recencyScore = this.calculateRecencyBoost(createdAt, config.recencyWindow);
 
+          // Calculate proper ID hash for the subject
+          const pastSubjectIdHash = await calculateIdHashOfObj({
+            $type$: 'Subject',
+            id: pastSubject.id
+          } as any);
+
           // Create proposal
+          // Use LLM-generated description as display name, fallback to keyword combination
           proposals.push({
-            pastSubject: pastSubject.idHash || pastSubject.id,
+            pastSubject: pastSubjectIdHash,
             jaccardScore,
             recencyScore,
             matchedKeywords,
-            pastSubjectName: pastSubject.name || pastSubject.id || 'Unknown Subject',
+            pastSubjectName: pastSubject.description || pastSubject.id || 'Unknown Subject',
             sourceTopicId: pastTopicId,
             createdAt
           });

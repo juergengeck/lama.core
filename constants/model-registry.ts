@@ -262,6 +262,9 @@ export function getModelProvider(modelId: string): string {
   }
 
   // Fallback: Detect from model ID pattern
+  // Check for Ollama models first (format: model:tag)
+  if (modelId.includes(':')) return 'ollama';
+
   if (modelId.includes('claude')) return 'anthropic';
   // Only match real OpenAI models, not OSS models like "gpt-oss"
   if (modelId.startsWith('gpt-') || modelId.startsWith('o1-') || modelId.startsWith('o3-')) {

@@ -3,11 +3,13 @@
  * All ONE.core recipes that need to be registered
  */
 
+import { AIRecipe } from './AIRecipe.js';
 import { LLMRecipe } from './LLMRecipe.js';
 import { GlobalLLMSettingsRecipe } from './GlobalLLMSettingsRecipe.js';
 import { AISettingsRecipe } from './AISettingsRecipe.js';
 import { AppSettingsRecipe } from './AppSettingsRecipe.js';
 import { ProposalConfigRecipe } from './ProposalConfigRecipe.js';
+import { ProposalInteractionPlanRecipe, ProposalInteractionResponseRecipe } from './ProposalInteractionRecipes.js';
 import { SubjectRecipe } from '../one-ai/recipes/SubjectRecipe.js';
 import { KeywordRecipe } from '../one-ai/recipes/KeywordRecipe.js';
 import { SummaryRecipe } from '../one-ai/recipes/SummaryRecipe.js';
@@ -19,11 +21,14 @@ import { KeywordAccessStateRecipe } from '../one-ai/recipes/KeywordAccessState.j
  * Pass this array to registerRecipes() during initialization
  */
 export const LAMA_CORE_RECIPES = [
+    AIRecipe,
     LLMRecipe,
     GlobalLLMSettingsRecipe,
     AISettingsRecipe,
     AppSettingsRecipe,
     ProposalConfigRecipe,
+    ProposalInteractionPlanRecipe,
+    ProposalInteractionResponseRecipe,
     SubjectRecipe,
     KeywordRecipe,
     SummaryRecipe,
@@ -33,11 +38,14 @@ export const LAMA_CORE_RECIPES = [
 
 // Re-export individual recipes for convenience
 export {
+    AIRecipe,
     LLMRecipe,
     GlobalLLMSettingsRecipe,
     AISettingsRecipe,
     AppSettingsRecipe,
     ProposalConfigRecipe,
+    ProposalInteractionPlanRecipe,
+    ProposalInteractionResponseRecipe,
     SubjectRecipe,
     KeywordRecipe,
     SummaryRecipe,

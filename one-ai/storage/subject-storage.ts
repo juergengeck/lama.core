@@ -1,11 +1,16 @@
 /**
  * Subject Storage
  * Handles persistence of Subject objects using ONE.core versioned storage
+ *
+ * IMPORTANT: Subjects are identified by their keywords (isId: true in recipe)
+ * ONE.core automatically generates SHA256IdHash<Subject> from sorted keywords
+ * No manual ID generation needed
  */
 
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import { createSubject } from '../models/Subject.js';
+import { createOrUpdateSubject } from '../models/Subject.js';
 import type { Subject } from '../types/Subject.js';
 import type { Keyword } from '../types/Keyword.js';
 
@@ -19,6 +24,7 @@ class SubjectStorage {
 
   /**
    * Store a subject using ONE.core versioned object storage
+   * ID hash is automatically generated from keywords by ONE.core
    */
   async store(subject: Subject): Promise<{ subject: Subject; hash: string; idHash: SHA256IdHash<Subject> }> {
     if (!this.nodeOneCore?.initialized) {
@@ -26,10 +32,13 @@ class SubjectStorage {
     }
 
     // Store using ONE.core's versioned object storage
-    // This will work with the SubjectRecipe we defined
+    // ONE.core automatically generates ID hash from keywords (marked isId: true in recipe)
     const result = await storeVersionedObject(subject);
 
-    console.log(`[SubjectStorage] Stored subject ${subject.id} with hash ${result.hash}`);
+    // Calculate ID hash for logging (ONE.core already did this internally)
+    const idHash = await calculateIdHashOfObj(subject);
+    console.log(`[SubjectStorage] Stored subject with keywords [${subject.keywords.join(', ')}] - ID hash: ${idHash}`);
+
     return { subject, hash: result.hash, idHash: result.idHash };
   }
 
@@ -90,21 +99,25 @@ class SubjectStorage {
   }
 
   /**
-   * Delete a subject
+   * Delete a subject by ID hash
+   *
+   * NOTE: TRUE deletion requires Tombstone data type (TBD in ONE.core)
+   * For now, we only support archiving (soft delete)
    */
-  async delete(subjectId: string): Promise<boolean> {
+  async delete(subjectIdHash: SHA256IdHash<Subject>): Promise<boolean> {
     if (!this.nodeOneCore?.initialized) {
       throw new Error('ONE.core not initialized');
     }
 
-    const storageKey = this.storagePrefix + subjectId;
-
     try {
-      await this.nodeOneCore.deleteObject(storageKey);
-      console.log(`[SubjectStorage] Deleted subject ${subjectId}`);
+      // TODO: Implement true deletion when Tombstone type is available
+      // For now, archive is the only way to "soft delete" versioned objects
+      await this.archive(subjectIdHash);
+      console.log(`[SubjectStorage] Archived (soft deleted) subject ${subjectIdHash}`);
+      console.warn('[SubjectStorage] True deletion requires Tombstone type (TBD)');
       return true;
     } catch (error) {
-      console.error(`[SubjectStorage] Error deleting subject ${subjectId}:`, error);
+      console.error(`[SubjectStorage] Error archiving subject ${subjectIdHash}:`, error);
       return false;
     }
   }
@@ -120,7 +133,9 @@ class SubjectStorage {
         const stored = await this.store(subject);
         results.push(stored);
       } catch (error) {
-        console.error(`[SubjectStorage] Error storing subject ${subject.id}:`, error);
+        // Log with keywords since id field no longer exists (ONE.core generates idHash from keywords)
+        const keywordStr = Array.isArray(subject.keywords) ? subject.keywords.join('+') : 'unknown';
+        console.error(`[SubjectStorage] Error storing subject [${keywordStr}]:`, error);
       }
     }
 
@@ -141,7 +156,8 @@ class SubjectStorage {
   }
 
   /**
-   * Merge two subjects
+   * Merge two subjects by combining their keywords and creating a new subject
+   * ONE.core will automatically generate a new ID hash from the merged keywords
    */
   async merge(subjectId1: SHA256IdHash<Subject>, subjectId2: SHA256IdHash<Subject>, newKeywords: SHA256IdHash<Keyword>[] = []): Promise<{ mergedSubject: Subject; archivedSubjects: string[] }> {
     const subject1 = await this.get(subjectId1);
@@ -155,20 +171,25 @@ class SubjectStorage {
       throw new Error('Cannot merge subjects from different topics');
     }
 
-    // Create merged subject
+    // Merge keywords (creates new identity via ONE.core automatic ID hashing)
+    const mergedKeywords = newKeywords.length > 0
+      ? newKeywords
+      : [...new Set([...subject1.keywords, ...subject2.keywords])]; // Deduplicate keywords
+
+    // Create merged subject - ONE.core generates new ID hash from merged keywords
     const merged: Subject = {
-      ...subject1,
+      $type$: 'Subject',
+      topic: subject1.topic,
+      keywords: mergedKeywords.sort() as SHA256IdHash<Keyword>[], // Sort for deterministic ID hash
       messageCount: subject1.messageCount + subject2.messageCount,
       timeRanges: [...subject1.timeRanges, ...subject2.timeRanges],
-      lastSeenAt: Math.max(subject1.lastSeenAt, subject2.lastSeenAt)
+      createdAt: Math.min(subject1.createdAt, subject2.createdAt),
+      lastSeenAt: Math.max(subject1.lastSeenAt, subject2.lastSeenAt),
+      description: subject1.description || subject2.description, // Prefer first description
+      archived: false
     };
 
-    if (newKeywords.length > 0) {
-      merged.keywords = newKeywords.sort() as SHA256IdHash<Keyword>[];
-      merged.id = newKeywords.map(k => k.toString()).join('+');
-    }
-
-    // Store merged subject
+    // Store merged subject (ONE.core generates ID hash from keywords)
     await this.store(merged);
 
     // Archive originals
@@ -211,9 +232,11 @@ class SubjectStorage {
     let deletedCount = 0;
 
     for (const key of allKeys) {
-      const subject = await this.get(key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>);
+      const subjectIdHash = key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>;
+      const subject = await this.get(subjectIdHash);
       if (subject && subject.archived && subject.lastSeenAt < cutoffTime) {
-        await this.delete(subject.id);
+        // Use the idHash we already have from the key, not subject.id (which doesn't exist)
+        await this.delete(subjectIdHash);
         deletedCount++;
       }
     }

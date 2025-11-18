@@ -19,11 +19,11 @@ import type {
 } from './types.js';
 
 /**
- * AITopicManager: Manages topic-to-model mappings and topic lifecycle
+ * AITopicManager: Manages topic-to-AI Person mappings and topic lifecycle
  */
 export interface IAITopicManager {
-  /** Map of topicId → modelId */
-  readonly topicModelMap: ReadonlyMap<string, string>;
+  /** Map of topicId → AI Person ID */
+  readonly topicAIMap: ReadonlyMap<string, SHA256IdHash<Person>>;
 
   /** Map of topicId → isLoading */
   readonly topicLoadingState: ReadonlyMap<string, boolean>;
@@ -31,14 +31,14 @@ export interface IAITopicManager {
   /** Display names for topics */
   readonly topicDisplayNames: Readonly<Record<string, string>>;
 
-  /** Register an AI topic with its model */
-  registerAITopic(topicId: string, modelId: string): void;
+  /** Register an AI topic with its AI Person */
+  registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): void;
 
   /** Check if a topic is an AI topic */
   isAITopic(topicId: string): boolean;
 
-  /** Get model ID for a topic */
-  getModelIdForTopic(topicId: string): string | null;
+  /** Get AI Person ID for a topic */
+  getAIPersonForTopic(topicId: string): SHA256IdHash<Person> | null;
 
   /** Set loading state for a topic */
   setTopicLoadingState(topicId: string, isLoading: boolean): void;
@@ -77,10 +77,10 @@ export interface IAIMessageProcessor {
   ): Promise<string | null>;
 
   /** Check if a message is from an AI */
-  isAIMessage(message: any): boolean;
+  isAIMessage(message: any): Promise<boolean>;
 
   /** Check if a person/profile ID is an AI contact */
-  isAIContact(personId: SHA256IdHash<Person> | string): boolean;
+  isAIContact(personId: SHA256IdHash<Person> | string): Promise<boolean>;
 
   /** Set AI assistant handler (circular dependency resolution) */
   setAIAssistant(assistant: any): void;
@@ -136,6 +136,7 @@ export interface IAIPromptBuilder {
 
 /**
  * AIContactManager: Manages AI contacts (Person/Profile/Someone)
+ * @deprecated Replaced by AIManager - use AIManager instead for Person-centric AI management
  */
 export interface IAIContactManager {
   /** Ensure AI contact exists for a model */
