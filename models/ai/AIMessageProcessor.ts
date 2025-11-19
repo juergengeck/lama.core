@@ -12,7 +12,7 @@
  * - Emit platform-agnostic events for UI updates
  */
 
-import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -22,6 +22,7 @@ import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
 import OneObjectCache from '@refinio/one.models/lib/api/utils/caches/OneObjectCache.js';
 import { formatForStandardAPI } from '../../services/context-budget-manager.js';
+import { storeUTF8Clob } from '@refinio/one.core/lib/storage-blob.js';
 
 export class AIMessageProcessor implements IAIMessageProcessor {
   // Circular dependencies - injected via setters
@@ -296,13 +297,15 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                 console.log(`[AIMessageProcessor] 📝 Response preview: ${response?.substring(0, 100)}...`);
 
                 // Post the AI's response to the channel
-                // - response: the AI's message text
-                // - aiPersonId: the author (AI's person ID)
-                // - aiPersonId: the channel owner (AI posts to its own channel)
-                // - thinking: optional reasoning trace (for models like DeepSeek R1)
-                // TODO: Attach analysis as structured data for signing
-                await topicRoom.sendMessage(response, aiPersonId, aiPersonId, thinking);
-                console.log(`[AIMessageProcessor] ✅ Stored AI response to channel ${topicId}${thinking ? ' (with thinking)' : ''}${analysis ? ' (with analytics)' : ''}`);
+                if (thinking) {
+                  // Store thinking as CLOB attachment
+                  const thinkingClob = await storeUTF8Clob(thinking);
+                  await topicRoom.sendMessageWithAttachmentAsHash(response, [thinkingClob.hash as unknown as SHA256Hash], aiPersonId, aiPersonId);
+                  console.log(`[AIMessageProcessor] ✅ Stored AI response with thinking attachment (${thinking.length} chars) to channel ${topicId}`);
+                } else {
+                  await topicRoom.sendMessage(response, aiPersonId, aiPersonId);
+                  console.log(`[AIMessageProcessor] ✅ Stored AI response to channel ${topicId}`);
+                }
 
                 // Add message to cache so next buildPrompt() doesn't reload all messages
                 if (this.promptBuilder) {
