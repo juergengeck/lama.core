@@ -126,10 +126,12 @@ export class LLMConfigPlan {
    * Returns server info only - use getAllConfigs() to see stored models
    */
   async testConnection(request: TestConnectionRequest): Promise<TestConnectionResponse> {
-    console.log('[LLMConfigPlan] Testing connection to:', request.server);
+    // Default to localhost Ollama if no server specified
+    const server = request.server || 'http://localhost:11434';
+    console.log('[LLMConfigPlan] Testing connection to:', server);
 
     try {
-      const result = await this.testOllamaConnection(request.server, request.authToken, request.serviceName);
+      const result = await this.testOllamaConnection(server, request.authToken, request.serviceName);
       return {
         success: result.success,
         version: result.version,
@@ -153,11 +155,13 @@ export class LLMConfigPlan {
    * IMPORTANT: On HTTPS deployments, connection test will fail due to mixed content (HTTP Ollama from HTTPS page)
    */
   async testConnectionAndDiscoverModels(request: TestConnectionRequest): Promise<TestConnectionResponse> {
-    console.log('[LLMConfigPlan] Testing connection and discovering models from:', request.server);
+    // Default to localhost Ollama if no server specified
+    const server = request.server || 'http://localhost:11434';
+    console.log('[LLMConfigPlan] Testing connection and discovering models from:', server);
 
     try {
       // Test connection
-      const connectionResult = await this.testOllamaConnection(request.server, request.authToken, request.serviceName);
+      const connectionResult = await this.testOllamaConnection(server, request.authToken, request.serviceName);
 
       if (!connectionResult.success) {
         console.warn('[LLMConfigPlan] Connection test failed:', connectionResult.error);
@@ -169,8 +173,8 @@ export class LLMConfigPlan {
       }
 
       // Fetch models directly from the tested server
-      console.log('[LLMConfigPlan] Connection successful, fetching models from:', request.server);
-      const models = await this.fetchOllamaModels(request.server, request.authToken);
+      console.log('[LLMConfigPlan] Connection successful, fetching models from:', server);
+      const models = await this.fetchOllamaModels(server, request.authToken);
 
       console.log(`[LLMConfigPlan] Fetched ${models.length} models from ${request.server}`);
 
@@ -301,7 +305,7 @@ export class LLMConfigPlan {
       const llmObject: any = {
         $type$: 'LLM',
         name: request.modelName,
-        server: request.server || 'http://localhost:11434', // Required ID field - Ollama server address
+        server: request.server || '', // Mandatory (isId: true in LLMRecipe)
         filename: request.modelName,
         modelId: request.modelName, // Required field for identification
         modelType: request.modelType,
@@ -312,7 +316,6 @@ export class LLMConfigPlan {
         modified: now,
         createdAt: new Date().toISOString(),
         lastUsed: new Date().toISOString(),
-        owner: this.nodeOneCore.ownerId, // Required for reverse map indexing
         personId: llmPersonId, // Link to LLM Person created by AIManager
         // Auto-generate system prompt for this model
         systemPrompt: generateSystemPromptForModel(request.modelName, request.modelName),

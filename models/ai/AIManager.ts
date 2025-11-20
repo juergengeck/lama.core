@@ -58,7 +58,7 @@ type AI = {
 type LLM = {
   $type$: 'LLM';
   name: string;
-  server: string;
+  server: string;  // Mandatory (isId: true in LLMRecipe)
   filename: string;
   modelType: 'local' | 'remote';
   active: boolean;
@@ -69,7 +69,6 @@ type LLM = {
   lastUsed: string;
   modelId?: string;
   personId?: SHA256IdHash<Person>;
-  owner?: SHA256IdHash<Person> | SHA256IdHash<Instance>;
   provider?: string;
 };
 
@@ -299,13 +298,15 @@ export class AIManager {
    * @param name - Display name (e.g., "Claude Sonnet 4.5")
    * @param provider - Provider name (e.g., "anthropic", "openai", "ollama")
    * @param llmConfigId - Optional reference to LLM config object
+   * @param server - Optional server URL (defaults to localhost:11434 for ollama)
    * @returns Profile ID of the created LLM
    */
   async createLLM(
     modelId: string,
     name: string,
     provider: string,
-    llmConfigId?: string
+    llmConfigId?: string,
+    server?: string
   ): Promise<SHA256IdHash<Profile>> {
     console.log(`[AIManager] Creating LLM Person: ${name} (${modelId})`);
 
@@ -374,7 +375,7 @@ export class AIManager {
       const llmObject: LLM = {
         $type$: 'LLM',
         name,
-        server: 'http://localhost:11434', // Default Ollama server
+        server: server || (provider === 'ollama' ? 'http://localhost:11434' : ''), // Mandatory - use provided or default
         filename: modelId,
         modelType: provider === 'ollama' ? 'local' : 'remote',
         active: true,
@@ -385,7 +386,6 @@ export class AIManager {
         lastUsed: new Date(now).toISOString(),
         modelId,
         personId: personIdHash,
-        owner: myId,
         provider
       };
 
@@ -871,7 +871,7 @@ export class AIManager {
           if (llm.personId === personId && llm.name === modelId) {
             // Store in lookup table
             this.llmByPerson.set(personId, llm);
-            console.log(`[AIManager] 💾 Loaded LLM object: ${modelId} from ${llm.server}`);
+            console.log(`[AIManager] 💾 Loaded LLM object: ${modelId} from ${llm.server || 'remote'}`);
             return llm;
           }
         }
@@ -994,7 +994,7 @@ export class AIManager {
 
               if (llmObject) {
                 llmCount++;
-                console.log(`[AIManager] ✅ Loaded LLM: ${someoneId} from server ${llmObject.server}`);
+                console.log(`[AIManager] ✅ Loaded LLM: ${someoneId} from server ${llmObject.server || 'remote'}`);
               } else {
                 console.warn(`[AIManager] ⚠️  Could not load LLM object for ${someoneId}`);
               }

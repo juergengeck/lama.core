@@ -25,6 +25,6 @@
       "@mcp/core": ["../mcp.core/dist"]
     }
   },
-  "include": ["ai/**/*.ts", "constants/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "one-ai/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "ui/**/*.ts", "ui/**/*.tsx", "*.d.ts"],
+  "include": ["ai/**/*.ts", "constants/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "services/**/*.ts", "one-ai/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "ui/**/*.ts", "ui/**/*.tsx", "*.d.ts", "packages/one.core/@OneObjectInterfaces.d.ts"],
   "exclude": ["node_modules", "**/*.js", "packages/**", "dist/**"]
 }

@@ -300,7 +300,14 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                 if (thinking) {
                   // Store thinking as CLOB attachment
                   const thinkingClob = await storeUTF8Clob(thinking);
-                  await topicRoom.sendMessageWithAttachmentAsHash(response, [thinkingClob.hash as unknown as SHA256Hash], aiPersonId, aiPersonId);
+                  await topicRoom.sendMessageWithAttachmentAsHash(response, [{
+                    hash: thinkingClob.hash as unknown as SHA256Hash,
+                    type: 'CLOB',
+                    metadata: {
+                      name: 'thinking.txt',
+                      mimeType: 'text/plain'
+                    }
+                  }], aiPersonId, aiPersonId);
                   console.log(`[AIMessageProcessor] ✅ Stored AI response with thinking attachment (${thinking.length} chars) to channel ${topicId}`);
                 } else {
                   await topicRoom.sendMessage(response, aiPersonId, aiPersonId);

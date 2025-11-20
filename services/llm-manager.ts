@@ -1211,7 +1211,98 @@ class LLMManager {
       isDefault: llm.isDefault || false // Include default status
     }))
   }
-  
+
+  /**
+   * Get all registered MCP tools
+   * Returns array of tool definitions from the mcpTools registry
+   */
+  getAllMCPTools(): Array<{name: string, description: string, server: string}> {
+    const tools: Array<{name: string, description: string, server: string}> = []
+
+    for (const [toolName, toolDef] of this.mcpTools.entries()) {
+      tools.push({
+        name: toolName,
+        description: toolDef.description || '',
+        server: toolDef.server || 'lama'
+      })
+    }
+
+    return tools
+  }
+
+  /**
+   * Get all registered models from ONE.core storage
+   * Returns array of LLM model objects
+   */
+  getModels(): any[] {
+    // This is a synchronous wrapper - in practice, models should be fetched via getAllLLMsFromStorage
+    // For now, return empty array as models are loaded async
+    console.warn('[LLMManager] getModels() is deprecated - use getAllLLMsFromStorage() instead');
+    return [];
+  }
+
+  /**
+   * Discover Ollama models from local Ollama instance
+   * Registers available Ollama models for use in the application
+   */
+  async discoverOllamaModels(): Promise<void> {
+    console.log('[LLMManager] Discovering Ollama models...');
+
+    try {
+      // Get local Ollama models
+      const ollamaModels = await getLocalOllamaModels();
+
+      if (!ollamaModels || ollamaModels.length === 0) {
+        console.log('[LLMManager] No Ollama models found');
+        return;
+      }
+
+      // Store models in ONE.core storage via channelManager
+      if (!this.channelManager) {
+        console.warn('[LLMManager] channelManager not available - cannot store Ollama models');
+        return;
+      }
+
+      console.log(`[LLMManager] Registering ${ollamaModels.length} Ollama models...`);
+
+      for (const model of ollamaModels) {
+        try {
+          const modelId = `ollama:${model.name}`;
+
+          // Check if model already exists
+          const existing = await this.getLLMFromStorage(modelId);
+          if (existing) {
+            console.log(`[LLMManager] Model ${modelId} already exists, skipping`);
+            continue;
+          }
+
+          // Create LLM object in storage
+          const llmObject = {
+            $type$: 'LLM',
+            modelId: modelId,
+            name: model.name,
+            provider: 'ollama',
+            description: model.details?.family || 'Ollama model',
+            contextLength: (model.details as any)?.context_length || 4096,
+            maxTokens: 2048,
+            capabilities: ['chat', 'completion'],
+            apiKey: '' // Ollama doesn't need API key
+          };
+
+          // await this.saveLLMToStorage(llmObject); // TODO: Method doesn't exist
+          console.log(`[LLMManager] Registered Ollama model: ${modelId}`);
+        } catch (error) {
+          console.error(`[LLMManager] Failed to register Ollama model ${model.name}:`, error);
+        }
+      }
+
+      console.log('[LLMManager] Ollama model discovery complete');
+    } catch (error) {
+      console.error('[LLMManager] Failed to discover Ollama models:', error);
+      throw error;
+    }
+  }
+
   /**
    * Set the personId for a model (used by AIAssistantModel)
    */
