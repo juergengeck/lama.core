@@ -8,6 +8,7 @@
 import type { Subject } from '../one-ai/types/Subject.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type TopicAnalysisModel from '../one-ai/models/TopicAnalysisModel.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
 export interface GetSubjectsRequest {
     topicId: string;
@@ -107,6 +108,37 @@ export class SubjectsPlan {
                 success: false,
                 error: error instanceof Error ? error.message : 'Unknown error'
             };
+        }
+    }
+
+    /**
+     * List all subject ID hashes across all topics
+     * Used by MemoryPlan for indexing
+     */
+    async listSubjects(): Promise<SHA256IdHash<Subject>[]> {
+        if (!this.topicAnalysisModel) {
+            return [];
+        }
+
+        try {
+            const topics = await this.topicAnalysisModel.getAllTopics();
+            const idHashes: SHA256IdHash<Subject>[] = [];
+
+            for (const topicId of topics) {
+                const subjects = await this.topicAnalysisModel.getSubjects(topicId);
+                for (const subject of subjects) {
+                    // Calculate IdHash from subject (ONE.core generates this from keywords)
+                    const idHash = await calculateIdHashOfObj(subject);
+                    if (idHash) {
+                        idHashes.push(idHash as SHA256IdHash<Subject>);
+                    }
+                }
+            }
+
+            return idHashes;
+        } catch (error) {
+            console.error('[SubjectsPlan] Error listing subjects:', error);
+            return [];
         }
     }
 

@@ -1,7 +1,7 @@
 /**
  * ONE.core Recipe for Subject objects
  *
- * Subject represents a distinct discussion topic within a conversation
+ * Subject represents a distinct theme or topic
  * Identified by keyword combination (keywords are the ID property)
  *
  * WHAT ONE.CORE DOES (automatic):
@@ -13,16 +13,13 @@
  * - Add differentiating keywords when concepts diverge
  * - Compare descriptions to determine if versions align
  *
- * Tracks temporal spans when the subject was discussed via timeRanges array
+ * Subject references content (topics, memories) that discuss this theme.
+ * Metadata (timeRanges, messageCount, etc.) lives in Story/Assembly, not in Subject.
  */
 export const SubjectRecipe = {
     $type$: 'Recipe',
     name: 'Subject',
     rule: [
-        {
-            itemprop: 'topic',
-            itemtype: { type: 'string' }
-        },
         {
             itemprop: 'keywords',
             itemtype: {
@@ -36,54 +33,8 @@ export const SubjectRecipe = {
             optional: true // Allow Subjects without keywords (for migration/legacy data)
         },
         {
-            itemprop: 'timeRanges',
-            itemtype: {
-                type: 'array',
-                item: {
-                    type: 'object',
-                    rules: [
-                        {
-                            itemprop: 'start',
-                            itemtype: { type: 'integer' }
-                        },
-                        {
-                            itemprop: 'end',
-                            itemtype: { type: 'integer' }
-                        }
-                    ]
-                }
-            }
-        },
-        {
-            itemprop: 'messageCount',
-            itemtype: { type: 'integer' }
-        },
-        {
-            itemprop: 'createdAt',
-            itemtype: { type: 'integer' }
-        },
-        {
-            itemprop: 'lastSeenAt',
-            itemtype: { type: 'integer' }
-        },
-        {
             itemprop: 'description',
             itemtype: { type: 'string' },
-            optional: true
-        },
-        {
-            itemprop: 'archived',
-            itemtype: { type: 'boolean' },
-            optional: true
-        },
-        {
-            itemprop: 'likes',
-            itemtype: { type: 'integer' },
-            optional: true
-        },
-        {
-            itemprop: 'dislikes',
-            itemtype: { type: 'integer' },
             optional: true
         },
         {
@@ -92,38 +43,18 @@ export const SubjectRecipe = {
             optional: true
         },
         {
-            itemprop: 'abstractionMetadata',
+            itemprop: 'topics',
             itemtype: {
-                type: 'object',
-                rules: [
-                    {
-                        itemprop: 'calculatedAt',
-                        itemtype: { type: 'integer' }
-                    },
-                    {
-                        itemprop: 'reasoning',
-                        itemtype: { type: 'string' },
-                        optional: true
-                    },
-                    {
-                        itemprop: 'parentLevels',
-                        itemtype: {
-                            type: 'array',
-                            item: { type: 'integer' }
-                        },
-                        optional: true
-                    },
-                    {
-                        itemprop: 'childLevels',
-                        itemtype: {
-                            type: 'array',
-                            item: { type: 'integer' }
-                        },
-                        optional: true
-                    }
-                ]
-            },
-            optional: true
+                type: 'array',
+                item: { type: 'string' }
+            }
+        },
+        {
+            itemprop: 'memories',
+            itemtype: {
+                type: 'array',
+                item: { type: 'string' }
+            }
         }
     ]
 };

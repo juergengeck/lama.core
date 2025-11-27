@@ -80,15 +80,13 @@ class SubjectStorage {
     for (const key of allKeys) {
       if (key.includes(topicId)) {
         const subject = await this.get(key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>);
-        if (subject && subject.topic === topicId) {
-          if (includeArchived || !subject.archived) {
-            subjects.push(subject);
-          }
+        if (subject && subject.topics.includes(topicId)) {
+          subjects.push(subject);
         }
       }
     }
 
-    return subjects.sort((a, b) => b.messageCount - a.messageCount);
+    return subjects;
   }
 
   /**
@@ -144,15 +142,13 @@ class SubjectStorage {
 
   /**
    * Archive a subject
+   * Note: Archived metadata should live in Story/Assembly, not in Subject
+   * This method is deprecated and will be removed
    */
   async archive(subjectId: SHA256IdHash<Subject>): Promise<boolean> {
-    const subject = await this.get(subjectId);
-    if (subject) {
-      subject.archived = true;
-      await this.update(subject);
-      return true;
-    }
-    return false;
+    // Archived metadata now lives in Story/Assembly, not in Subject
+    console.warn('[SubjectStorage] archive() is deprecated - use Story/Assembly for metadata');
+    return true;
   }
 
   /**
@@ -167,26 +163,22 @@ class SubjectStorage {
       throw new Error('One or both subjects not found');
     }
 
-    if (subject1.topic !== subject2.topic) {
-      throw new Error('Cannot merge subjects from different topics');
-    }
-
     // Merge keywords (creates new identity via ONE.core automatic ID hashing)
     const mergedKeywords = newKeywords.length > 0
       ? newKeywords
       : [...new Set([...subject1.keywords, ...subject2.keywords])]; // Deduplicate keywords
 
+    // Merge topics and memories from both subjects
+    const mergedTopics = [...new Set([...subject1.topics, ...subject2.topics])];
+    const mergedMemories = [...new Set([...subject1.memories, ...subject2.memories])];
+
     // Create merged subject - ONE.core generates new ID hash from merged keywords
     const merged: Subject = {
       $type$: 'Subject',
-      topic: subject1.topic,
       keywords: mergedKeywords.sort() as SHA256IdHash<Keyword>[], // Sort for deterministic ID hash
-      messageCount: subject1.messageCount + subject2.messageCount,
-      timeRanges: [...subject1.timeRanges, ...subject2.timeRanges],
-      createdAt: Math.min(subject1.createdAt, subject2.createdAt),
-      lastSeenAt: Math.max(subject1.lastSeenAt, subject2.lastSeenAt),
       description: subject1.description || subject2.description, // Prefer first description
-      archived: false
+      topics: mergedTopics,
+      memories: mergedMemories
     };
 
     // Store merged subject (ONE.core generates ID hash from keywords)
@@ -231,15 +223,8 @@ class SubjectStorage {
     const allKeys: string[] = []; // await this.nodeOneCore.listObjects(this.storagePrefix);
     let deletedCount = 0;
 
-    for (const key of allKeys) {
-      const subjectIdHash = key.replace(this.storagePrefix, '') as SHA256IdHash<Subject>;
-      const subject = await this.get(subjectIdHash);
-      if (subject && subject.archived && subject.lastSeenAt < cutoffTime) {
-        // Use the idHash we already have from the key, not subject.id (which doesn't exist)
-        await this.delete(subjectIdHash);
-        deletedCount++;
-      }
-    }
+    // Cleanup logic moved to Story/Assembly since archived metadata lives there now
+    console.warn('[SubjectStorage] cleanup() is deprecated - use Story/Assembly for metadata');
 
     console.log(`[SubjectStorage] Cleaned up ${deletedCount} old archived subjects`);
     return deletedCount;

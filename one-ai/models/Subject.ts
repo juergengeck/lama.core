@@ -82,17 +82,12 @@ export async function createOrUpdateSubject(
   }
 
   // Step 2: Create candidate Subject in-memory (not stored yet)
-  const now = Date.now();
   const candidateSubject: Subject = {
     $type$: 'Subject',
-    topic: topicId,
     keywords: keywordIdHashes, // THIS IS THE ID PROPERTY - ONE.core auto-generates hash from this
-    timeRanges: [{ start: now, end: now }],
-    messageCount: 1,
-    createdAt: now,
-    lastSeenAt: now,
     description,
-    archived: false
+    topics: [topicId],  // Array of topic IDs
+    memories: []  // Array of Memory IdHashes
   };
 
   // Step 3: Calculate ID hash from keywords (ONE.core does this automatically)
@@ -116,13 +111,11 @@ export async function createOrUpdateSubject(
       // ✅ Same concept - store as new version
       console.log(`[Subject] Storing new version of subject with keywords: ${keywordTerms.join(', ')}`);
 
-      // Update with new description and timestamp
+      // Update with new description and add topic if not present
       const updatedSubject: Subject = {
         ...existing,
         description, // Use new description (might be more refined)
-        lastSeenAt: now,
-        messageCount: existing.messageCount + 1,
-        timeRanges: [...existing.timeRanges, { start: now, end: now }]
+        topics: existing.topics.includes(topicId) ? existing.topics : [...existing.topics, topicId]
       };
 
       const result = await storeVersionedObject(updatedSubject);

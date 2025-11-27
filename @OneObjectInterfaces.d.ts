@@ -5,6 +5,9 @@
  * This extends the @OneObjectInterfaces module with our custom types
  */
 
+// Import assembly.core types (Plan, Assembly, Story are defined there)
+import type { Plan, Assembly, Story } from '@assembly/core';
+
 declare module '@OneObjectInterfaces' {
     // Add our custom versioned object types
     export interface OneVersionedObjectInterfaces {
@@ -17,8 +20,10 @@ declare module '@OneObjectInterfaces' {
         Proposal: Proposal;
         ProposalInteractionPlan: ProposalInteractionPlan;
         ProposalInteractionResponse: ProposalInteractionResponse;
-        AssemblyPlan: AssemblyPlan;
-        CubeAssembly: CubeAssembly;
+        // Assembly.core types (imported above)
+        Plan: Plan;
+        Assembly: Assembly;
+        Story: Story;
     }
 
     // Add our custom ID object types
@@ -108,6 +113,7 @@ declare module '@OneObjectInterfaces' {
     export interface LLM {
         $type$: 'LLM';
         name: string; // ID field - model name
+        server: string; // ID field - server URL (mandatory, defaults to http://localhost:11434)
         modelId?: string;
         filename: string;
         modelType: 'local' | 'remote';
@@ -162,26 +168,14 @@ declare module '@OneObjectInterfaces' {
 
     export interface Subject {
         $type$: 'Subject';
-        topic: string; // reference to parent topic (channel ID)
         keywords?: import('@refinio/one.core/lib/util/type-checks.js').SHA256IdHash<Keyword>[]; // Array of Keyword ID hashes - THIS IS THE ID PROPERTY (isId: true in recipe)
-        timeRanges: Array<{
-            start: number;
-            end: number;
-        }>;
-        messageCount: number;
-        createdAt: number;
-        lastSeenAt: number;
         description?: string; // LLM-generated description
-        archived?: boolean;
-        likes?: number;
-        dislikes?: number;
         abstractionLevel?: number; // 1-42 scale
-        abstractionMetadata?: {
-            calculatedAt: number;
-            reasoning?: string;
-            parentLevels?: number[];
-            childLevels?: number[];
-        };
+
+        // References - content that discusses this subject
+        topics: string[];  // Array of topic/channel IDs
+        memories: string[]; // Array of Memory IdHashes (from memory.core)
+        // Future: documents, attachments
     }
 
     export interface Keyword {
@@ -236,37 +230,5 @@ declare module '@OneObjectInterfaces' {
         error?: string; // Optional: if success = false
     }
 
-    export interface AssemblyPlan {
-        $type$: 'AssemblyPlan';
-        id: string; // ID property - call identifier
-        name: string;
-        description: string;
-        demandPatterns: Array<{
-            keywords: string[];
-            urgency: number;
-            criteria: { conversationId: string; prompt: string };
-        }>;
-        supplyPatterns: Array<{
-            keywords: string[];
-            criteria: { modelId: string };
-        }>;
-        owner: string;
-        created: number;
-        modified: number;
-        status: string;
-    }
-
-    export interface CubeAssembly {
-        $type$: 'CubeAssembly';
-        aiAssistantCall: string; // References AssemblyPlan IdHash
-        property: string; // ID property - which property this captures
-        supply: any;
-        demand: any;
-        instanceVersion: any;
-        children: any;
-        plan: string; // References AssemblyPlan IdHash
-        owner: string;
-        created: number;
-        modified: number;
-    }
+    // AssemblyPlan and CubeAssembly removed - use Plan/Assembly/Story from @assembly/core instead
 }

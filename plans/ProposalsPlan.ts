@@ -437,7 +437,7 @@ export class ProposalsPlan {
       const pastSubject = result.obj as Subject;
 
       // Get subject name, description, and keywords
-      const subjectName = pastSubject.topic || 'Unknown Subject';
+      const subjectName = pastSubject.topics?.[0] || 'Unknown Subject';
       const description = pastSubject.description; // Human-readable description if available
       const keywords: string[] = [];
 

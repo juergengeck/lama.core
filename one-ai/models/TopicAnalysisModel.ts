@@ -73,23 +73,12 @@ export default class TopicAnalysisModel extends Model {
             keywordIdHashes.push(keywordIdHash);
         }
 
-        const now = Date.now();
         const subjectObj = {
             $type$: 'Subject' as const,
-            // NO id field - ONE.core auto-generates ID hash from keywords (isId: true in recipe)
-            topic: topicId, // Plain topic ID string (Topic is unversioned, not an ID object)
             keywords: keywordIdHashes, // Array of Keyword ID hashes (this IS the ID property)
-            timeRanges: [
-                {
-                    start: now,
-                    end: now // Initially start = end, will be updated when subject is seen again
-                }
-            ],
-            messageCount: 1,
-            createdAt: now,
-            lastSeenAt: now,
             description: description || undefined, // LLM-generated description
-            archived: false
+            topics: [topicId], // Array of topic/channel IDs where this subject is discussed
+            memories: [] // Array of Memory IdHashes (from memory.core)
         };
 
         // STORE the versioned object first - this creates the vheads file for ID hash lookups
@@ -324,7 +313,7 @@ export default class TopicAnalysisModel extends Model {
 
         const now = Date.now();
         const summaryObj = {
-            $type$: 'Summary',
+            $type$: 'Summary' as const,
             id: `${topicId}-v${version}`, // ID format: topicId-v1, topicId-v2, etc
             topic: topicId,
             content,
@@ -337,13 +326,17 @@ export default class TopicAnalysisModel extends Model {
             changeReason: changeReason || undefined
         };
 
-        // Post to the conversation's channel
+        // CRITICAL: Store as versioned object FIRST - creates vheads file for ID hash lookups
+        const result = await storeVersionedObject(summaryObj);
+        console.log('[TopicAnalysisModel] ✅ Stored Summary with idHash:', result.idHash, 'id:', summaryObj.id);
+
+        // Post to the conversation's channel for sync
         await this.channelManager.postToChannel(
             topicId,
             summaryObj
         );
 
-        return summaryObj;
+        return { ...summaryObj, idHash: result.idHash, hash: result.hash };
     }
 
     /**
@@ -432,9 +425,10 @@ export default class TopicAnalysisModel extends Model {
         let missingKeywordCount = 0;
         for (const keywordId of keywordIdSet) {
             try {
-                const keyword = await getObjectByIdHash(keywordId as any) as any;
-                if (keyword && keyword.$type$ === 'Keyword') {
-                    keywords.push(keyword as Keyword);
+                const result = await getObjectByIdHash(keywordId as any);
+                const obj = result?.obj as any;
+                if (obj && obj.$type$ === 'Keyword') {
+                    keywords.push(obj as Keyword);
                 }
             } catch (error: any) {
                 // Skip missing keywords (can happen after storage clear or migration)
