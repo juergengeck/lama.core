@@ -189,12 +189,10 @@ export function generateKeywordCombination(keywords: any): any {
 
 /**
  * Update Subject message count
+ * @deprecated Subject no longer has messageCount metadata (moved to Story/Assembly)
  */
 export async function updateSubjectMessageCount(subjectHash: any, increment = 1): Promise<any> {
-  // Note: In a real implementation, you'd retrieve the current subject,
-  // update its messageCount, and store a new version
-  // This is simplified for the example
-  console.log(`[Subject] Would increment message count by ${increment} for subject ${subjectHash}`);
+  throw new Error('updateSubjectMessageCount is deprecated - metadata is in Story/Assembly, not Subject');
 }
 
 /**
@@ -209,7 +207,8 @@ export function subjectMatchesKeywords(subjectData: any, keywords = []): any {
 
 /**
  * Check if subject is significant enough to keep
+ * @deprecated Subject no longer has messageCount metadata (moved to Story/Assembly)
  */
 export function isSubjectSignificant(subjectData: any): any {
-  return subjectData.messageCount >= 2 && subjectData.keywords.length > 0;
+  throw new Error('isSubjectSignificant is deprecated - metadata is in Story/Assembly, not Subject');
 }

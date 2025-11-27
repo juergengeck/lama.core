@@ -287,22 +287,15 @@ export default class TopicAnalysisModel extends Model {
 
     /**
      * Unarchive a subject
+     * Note: Subject no longer has archived/lastSeen metadata (moved to Story/Assembly)
+     * This method is deprecated and will be removed
      */
     async unarchiveSubject(topicId: any, subjectId: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
-        const room = new TopicAnalysisRoom(topicId, this.channelManager);
-        const subjects: any = await (room as any).retrieveAllSubjects();
-        const subject = subjects.find((s: any) => s.id === subjectId);
-
-        if (subject) {
-            subject.archived = false;
-            subject.lastSeen = new Date().toISOString();
-            await this.channelManager.postToChannel(topicId, subject);
-            return subject;
-        }
-
-        return null;
+        // Subject no longer has metadata fields like archived/lastSeen
+        // This functionality should be handled at Story/Assembly level
+        throw new Error('unarchiveSubject is deprecated - metadata is in Story/Assembly, not Subject');
     }
 
     /**
