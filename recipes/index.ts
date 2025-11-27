@@ -15,6 +15,7 @@ import { KeywordRecipe } from '../one-ai/recipes/KeywordRecipe.js';
 import { SummaryRecipe } from '../one-ai/recipes/SummaryRecipe.js';
 import { WordCloudSettingsRecipe } from '../one-ai/recipes/WordCloudSettingsRecipe.js';
 import { KeywordAccessStateRecipe } from '../one-ai/recipes/KeywordAccessState.js';
+import { MemoryRecipe } from '@memory/core/recipes/MemoryRecipe.js';
 
 /**
  * All recipes that need to be registered with ONE.core
@@ -33,7 +34,8 @@ export const LAMA_CORE_RECIPES = [
     KeywordRecipe,
     SummaryRecipe,
     WordCloudSettingsRecipe,
-    KeywordAccessStateRecipe
+    KeywordAccessStateRecipe,
+    MemoryRecipe
 ];
 
 // Re-export individual recipes for convenience
@@ -50,5 +52,6 @@ export {
     KeywordRecipe,
     SummaryRecipe,
     WordCloudSettingsRecipe,
-    KeywordAccessStateRecipe
+    KeywordAccessStateRecipe,
+    MemoryRecipe
 };

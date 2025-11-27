@@ -8,7 +8,10 @@
     "watch": "tsc --watch",
     "clean": "find . -name '*.js' -not -path './node_modules/*' -delete"
   },
+  "types": "./@OneObjectInterfaces.d.ts",
   "exports": {
+    "./@OneObjectInterfaces": "./@OneObjectInterfaces.d.ts",
+    "./@OneCoreTypes": "./@OneCoreTypes.d.ts",
     "./plans/*": "./dist/lama.core/plans/*",
     "./services/*": "./dist/lama.core/services/*",
     "./models/*": "./dist/lama.core/models/*",
@@ -29,7 +32,8 @@
     "@refinio/one.core": "*",
     "@refinio/one.models": "*",
     "@chat/core": "*",
-    "@mcp/core": "*"
+    "@mcp/core": "*",
+    "@memory/core": "*"
   },
   "devDependencies": {
     "@types/chai-as-promised": "^8.0.2",

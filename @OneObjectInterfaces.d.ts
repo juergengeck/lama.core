@@ -7,6 +7,8 @@
 
 // Import assembly.core types (Plan, Assembly, Story are defined there)
 import type { Plan, Assembly, Story } from '@assembly/core';
+// Import memory.core types
+import type { Memory } from '@memory/core/types/Memory.js';
 
 declare module '@OneObjectInterfaces' {
     // Add our custom versioned object types
@@ -24,6 +26,8 @@ declare module '@OneObjectInterfaces' {
         Plan: Plan;
         Assembly: Assembly;
         Story: Story;
+        // Memory.core types
+        Memory: Memory;
     }
 
     // Add our custom ID object types

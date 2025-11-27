@@ -4,7 +4,7 @@
     "module": "ES2022",
     "lib": ["ES2022", "DOM"],
     "jsx": "react-jsx",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "allowJs": true,
@@ -22,9 +22,12 @@
       "@chat/core/*": ["../chat.core/dist/types/*", "../chat.core/*"],
       "@connection/core/*": ["../connection.core/dist/types/*", "../connection.core/*"],
       "@trust/core/*": ["../trust.core/*"],
-      "@mcp/core": ["../mcp.core/dist"]
+      "@memory/core/*": ["../memory.core/src/*"],
+      "@mcp/core": ["../mcp.core/dist"],
+      "@cube/core": ["../../node_modules/@cube/core/dist"],
+      "@refinio/api/*": ["../../node_modules/@refinio/api/dist/*"]
     }
   },
-  "include": ["ai/**/*.ts", "constants/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "services/**/*.ts", "one-ai/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "ui/**/*.ts", "ui/**/*.tsx", "*.d.ts", "packages/one.core/@OneObjectInterfaces.d.ts"],
+  "include": ["ai/**/*.ts", "constants/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "services/**/*.ts", "one-ai/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "ui/**/*.ts", "ui/**/*.tsx", "*.d.ts"],
   "exclude": ["node_modules", "**/*.js", "packages/**", "dist/**"]
 }
