@@ -172,13 +172,17 @@ class SubjectStorage {
     const mergedTopics = [...new Set([...subject1.topics, ...subject2.topics])];
     const mergedMemories = [...new Set([...subject1.memories, ...subject2.memories])];
 
+    // Merge feedback refs from both subjects
+    const mergedFeedbackRefs = [...new Set([...(subject1.feedbackRefs || []), ...(subject2.feedbackRefs || [])])];
+
     // Create merged subject - ONE.core generates new ID hash from merged keywords
     const merged: Subject = {
       $type$: 'Subject',
       keywords: mergedKeywords.sort() as SHA256IdHash<Keyword>[], // Sort for deterministic ID hash
       description: subject1.description || subject2.description, // Prefer first description
       topics: mergedTopics,
-      memories: mergedMemories
+      memories: mergedMemories,
+      feedbackRefs: mergedFeedbackRefs
     };
 
     // Store merged subject (ONE.core generates ID hash from keywords)

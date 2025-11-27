@@ -58,12 +58,29 @@ export async function initializeCoreModels(
     deps: CoreDependencies,
     onProgress?: (progress: InitializationProgress) => void
 ): Promise<void> {
-    console.log('[CoreInitializer] Starting initialization...');
+    console.log('[CoreInitializer.initializeCoreModels] 🟢 START - Core initialization beginning');
+    console.log('[CoreInitializer.initializeCoreModels] Received deps:', {
+        oneCore: !!deps.oneCore,
+        leuteModel: !!deps.leuteModel,
+        channelManager: !!deps.channelManager,
+        topicModel: !!deps.topicModel,
+        connections: !!deps.connections,
+        llmManager: !!deps.llmManager,
+        aiAssistantModel: !!deps.aiAssistantModel
+    });
 
     // Step 1: LeuteModel (base for all identity operations)
     onProgress?.({ stage: 'leute', percent: 10, message: 'Initializing contact model...' });
+    console.log('[CoreInitializer] 🚀 Calling leuteModel.init()...');
     await deps.leuteModel.init();
-    console.log('[CoreInitializer] ✅ LeuteModel initialized');
+    console.log('[CoreInitializer] ✅ leuteModel.init() completed');
+
+    // CRITICAL: Set ownerId immediately after LeuteModel init, BEFORE AI module tries to use it
+    const myMainId = await deps.leuteModel.myMainIdentity();
+    if (deps.oneCore) {
+        deps.oneCore.ownerId = myMainId;
+        console.log('[CoreInitializer] ✅ Set oneCore.ownerId:', myMainId?.substring(0, 8) + '...');
+    }
 
     // Step 2: LLM infrastructure (CRITICAL: before channels)
     onProgress?.({ stage: 'llm', percent: 30, message: 'Initializing LLM infrastructure...' });
@@ -76,14 +93,21 @@ export async function initializeCoreModels(
 
     // Discover LLM models BEFORE initializing AIAssistantPlan
     // This ensures AIAssistantPlan.init() can create default chats with discovered models
+    console.log('[CoreInitializer] 🚀 Calling llmManager.init()...');
     await deps.llmManager.init();
-    console.log('[CoreInitializer] ✅ LLMManager initialized - models discovered');
+    console.log('[CoreInitializer] ✅ llmManager.init() completed - models discovered');
 
     // Initialize AI Assistant Plan (populates LLM contact cache)
     // Now that models are discovered, init() will create default chats
+    console.log('[CoreInitializer] 🔍 Checking if aiAssistantModel.init exists...');
+    console.log('[CoreInitializer] aiAssistantModel:', deps.aiAssistantModel ? 'EXISTS' : 'UNDEFINED');
+    console.log('[CoreInitializer] aiAssistantModel.init:', deps.aiAssistantModel?.init ? 'EXISTS' : 'UNDEFINED');
     if (deps.aiAssistantModel?.init) {
+        console.log('[CoreInitializer] 🚀 Calling aiAssistantModel.init()...');
         await deps.aiAssistantModel.init();
-        console.log('[CoreInitializer] ✅ AIAssistantPlan initialized');
+        console.log('[CoreInitializer] ✅ aiAssistantModel.init() completed');
+    } else {
+        console.warn('[CoreInitializer] ⚠️ Skipping aiAssistantModel.init() - not available');
     }
 
     // Step 3: ChannelManager (NOW safe to process existing messages)
@@ -121,7 +145,7 @@ export async function initializeCoreModels(
     console.log('[CoreInitializer] ✅ ChatPlan ready (stateless)');
 
     onProgress?.({ stage: 'complete', percent: 100, message: 'Initialization complete' });
-    console.log('[CoreInitializer] ✅ All core models initialized');
+    console.log('[CoreInitializer.initializeCoreModels] 🟢 END - All core models initialized');
 }
 
 /**

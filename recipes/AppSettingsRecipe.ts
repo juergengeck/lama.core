@@ -13,66 +13,233 @@
 
 import type { Recipe } from '@refinio/one.core/lib/recipes.js';
 
-export const AppSettingsRecipe = {
+export const AppSettingsRecipe: Recipe = {
     $type$: 'Recipe',
     name: 'AppSettings',
+    rule: [
+        {
+            itemprop: '$type$',
+            itemtype: { type: 'string', regexp: /^AppSettings$/ }
+        },
+        {
+            itemprop: 'owner',
+            itemtype: {
+                type: 'referenceToId',
+                allowedTypes: new Set(['Instance'])
+            },
+            isId: true  // ID field - owner (Instance) makes settings unique per instance
+        },
 
-    // ID field - owner (Instance) makes settings unique per instance
-    owner: {
-        type: 'IdHashRef',
-        idHash: 'instance',
-        required: true,
-        isId: true
-    },
+        // App Settings (UI and preferences)
+        {
+            itemprop: 'theme',
+            itemtype: { type: 'string' },  // 'light' | 'dark' | 'auto'
+            optional: true
+        },
+        {
+            itemprop: 'language',
+            itemtype: { type: 'string' },  // 'en' | 'de' | 'es' | 'fr'
+            optional: true
+        },
+        {
+            itemprop: 'notifications',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'soundEnabled',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'vibrationEnabled',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'compactMode',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'showTimestamps',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'dateFormat',
+            itemtype: { type: 'string' },  // '12h' | '24h'
+            optional: true
+        },
 
-    // App Settings (UI and preferences)
-    theme: { type: 'string' },  // 'light' | 'dark' | 'auto'
-    language: { type: 'string' },  // 'en' | 'de' | 'es' | 'fr'
-    notifications: { type: 'boolean' },
-    soundEnabled: { type: 'boolean' },
-    vibrationEnabled: { type: 'boolean' },
-    compactMode: { type: 'boolean' },
-    showTimestamps: { type: 'boolean' },
-    dateFormat: { type: 'string' },  // '12h' | '24h'
+        // Device Settings (discovery and pairing)
+        {
+            itemprop: 'discoveryEnabled',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'discoveryPort',
+            itemtype: { type: 'number' },
+            optional: true
+        },
+        {
+            itemprop: 'autoConnect',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'addOnlyConnectedDevices',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'showOfflineDevices',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'discoveryTimeout',
+            itemtype: { type: 'number' },  // milliseconds
+            optional: true
+        },
 
-    // Device Settings (discovery and pairing)
-    discoveryEnabled: { type: 'boolean' },
-    discoveryPort: { type: 'number' },
-    autoConnect: { type: 'boolean' },
-    addOnlyConnectedDevices: { type: 'boolean' },
-    showOfflineDevices: { type: 'boolean' },
-    discoveryTimeout: { type: 'number' },  // milliseconds
+        // Network Settings (connection and transport)
+        {
+            itemprop: 'commServerUrl',
+            itemtype: { type: 'string' },
+            optional: true
+        },
+        {
+            itemprop: 'autoReconnect',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'connectionTimeout',
+            itemtype: { type: 'number' },  // milliseconds
+            optional: true
+        },
+        {
+            itemprop: 'enableWebSocket',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'enableQUIC',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'enableBluetooth',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
 
-    // Network Settings (connection and transport)
-    commServerUrl: { type: 'string' },
-    autoReconnect: { type: 'boolean' },
-    connectionTimeout: { type: 'number' },  // milliseconds
-    enableWebSocket: { type: 'boolean' },
-    enableQUIC: { type: 'boolean' },
-    enableBluetooth: { type: 'boolean' },
+        // AI Settings (LLM and assistant configuration)
+        {
+            itemprop: 'aiEnabled',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'aiProvider',
+            itemtype: { type: 'string' },  // 'ollama' | 'lmstudio' | 'claude' | 'openai'
+            optional: true
+        },
+        {
+            itemprop: 'aiModel',
+            itemtype: { type: 'string' },
+            optional: true
+        },
+        {
+            itemprop: 'aiTemperature',
+            itemtype: { type: 'number' },  // 0-2
+            optional: true
+        },
+        {
+            itemprop: 'aiMaxTokens',
+            itemtype: { type: 'number' },
+            optional: true
+        },
+        {
+            itemprop: 'aiStreamResponses',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'aiAutoSummarize',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'aiKeywordExtraction',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
 
-    // AI Settings (LLM and assistant configuration)
-    aiEnabled: { type: 'boolean' },
-    aiProvider: { type: 'string' },  // 'ollama' | 'lmstudio' | 'claude' | 'openai'
-    aiModel: { type: 'string' },
-    aiTemperature: { type: 'number' },  // 0-2
-    aiMaxTokens: { type: 'number' },
-    aiStreamResponses: { type: 'boolean' },
-    aiAutoSummarize: { type: 'boolean' },
-    aiKeywordExtraction: { type: 'boolean' },
+        // Privacy Settings (security and privacy controls)
+        {
+            itemprop: 'encryptStorage',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'requirePINOnStartup',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'autoLockTimeout',
+            itemtype: { type: 'number' },  // minutes, 0 = never
+            optional: true
+        },
+        {
+            itemprop: 'sendAnalytics',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'sendCrashReports',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
 
-    // Privacy Settings (security and privacy controls)
-    encryptStorage: { type: 'boolean' },
-    requirePINOnStartup: { type: 'boolean' },
-    autoLockTimeout: { type: 'number' },  // minutes, 0 = never
-    sendAnalytics: { type: 'boolean' },
-    sendCrashReports: { type: 'boolean' },
-
-    // Chat Settings (messaging preferences)
-    enterToSend: { type: 'boolean' },
-    showReadReceipts: { type: 'boolean' },
-    groupMessagesBy: { type: 'string' },  // 'none' | 'hour' | 'day'
-    maxHistoryDays: { type: 'number' },  // 0 = unlimited
-    autoDownloadMedia: { type: 'boolean' },
-    maxMediaSize: { type: 'number' }  // MB
+        // Chat Settings (messaging preferences)
+        {
+            itemprop: 'enterToSend',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'showReadReceipts',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'groupMessagesBy',
+            itemtype: { type: 'string' },  // 'none' | 'hour' | 'day'
+            optional: true
+        },
+        {
+            itemprop: 'maxHistoryDays',
+            itemtype: { type: 'number' },  // 0 = unlimited
+            optional: true
+        },
+        {
+            itemprop: 'autoDownloadMedia',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'maxMediaSize',
+            itemtype: { type: 'number' },  // MB
+            optional: true
+        },
+        {
+            itemprop: '$versionHash$',
+            itemtype: { type: 'string' },
+            optional: true
+        }
+    ]
 };

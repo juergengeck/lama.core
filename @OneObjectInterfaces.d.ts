@@ -179,7 +179,21 @@ declare module '@OneObjectInterfaces' {
         // References - content that discusses this subject
         topics: string[];  // Array of topic/channel IDs
         memories: string[]; // Array of Memory IdHashes (from memory.core)
+        feedbackRefs: string[]; // Array of Feedback IdHashes - user ratings on messages/memories in this subject's context
         // Future: documents, attachments
+    }
+
+    /**
+     * Feedback - minimal user rating of content
+     * Identity: target + author (one rating per person per target)
+     * NO timestamp: Story provides it via reverse map
+     * NO targetType: Subject understands what targets it has
+     */
+    export interface Feedback {
+        $type$: 'Feedback';
+        target: string;  // IdHash of rated thing (Message, Memory, etc.)
+        author: string;  // Person IdHash who gave feedback
+        rating: 'like' | 'dislike';
     }
 
     export interface Keyword {

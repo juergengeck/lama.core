@@ -192,7 +192,7 @@ export class KeywordDetailPlan {
         try {
           console.log('[KeywordDetailPlan] 🔍 Attempting to load subject with ID hash:', subjectIdHash);
           const result = await getObjectByIdHash(subjectIdHash);
-          console.log('[KeywordDetailPlan] 🔍 getObjectByIdHash returned:', result ? `obj: ${result.obj?.$type$}` : 'null');
+          console.log('[KeywordDetailPlan] 🔍 getObjectByIdHash returned:', result ? `obj: ${(result.obj as any)?.$type$}` : 'null');
           if (result?.obj) {
             subjects.push(result.obj);
           } else {

@@ -8,7 +8,7 @@
 export interface ModelConfig {
   id: string;
   name: string;
-  provider: 'anthropic' | 'openai' | 'ollama' | 'lmstudio' | 'meta' | 'deepseek' | 'qwen';
+  provider: 'anthropic' | 'openai' | 'google' | 'ollama' | 'lmstudio' | 'meta' | 'deepseek' | 'qwen';
   type: 'local' | 'remote';
   description: string;
   contextWindow?: number;
@@ -23,12 +23,12 @@ export interface ModelConfig {
  */
 export const MODEL_REGISTRY: Record<string, ModelConfig> = {
   // Anthropic Claude Models
-  'claude-opus-4-1': {
-    id: 'claude-opus-4-1',
-    name: 'Claude Opus 4.1',
+  'claude-opus-4-5-20251101': {
+    id: 'claude-opus-4-5-20251101',
+    name: 'Claude Opus 4.5',
     provider: 'anthropic',
     type: 'remote',
-    description: 'Most capable model, best for complex tasks',
+    description: 'Most capable model. Best for complex reasoning, coding, and agentic tasks.',
     contextWindow: 200000,
     defaultTemperature: 1.0,
     requiresApiKey: true,
@@ -158,6 +158,30 @@ export const MODEL_REGISTRY: Record<string, ModelConfig> = {
     capabilities: ['chat', 'inference'],
   },
 
+  // Google Gemini Models
+  'gemini-2.5-pro': {
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
+    provider: 'google',
+    type: 'remote',
+    description: 'Most capable Gemini. 1M token context, strong reasoning and coding.',
+    contextWindow: 1000000,
+    defaultTemperature: 1.0,
+    requiresApiKey: true,
+    capabilities: ['chat', 'inference', 'streaming', 'function-calling'],
+  },
+  'gemini-2.5-flash': {
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
+    provider: 'google',
+    type: 'remote',
+    description: 'Fast and efficient. Great balance of speed and capability.',
+    contextWindow: 1000000,
+    defaultTemperature: 1.0,
+    requiresApiKey: true,
+    capabilities: ['chat', 'inference', 'streaming'],
+  },
+
   // DeepSeek Models
   'deepseek-chat': {
     id: 'deepseek-chat',
@@ -266,6 +290,7 @@ export function getModelProvider(modelId: string): string {
   if (modelId.includes(':')) return 'ollama';
 
   if (modelId.includes('claude')) return 'anthropic';
+  if (modelId.includes('gemini')) return 'google';
   // Only match real OpenAI models, not OSS models like "gpt-oss"
   if (modelId.startsWith('gpt-') || modelId.startsWith('o1-') || modelId.startsWith('o3-')) {
     // Exclude OSS/local variants

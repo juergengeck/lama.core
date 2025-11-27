@@ -163,20 +163,17 @@ export class ProposalEngine {
     for (const pastTopicId of allTopics || []) {
       // Skip current topic
       if (pastTopicId === topicId) {
+        console.log('[ProposalEngine] Skipping current topic:', pastTopicId);
         continue;
       }
 
       try {
         const isMemoryTopic = pastTopicId === 'lama';
-        if (isMemoryTopic) {
-          console.log('[ProposalEngine] Processing MEMORY topic (lama)');
-        }
+        console.log('[ProposalEngine] Processing topic:', pastTopicId, isMemoryTopic ? '(MEMORY)' : '');
 
         const pastSubjects = await this.topicAnalysisModel.getSubjects(pastTopicId);
 
-        if (isMemoryTopic) {
-          console.log('[ProposalEngine] Found', pastSubjects?.length || 0, 'subjects in MEMORY topic');
-        }
+        console.log('[ProposalEngine] Found', pastSubjects?.length || 0, 'subjects in topic:', pastTopicId);
 
         for (const pastSubject of pastSubjects || []) {
           // Get past subject keywords
@@ -198,6 +195,7 @@ export class ProposalEngine {
           }
 
           if (pastKeywords.length === 0) {
+            console.log('[ProposalEngine] Skipping subject with no keywords:', pastSubject.id || 'unknown');
             continue;
           }
 
@@ -206,8 +204,22 @@ export class ProposalEngine {
 
           // Skip if below threshold
           if (jaccardScore < config.minJaccard) {
+            console.log('[ProposalEngine] Skipping subject due to low Jaccard score:', {
+              subjectId: pastSubject.id || 'unknown',
+              score: jaccardScore.toFixed(3),
+              threshold: config.minJaccard,
+              pastKeywords: pastKeywords.slice(0, 5).join(', ')
+            });
             continue;
           }
+
+          console.log('[ProposalEngine] ✅ Creating proposal for subject:', {
+            subjectId: pastSubject.id || 'unknown',
+            jaccardScore: jaccardScore.toFixed(3),
+            matchedKeywords: [...new Set(currentKeywords.map(k => k.toLowerCase()))].filter(k =>
+              new Set(pastKeywords.map(p => p.toLowerCase())).has(k)
+            ).slice(0, 5).join(', ')
+          });
 
           // Calculate matched keywords
           const currentSet = new Set(currentKeywords.map(k => k.toLowerCase()));

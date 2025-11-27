@@ -128,7 +128,6 @@ export class LLMConfigPlan {
   async testConnection(request: TestConnectionRequest): Promise<TestConnectionResponse> {
     // Default to localhost Ollama if no server specified
     const server = request.server || 'http://localhost:11434';
-    console.log('[LLMConfigPlan] Testing connection to:', server);
 
     try {
       const result = await this.testOllamaConnection(server, request.authToken, request.serviceName);
@@ -157,7 +156,6 @@ export class LLMConfigPlan {
   async testConnectionAndDiscoverModels(request: TestConnectionRequest): Promise<TestConnectionResponse> {
     // Default to localhost Ollama if no server specified
     const server = request.server || 'http://localhost:11434';
-    console.log('[LLMConfigPlan] Testing connection and discovering models from:', server);
 
     try {
       // Test connection
@@ -205,20 +203,27 @@ export class LLMConfigPlan {
    * Save Ollama configuration to ONE.core storage
    */
   async setConfig(request: SetOllamaConfigRequest): Promise<SetOllamaConfigResponse> {
-    console.log('[LLMConfigPlan] Saving config:', {
+    console.log('[LLMConfigPlan.setConfig] 🟢 START - Saving config');
+    console.log('[LLMConfigPlan.setConfig] Request:', {
       modelType: request.modelType,
       server: request.server,
       modelName: request.modelName,
       setAsActive: request.setAsActive,
+      hasApiKey: !!request.apiKey,
+      hasAuthToken: !!request.authToken
     });
-    console.log('[LLMConfigPlan] ⚠️ request.setAsActive =', request.setAsActive);
+    console.log('[LLMConfigPlan.setConfig] setAsActive =', request.setAsActive);
+    console.log('[LLMConfigPlan.setConfig] aiAssistantModel exists?', this.nodeOneCore.aiAssistantModel ? 'YES' : 'NO');
 
     try {
       // Check if model requires API key (cloud provider)
       const requiresApiKey = modelRequiresApiKey(request.modelName);
 
+      // If API key is provided, treat as cloud model (don't require server)
+      const isCloudModel = requiresApiKey || !!request.apiKey;
+
       // Validation: remote Ollama (not cloud API) requires server
-      if (request.modelType === 'remote' && !request.server && !requiresApiKey) {
+      if (request.modelType === 'remote' && !request.server && !isCloudModel) {
         return {
           success: false,
           error: 'Remote Ollama requires server address',
@@ -305,7 +310,7 @@ export class LLMConfigPlan {
       const llmObject: any = {
         $type$: 'LLM',
         name: request.modelName,
-        server: request.server || '', // Mandatory (isId: true in LLMRecipe)
+        server: request.server || 'http://localhost:11434', // Mandatory (isId: true in LLMRecipe) - default to localhost for local models
         filename: request.modelName,
         modelId: request.modelName, // Required field for identification
         modelType: request.modelType,
@@ -346,20 +351,25 @@ export class LLMConfigPlan {
 
       // If setting as active, set it as the default model in AIAssistantPlan
       // Access aiAssistantModel dynamically from nodeOneCore to avoid initialization order issues
+      console.log('[LLMConfigPlan.setConfig] 🔍 Checking if should set as default...');
+      console.log('[LLMConfigPlan.setConfig] Condition check: setAsActive=', request.setAsActive, 'aiAssistantModel exists=', !!this.nodeOneCore.aiAssistantModel);
       if (request.setAsActive && this.nodeOneCore.aiAssistantModel) {
-        console.log(`[LLMConfigPlan] Setting ${request.modelName} as default model`);
+        console.log(`[LLMConfigPlan.setConfig] 🚀 Calling aiAssistantModel.setDefaultModel(${request.modelName})...`);
         await this.nodeOneCore.aiAssistantModel.setDefaultModel(request.modelName);
-        console.log(`[LLMConfigPlan] Successfully set ${request.modelName} as default model`);
+        console.log(`[LLMConfigPlan.setConfig] ✅ setDefaultModel() completed`);
       } else if (request.setAsActive) {
-        console.warn('[LLMConfigPlan] ⚠️ Cannot set default model - aiAssistantModel not yet initialized');
+        console.error('[LLMConfigPlan.setConfig] ❌ Cannot set default model - aiAssistantModel not yet initialized');
+      } else {
+        console.log('[LLMConfigPlan.setConfig] ⏭️ Skipping setDefaultModel (setAsActive=false)');
       }
 
+      console.log('[LLMConfigPlan.setConfig] 🟢 END - Config saved successfully');
       return {
         success: true,
         configHash: hash,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Set config error:', error);
+      console.error('[LLMConfigPlan.setConfig] ❌ ERROR - Failed to save config:', error);
       return {
         success: false,
         error: error.message || 'Failed to save configuration',
@@ -441,18 +451,20 @@ export class LLMConfigPlan {
   /**
    * Fetch models from Ollama server (active config or specified URL)
    */
-  async getAvailableModels(request: GetAvailableModelsRequest): Promise<GetAvailableModelsResponse> {
-    console.log('[LLMConfigPlan] Get available models:', request);
+  async getAvailableModels(request?: GetAvailableModelsRequest): Promise<GetAvailableModelsResponse> {
+    // Handle undefined request - use empty object to fetch from active config
+    const req = request || {};
+    console.log('[LLMConfigPlan] Get available models:', req);
 
     try {
       let server: string;
       let authToken: string | undefined;
       let source: 'active_config' | 'specified_url';
 
-      if (request.server) {
+      if (req.server) {
         // Use specified server
-        server = request.server;
-        authToken = request.authToken;
+        server = req.server;
+        authToken = req.authToken;
         source = 'specified_url';
       } else {
         // Use active config

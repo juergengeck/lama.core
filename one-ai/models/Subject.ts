@@ -87,7 +87,8 @@ export async function createOrUpdateSubject(
     keywords: keywordIdHashes, // THIS IS THE ID PROPERTY - ONE.core auto-generates hash from this
     description,
     topics: [topicId],  // Array of topic IDs
-    memories: []  // Array of Memory IdHashes
+    memories: [],  // Array of Memory IdHashes
+    feedbackRefs: []  // Array of Feedback IdHashes
   };
 
   // Step 3: Calculate ID hash from keywords (ONE.core does this automatically)

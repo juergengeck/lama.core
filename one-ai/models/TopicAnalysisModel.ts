@@ -78,7 +78,8 @@ export default class TopicAnalysisModel extends Model {
             keywords: keywordIdHashes, // Array of Keyword ID hashes (this IS the ID property)
             description: description || undefined, // LLM-generated description
             topics: [topicId], // Array of topic/channel IDs where this subject is discussed
-            memories: [] // Array of Memory IdHashes (from memory.core)
+            memories: [], // Array of Memory IdHashes (from memory.core)
+            feedbackRefs: [] // Array of Feedback IdHashes
         };
 
         // STORE the versioned object first - this creates the vheads file for ID hash lookups

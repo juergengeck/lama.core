@@ -55,6 +55,13 @@ export const SubjectRecipe = {
                 type: 'array',
                 item: { type: 'string' }
             }
+        },
+        {
+            itemprop: 'feedbackRefs',
+            itemtype: {
+                type: 'array',
+                item: { type: 'string' }  // Feedback IdHashes
+            }
         }
     ]
 };

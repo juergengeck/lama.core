@@ -87,6 +87,9 @@ export interface AIAssistantPlanDependencies {
   /** Optional: MCP manager for memory context (Node.js only) */
   mcpManager?: any;
 
+  /** Optional: AI settings manager for user preferences (response length, etc.) */
+  aiSettingsManager?: any;
+
   /** Storage functions for AIManager (to avoid module duplication in Vite worker) */
   storageDeps: AIManagerDeps;
 }
@@ -110,9 +113,11 @@ export class AIAssistantPlan {
   private initialized = false;
 
   constructor(deps: AIAssistantPlanDependencies) {
+    console.log('[AIAssistantPlan.constructor] 🔵 START - Creating AIAssistantPlan instance');
     this.deps = deps;
 
     // Phase 1: Construct components with non-circular dependencies
+    console.log('[AIAssistantPlan.constructor] Creating AIManager...');
     this.aiManager = new AIManager(deps.leuteModel, deps.storageDeps);
 
     this.topicManager = new AITopicManager(
@@ -154,6 +159,9 @@ export class AIAssistantPlan {
 
     // CRITICAL: Inject self into messageProcessor so it calls through us, not llmManager directly
     this.messageProcessor.setAIAssistant(this);
+
+    console.log('[AIAssistantPlan.constructor] 🔵 END - AIAssistantPlan construction complete');
+    console.log('[AIAssistantPlan.constructor] initialized flag:', this.initialized);
   }
 
   /**
@@ -227,12 +235,14 @@ export class AIAssistantPlan {
    * Performs two-phase initialization to resolve circular dependencies
    */
   async init(): Promise<void> {
+    console.log('[AIAssistantPlan.init] 🟢 START - Initialization called');
+    console.log('[AIAssistantPlan.init] initialized flag before check:', this.initialized);
     if (this.initialized) {
-      console.log('[AIAssistantPlan] Already initialized');
+      console.log('[AIAssistantPlan.init] ⚠️ Already initialized - returning early');
       return;
     }
 
-    console.log('[AIAssistantPlan] Initializing...');
+    console.log('[AIAssistantPlan.init] Proceeding with initialization...');
 
     try {
       // Phase 2: Resolve circular dependencies via setters
@@ -317,23 +327,31 @@ export class AIAssistantPlan {
       }
 
       // Auto-select first available model on first run (when no saved default exists)
+      console.log('[AIAssistantPlan.init] 🔍 Checking for auto-select...');
+      console.log('[AIAssistantPlan.init] Current default model:', this.topicManager.getDefaultModel() || 'NONE');
+      console.log('[AIAssistantPlan.init] Available models count:', models.length);
       if (!this.topicManager.getDefaultModel() && models.length > 0) {
         const firstModel = models[0];
-        console.log(`[AIAssistantPlan] Auto-selecting first available model: ${firstModel.id}`);
+        console.log(`[AIAssistantPlan.init] 🚀 Auto-selecting first available model: ${firstModel.id}`);
         await this.setDefaultModel(firstModel.id);
+        console.log(`[AIAssistantPlan.init] ✅ Auto-select completed`);
+      } else {
+        console.log('[AIAssistantPlan.init] ⏭️ Skipping auto-select (default exists or no models)');
       }
 
-      if (this.topicManager.getDefaultModel()) {
-        console.log(`[AIAssistantPlan] Default model configured: ${this.topicManager.getDefaultModel()}`);
+      const finalDefaultModel = this.topicManager.getDefaultModel();
+      if (finalDefaultModel) {
+        console.log(`[AIAssistantPlan.init] Default model configured: ${finalDefaultModel}`);
       } else {
-        console.log(`[AIAssistantPlan] No default model set - user will be prompted to select one`);
+        console.log(`[AIAssistantPlan.init] No default model set - user will be prompted to select one`);
       }
 
       // Note: Scan is NOT called here because ChannelManager hasn't loaded channels yet
       // The scan will be called by CoreInitializer AFTER ChannelManager.init()
 
       this.initialized = true;
-      console.log('[AIAssistantPlan] ✅ Initialization complete (scan deferred until after ChannelManager)');
+      console.log('[AIAssistantPlan.init] 🟢 END - Initialization complete');
+      console.log('[AIAssistantPlan.init] initialized flag after:', this.initialized);
     } catch (error) {
       console.error('[AIAssistantPlan] Initialization failed:', error);
       throw error;
@@ -345,14 +363,16 @@ export class AIAssistantPlan {
    * Called when user selects a default model
    */
   private async createDefaultChats(): Promise<void> {
-    console.log('[AIAssistantPlan] Creating default AI chats...');
+    console.log('[AIAssistantPlan.createDefaultChats] 🟢 START - Creating default AI chats');
 
     const defaultModel = this.topicManager.getDefaultModel();
+    console.log(`[AIAssistantPlan.createDefaultChats] Default model check:`, defaultModel || 'NONE');
     if (!defaultModel) {
+      console.error('[AIAssistantPlan.createDefaultChats] ❌ No default model set - cannot create chats');
       throw new Error('Cannot create default chats - no default model set');
     }
 
-    console.log(`[AIAssistantPlan] Using default model: ${defaultModel}`);
+    console.log(`[AIAssistantPlan.createDefaultChats] Using default model: ${defaultModel}`);
 
     await this.topicManager.ensureDefaultChats(
       this.aiManager,
@@ -365,7 +385,7 @@ export class AIAssistantPlan {
     // Refresh message processor's model list after chat creation
     const updatedModels: LLMModelInfo[] = await this.deps.llmManager?.getAvailableModels() || [];
     this.messageProcessor.setAvailableLLMModels(updatedModels);
-    console.log(`[AIAssistantPlan] ✅ Default chats created with ${updatedModels.length} models`);
+    console.log(`[AIAssistantPlan.createDefaultChats] 🟢 END - Default chats created with ${updatedModels.length} models`);
   }
 
   /**
@@ -508,7 +528,7 @@ export class AIAssistantPlan {
    * Called when user selects a model in ModelOnboarding
    */
   async setDefaultModel(modelId: string): Promise<void> {
-    console.log(`[AIAssistantPlan] Setting default model: ${modelId}`);
+    console.log(`[AIAssistantPlan.setDefaultModel] 🟢 START - Setting default model: ${modelId}`);
 
     // Set as default immediately - topicManager uses modelId directly
     this.topicManager.setDefaultModel(modelId);
@@ -526,13 +546,14 @@ export class AIAssistantPlan {
     // Wait for topics to be created so they appear in conversation list immediately
     // (Welcome messages still generate in background via callbacks)
     try {
+      console.log(`[AIAssistantPlan.setDefaultModel] 🚀 Calling createDefaultChats()...`);
       await this.createDefaultChats();
-      console.log(`[AIAssistantPlan] ✅ Default chats created, topics are ready`);
+      console.log(`[AIAssistantPlan.setDefaultModel] ✅ createDefaultChats() completed`);
     } catch (err) {
-      console.error('[AIAssistantPlan] ❌ Failed to create default chats:', err);
+      console.error('[AIAssistantPlan.setDefaultModel] ❌ createDefaultChats() failed:', err);
     }
 
-    console.log(`[AIAssistantPlan] ✅ Default model set: ${modelId}`);
+    console.log(`[AIAssistantPlan.setDefaultModel] 🟢 END - Default model set: ${modelId}`);
   }
 
   /**
@@ -705,10 +726,12 @@ export class AIAssistantPlan {
       throw new Error('[AIAssistantPlan] LLM Manager not available');
     }
 
+    // Read maxTokens from user settings
+    const maxTokens = await this.getResponseLength();
+
     // All LLM calls go through here - we can add middleware, logging, etc.
-    // Pass topicId through to LLM manager for MCP configuration check
-    const optionsWithTopic = topicId ? { ...options, topicId } : options;
-    return await this.deps.llmManager.chat(history, modelId, optionsWithTopic);
+    const optionsWithSettings = { ...options, maxTokens, topicId };
+    return await this.deps.llmManager.chat(history, modelId, optionsWithSettings);
   }
 
   /**
@@ -748,6 +771,9 @@ export class AIAssistantPlan {
     const topicId = options?.topicId;
     console.log(`[AIAssistantPlan] chatWithAnalysis (THREE-PHASE NON-BLOCKING) starting for model: ${modelId}, topicId: ${topicId || 'none'}`);
 
+    // Read maxTokens from user settings
+    const maxTokens = await this.getResponseLength();
+
     // ═══════════════════════════════════════════════════════════════════
     // THREE-PHASE REACT PATTERN WITH TRANSPARENT PROGRESS
     // ═══════════════════════════════════════════════════════════════════
@@ -783,6 +809,7 @@ export class AIAssistantPlan {
         // This uses the normal chat flow which includes tool processing
         const toolEvalResponse = await this.deps.llmManager.chat(history, modelId, {
           topicId,
+          maxTokens,
           temperature: 0.3, // Lower temp for more deterministic tool selection
           // Don't disable tools here - we WANT tool calls in Phase 0
         });
@@ -827,6 +854,7 @@ export class AIAssistantPlan {
 
     const responsePromise = this.deps.llmManager.chat(enhancedHistory, modelId, {
       topicId, // CRITICAL: Enables context caching
+      maxTokens,
       onStream: options?.onStream, // UI gets chunks in real-time
       onThinkingStream: options?.onThinkingStream, // Thinking stream
       temperature: 0.7, // Normal temp for user-facing response
@@ -870,6 +898,7 @@ export class AIAssistantPlan {
             modelId,
             {
               topicId, // Reuses cached context from Phase 1
+              maxTokens,
               temperature: 0.3, // Lower temp for deterministic extraction
               disableTools: true // No tool calls needed for analytics
             }
@@ -927,6 +956,24 @@ export class AIAssistantPlan {
       streaming: true,
       topicId
     };
+  }
+
+  /**
+   * Set maximum response length (in tokens)
+   * Updates AISettings.maxTokens for the user
+   */
+  async setResponseLength(maxTokens: number): Promise<void> {
+    await this.deps.aiSettingsManager.updateSettings({ maxTokens });
+    console.log(`[AIAssistantPlan] Response length set to ${maxTokens} tokens`);
+  }
+
+  /**
+   * Get current maximum response length (in tokens)
+   * Returns value from AISettings
+   */
+  async getResponseLength(): Promise<number> {
+    const settings = await this.deps.aiSettingsManager.getSettings();
+    return settings.maxTokens;
   }
 
   /**

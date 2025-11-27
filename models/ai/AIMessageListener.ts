@@ -50,6 +50,8 @@ export class AIMessageListener {
         }
 
         console.log('[AIMessageListener] Starting message listener...');
+        console.log('[AIMessageListener] 🔍 DEBUG: Subscribing to channelManager:', this.deps.channelManager);
+        console.log('[AIMessageListener] 🔍 DEBUG: channelManager.onUpdated is a function?', typeof this.deps.channelManager.onUpdated === 'function');
 
         // Register channel update listener
         this.unsubscribe = this.deps.channelManager.onUpdated(async (

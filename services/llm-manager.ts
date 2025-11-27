@@ -480,8 +480,8 @@ class LLMManager {
       contextLength: 8192,
       parameters: {
         modelName: llmObject.modelId,
-        temperature: 0.7,
-        maxTokens: 4096  // Increased for longer structured output responses
+        temperature: options.temperature ?? 0.7,
+        maxTokens: options.maxTokens ?? 4096  // Use user setting or default
       }
     }
 
@@ -944,6 +944,13 @@ class LLMManager {
   }
 
   async chatWithOllama(model: any, messages: any, options: any = {}): Promise<unknown> {
+    console.log('[LLMManager] ========== OLLAMA CHAT ==========');
+    console.log('[LLMManager] Model:', model.parameters.modelName);
+    console.log('[LLMManager] Messages:', messages?.length || 0);
+    console.log('[LLMManager] BaseURL:', model.baseUrl || 'http://localhost:11434');
+    console.log('[LLMManager] Options:', Object.keys(options));
+    console.log('[LLMManager] ========================================');
+
     try {
       // Check if we have PromptParts for optimized context
       let ollamaMessages: any[];
@@ -960,6 +967,7 @@ class LLMManager {
       // Get cached context for this topic (if available)
       const cachedContext = options.topicId ? this.ollamaContextCache.get(options.topicId) : undefined;
 
+      console.log('[LLMManager] 🚀 Calling chatWithOllama service...');
       const response = await chatWithOllama(
         model.parameters.modelName,
         ollamaMessages,
@@ -974,6 +982,7 @@ class LLMManager {
         },
         model.baseUrl || 'http://localhost:11434'  // Use custom baseUrl if available
       );
+      console.log('[LLMManager] ✅ Got response from chatWithOllama (length:', typeof response === 'string' ? response.length : 'not a string', ')');
 
       // Extract and cache context from response (if present)
       if (options.topicId && typeof response === 'object' && response !== null && '_hasContext' in response) {
@@ -1193,13 +1202,28 @@ class LLMManager {
 
   /**
    * Get available models for external consumers
+   * Deduplicates by composite key (name + server) to prevent duplicate entries
    */
   async getAvailableModels(): Promise<any[]> {
     const llms = await this.getAllLLMsFromStorage()
-    return llms.map((llm: any) => ({
+
+    // Deduplicate by composite key (name + server) - LLM Recipe uses both as isId
+    const seen = new Set<string>()
+    const dedupedLlms = llms.filter((llm: any) => {
+      const key = `${llm.name}@${llm.server || 'localhost'}`
+      if (seen.has(key)) {
+        console.log(`[LLMManager] Skipping duplicate LLM: ${key}`)
+        return false
+      }
+      seen.add(key)
+      return true
+    })
+
+    return dedupedLlms.map((llm: any) => ({
       id: llm.modelId,
       name: llm.name || llm.modelId,
       provider: llm.provider,
+      server: llm.server || '', // Include server URL for UI display
       description: llm.description || '',
       contextLength: llm.contextLength || 4096,
       maxTokens: llm.maxTokens || 2048,
@@ -1438,23 +1462,30 @@ class LLMManager {
             continue;
           }
 
-          // Create LLM object in storage
+          // Create LLM object in storage with all mandatory fields
+          const now = Date.now();
+          const nowStr = new Date().toISOString();
           const llmObject = {
             $type$: 'LLM',
             modelId: model.modelId,
             name: model.name,
+            filename: model.modelId, // Required field - use modelId as filename for API models
             provider: model.provider,
             description: model.description,
             contextLength: model.contextLength,
             maxTokens: model.maxTokens,
             capabilities: model.capabilities,
-            server: undefined, // API-based, no server URL
-            deleted: false
+            server: 'https://api.anthropic.com', // Claude API endpoint
+            modelType: 'remote' as const, // Claude is API-based
+            active: true,
+            deleted: false,
+            created: now,
+            modified: now,
+            createdAt: nowStr,
+            lastUsed: nowStr
           };
 
-          await this.channelManager.createObject(llmObject, {
-            channelId: 'lama'
-          });
+          await this.channelManager.postToChannel('lama', llmObject);
 
           console.log(`[LLMManager] Registered Claude model: ${model.name}`);
         } catch (error) {

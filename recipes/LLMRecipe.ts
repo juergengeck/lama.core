@@ -16,6 +16,7 @@ export const LLMRecipe = {
             itemtype: { type: 'string' },
             isId: true
         },
+        // LLM server address (e.g., http://localhost:11434 for Ollama)
         {
             itemprop: 'server',
             itemtype: { type: 'string' },
@@ -28,22 +29,26 @@ export const LLMRecipe = {
         },
         {
             itemprop: 'filename',
-            itemtype: { type: 'string' }
+            itemtype: { type: 'string' },
+            optional: true  // API-based models (Claude, OpenAI) don't have local files
         },
         {
             itemprop: 'modelType',
             itemtype: {
                 type: 'string',
                 regexp: /^(local|remote)$/
-            }
+            },
+            optional: true  // Can be inferred from provider
         },
         {
             itemprop: 'active',
-            itemtype: { type: 'boolean' }
+            itemtype: { type: 'boolean' },
+            optional: true  // Defaults to true
         },
         {
             itemprop: 'deleted',
-            itemtype: { type: 'boolean' }
+            itemtype: { type: 'boolean' },
+            optional: true  // Defaults to false
         },
         {
             itemprop: 'creator',
@@ -185,12 +190,13 @@ export const LLMRecipe = {
             itemtype: { type: 'string' },
             optional: true
         },
-        // Network configuration fields (for remote Ollama)
+        // Local model weights storage path (NOT the server address - use 'server' for that)
         {
             itemprop: 'baseUrl',
             itemtype: { type: 'string' },
             optional: true
         },
+        // Authentication fields
         {
             itemprop: 'authType',
             itemtype: {

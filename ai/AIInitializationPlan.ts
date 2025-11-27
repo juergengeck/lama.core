@@ -42,6 +42,12 @@ export class AIInitializationPlan {
   async initialize(context: AIContext): Promise<AIServices> {
     console.log('[AIInitializationPlan] Initializing AI services...');
 
+    // Step 0: Ensure llmManager has channelManager for storage
+    if (context.channelManager && !this.deps.llmManager.channelManager) {
+      console.log('[AIInitializationPlan] Setting channelManager on llmManager');
+      this.deps.llmManager.channelManager = context.channelManager;
+    }
+
     // Step 1: Initialize UserSettingsManager (via factory)
     const userSettingsManager = await this.initializeUserSettings(context);
 

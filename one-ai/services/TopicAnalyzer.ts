@@ -138,17 +138,22 @@ class TopicAnalyzer {
         });
       }
 
+      // Extract content string from LLM response (may have _hasContext/_hasThinking wrapper)
+      const responseContent = typeof response === 'object' && response?.content
+        ? response.content
+        : response;
+
       // Parse response
       let keywords = [];
       try {
         // Extract JSON array from response
-        const jsonMatch = String(response).match(/\[.*\]/s);
+        const jsonMatch = String(responseContent).match(/\[.*\]/s);
         if (jsonMatch) {
           keywords = JSON.parse(jsonMatch[0]);
         }
       } catch (parseError: any) {
         // Fallback: split by common delimiters
-        keywords = response.split(/[,\n]/)
+        keywords = String(responseContent).split(/[,\n]/)
           .map((k: any) => k.replace(/["\[\]]/g, '').trim())
           .filter((k: any) => k.length > 1);
       }
@@ -308,10 +313,15 @@ Summary:`;
         });
       }
 
+      // Extract content string from LLM response (may have _hasContext/_hasThinking wrapper)
+      const responseContent = typeof response === 'object' && response?.content
+        ? response.content
+        : response;
+
       const summary = new Summary({
         id: topicId,
         topic: topicId,
-        content: response.trim(),
+        content: String(responseContent).trim(),
         subjects: subjects.map((s: any) => s.id),
         keywords: this.collectAllKeywords(subjects),
         version: 1,
@@ -362,8 +372,13 @@ Updated summary:`;
         maxTokens: 300
       });
 
+      // Extract content string from LLM response (may have _hasContext/_hasThinking wrapper)
+      const responseContent = typeof response === 'object' && response?.content
+        ? response.content
+        : response;
+
       return existingSummary.createNewVersion(
-        response.trim(),
+        String(responseContent).trim(),
         changeReason
       );
     } catch (error) {

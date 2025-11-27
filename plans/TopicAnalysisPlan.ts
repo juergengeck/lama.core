@@ -653,7 +653,10 @@ ${String(conversationText).substring(0, 3000)}`;
             content: summaryPrompt
           }], modelId);
 
-          summaryContent = summaryResponse;
+          // Extract content string from LLM response (may have _hasContext/_hasThinking wrapper)
+          summaryContent = typeof summaryResponse === 'object' && summaryResponse?.content
+            ? summaryResponse.content
+            : summaryResponse;
         }
       }
 
