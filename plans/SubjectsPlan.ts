@@ -144,6 +144,7 @@ export class SubjectsPlan {
 
     /**
      * Get all subjects across all topics
+     * Returns subjects with topics[] and memories[] arrays
      */
     async getAllSubjects(): Promise<GetSubjectsResponse> {
         try {
@@ -170,6 +171,50 @@ export class SubjectsPlan {
                 success: false,
                 error: error instanceof Error ? error.message : 'Unknown error'
             };
+        }
+    }
+
+    /**
+     * Add a topic to a subject's topics array
+     */
+    async addTopicToSubject(subjectIdHash: string, topicId: string): Promise<void> {
+        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+        const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+
+        // Get the subject by IdHash
+        const result = await getObjectByIdHash(subjectIdHash as SHA256IdHash<Subject>);
+        if (!result) {
+            throw new Error(`Subject not found: ${subjectIdHash}`);
+        }
+
+        const subject = result.obj as Subject;
+
+        // Add topicId to topics array if not already present
+        if (!subject.topics.includes(topicId)) {
+            subject.topics.push(topicId);
+            await storeVersionedObject(subject);
+        }
+    }
+
+    /**
+     * Add a memory to a subject's memories array
+     */
+    async addMemoryToSubject(subjectIdHash: string, memoryIdHash: string): Promise<void> {
+        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+        const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+
+        // Get the subject by IdHash
+        const result = await getObjectByIdHash(subjectIdHash as SHA256IdHash<Subject>);
+        if (!result) {
+            throw new Error(`Subject not found: ${subjectIdHash}`);
+        }
+
+        const subject = result.obj as Subject;
+
+        // Add memoryIdHash to memories array if not already present
+        if (!subject.memories.includes(memoryIdHash)) {
+            subject.memories.push(memoryIdHash);
+            await storeVersionedObject(subject);
         }
     }
 }
