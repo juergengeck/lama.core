@@ -12,6 +12,7 @@
   "exports": {
     "./@OneObjectInterfaces": "./@OneObjectInterfaces.d.ts",
     "./@OneCoreTypes": "./@OneCoreTypes.d.ts",
+    "./modules": "./dist/lama.core/modules/index.js",
     "./plans/*": "./dist/lama.core/plans/*",
     "./services/*": "./dist/lama.core/services/*",
     "./models/*": "./dist/lama.core/models/*",

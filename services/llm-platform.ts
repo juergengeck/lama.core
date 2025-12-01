@@ -3,10 +3,20 @@
  * Browser and Electron implement this differently
  */
 export interface LLMPlatform {
-  emitProgress(data: any): void;
-  emitError(error: Error): void;
-  emitMessageUpdate(data: any): void;
+  emitProgress(topicId: string, progress: number): void;
+  emitError(topicId: string, error: Error): void;
+  emitMessageUpdate(
+    topicId: string,
+    messageId: string,
+    content: string | { thinking?: string; response: string; raw?: string },
+    status: string,
+    modelId?: string,
+    modelName?: string
+  ): void;
   emitStreamChunk?(data: { topicId: string; chunk: string; messageId?: string }): void;
+  emitAnalysisUpdate?(topicId: string, updateType: 'subjects' | 'keywords' | 'both'): void;
+  emitThinkingUpdate?(topicId: string, messageId: string, thinkingContent: string): void;
+  emitThinkingStatus?(topicId: string, status: string): void;
 }
 
 /**
