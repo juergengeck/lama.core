@@ -1,4 +1,4 @@
-// packages/lama.core/modules/AIModule.ts
+// packages/lama.browser/browser-ui/src/modules/AIModule.ts
 import type { Module } from '@refinio/api';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
@@ -6,8 +6,7 @@ import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type PropertyTreeStore from '@refinio/one.models/lib/models/SettingsModel.js';
 import type TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 import type { TrustPlan } from '@trust/core/plans/TrustPlan.js';
-import type { JournalPlan } from '../plans/JournalPlan.js';
-import type { LLMPlatform, OllamaValidator, LLMConfigManager } from '../services/llm-platform.js';
+import type { JournalPlan } from '@lama/core/plans/JournalPlan';
 
 // ONE.core storage imports
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
@@ -18,33 +17,51 @@ import { createAccess } from '@refinio/one.core/lib/access.js';
 import { createDefaultKeys, hasDefaultKeys } from '@refinio/one.core/lib/keychain/keychain.js';
 
 // LAMA core plans (platform-agnostic business logic - AI-related)
-import { AIPlan } from '../plans/AIPlan.js';
-import { AIAssistantPlan } from '../plans/AIAssistantPlan.js';
-import { TopicAnalysisPlan } from '../plans/TopicAnalysisPlan.js';
-import { ProposalsPlan } from '../plans/ProposalsPlan.js';
-import { KeywordDetailPlan } from '../plans/KeywordDetailPlan.js';
-import { WordCloudSettingsPlan } from '../plans/WordCloudSettingsPlan.js';
-import { LLMConfigPlan } from '../plans/LLMConfigPlan.js';
-import { CryptoPlan } from '../plans/CryptoPlan.js';
-import { AuditPlan } from '../plans/AuditPlan.js';
-import { SubjectsPlan } from '../plans/SubjectsPlan.js';
-import { CubePlan } from '../plans/CubePlan.js';
+import { AIPlan } from '@lama/core/plans/AIPlan';
+import { AIAssistantPlan } from '@lama/core/plans/AIAssistantPlan';
+import { TopicAnalysisPlan } from '@lama/core/plans/TopicAnalysisPlan';
+import { ProposalsPlan } from '@lama/core/plans/ProposalsPlan';
+import { KeywordDetailPlan } from '@lama/core/plans/KeywordDetailPlan';
+import { WordCloudSettingsPlan } from '@lama/core/plans/WordCloudSettingsPlan';
+import { LLMConfigPlan } from '@lama/core/plans/LLMConfigPlan';
+import { CryptoPlan } from '@lama/core/plans/CryptoPlan';
+import { AuditPlan } from '@lama/core/plans/AuditPlan';
+import { SubjectsPlan } from '@lama/core/plans/SubjectsPlan';
+import { CubePlan } from '@lama/core/plans/CubePlan';
 
 // LAMA core AI models (message listener)
-import { AIMessageListener } from '../models/ai/index.js';
+import { AIMessageListener } from '@lama/core/models/ai';
 
 // LAMA core models (LLM and AI object management)
-import { LLMObjectManager } from '../models/LLMObjectManager.js';
-import { AIObjectManager } from '../models/AIObjectManager.js';
-import { AISettingsManager } from '../models/settings/AISettingsManager.js';
+import { LLMObjectManager } from '@lama/core/models/LLMObjectManager';
+import { AIObjectManager } from '@lama/core/models/AIObjectManager';
+import { AISettingsManager } from '@lama/core/models/settings/AISettingsManager';
 
 // Proposal services
-import { ProposalEngine } from '../services/proposal-engine.js';
-import { ProposalRanker } from '../services/proposal-ranker.js';
-import { ProposalCache } from '../services/proposal-cache.js';
+import { ProposalEngine } from '@lama/core/services/proposal-engine';
+import { ProposalRanker } from '@lama/core/services/proposal-ranker';
+import { ProposalCache } from '@lama/core/services/proposal-cache';
 
-// Platform-agnostic LLM manager
-import { LLMManager } from '../services/llm-manager.js';
+// LAMA core services
+import { LLMManager } from '@lama/core/services/llm-manager';
+import type { LLMPlatform } from '@lama/core/services/llm-platform';
+
+/**
+ * Platform-specific LLM configuration interface
+ * Platforms implement this to provide validator and config manager
+ */
+export interface LLMConfigAdapter {
+  ollamaValidator: {
+    testOllamaConnection: (server: string, authToken?: string, serviceName?: string) => Promise<any>;
+    fetchOllamaModels: (server: string, authToken?: string) => Promise<any[]>;
+  };
+  configManager: {
+    encryptToken: (token: string) => string;
+    decryptToken: (encrypted: string) => string;
+    computeBaseUrl: (modelType: string, baseUrl?: string) => string;
+    isEncryptionAvailable: () => boolean;
+  };
+}
 
 /**
  * AIModule - AI and LLM functionality
@@ -55,7 +72,7 @@ import { LLMManager } from '../services/llm-manager.js';
  * - Topic analysis
  * - Proposals
  *
- * Platform-agnostic: All platform specifics injected via dependencies
+ * Platform-agnostic - requires LLMPlatform and LLMConfigAdapter injection
  */
 export class AIModule implements Module {
   readonly name = 'AIModule';
@@ -69,11 +86,7 @@ export class AIModule implements Module {
     { targetType: 'TrustPlan', required: true },
     { targetType: 'JournalPlan', required: true },
     { targetType: 'OneCore', required: true },
-    { targetType: 'TopicAnalysisModel', required: true },
-    // Platform adapters as demands (injected by platform)
-    { targetType: 'LLMPlatform', required: true },
-    { targetType: 'OllamaValidator', required: true },
-    { targetType: 'LLMConfigManager', required: true }
+    { targetType: 'TopicAnalysisModel', required: true }
   ];
 
   static supplies = [
@@ -104,9 +117,6 @@ export class AIModule implements Module {
     journalPlan?: JournalPlan;
     oneCore?: any;
     topicAnalysisModel?: any;
-    llmPlatform?: LLMPlatform;
-    ollamaValidator?: OllamaValidator;
-    llmConfigManager?: LLMConfigManager;
   } = {};
 
   // AI Plans
@@ -132,6 +142,16 @@ export class AIModule implements Module {
   public cubeStorage: any = null;
   public cubePlan: CubePlan | null = null;
 
+  /**
+   * Constructor - inject platform-specific dependencies
+   * @param llmPlatform - Platform-specific LLM event emitter (Electron, Browser, etc.)
+   * @param llmConfigAdapter - Platform-specific LLM configuration (validator, encryption)
+   */
+  constructor(
+    private llmPlatform: LLMPlatform,
+    private llmConfigAdapter: LLMConfigAdapter
+  ) {}
+
   async init(): Promise<void> {
     if (!this.hasRequiredDeps()) {
       throw new Error('AIModule missing required dependencies');
@@ -139,26 +159,16 @@ export class AIModule implements Module {
 
     console.log('[AIModule] Initializing AI module...');
 
-    const {
-      leuteModel,
-      channelManager,
-      topicModel,
-      settings,
-      topicGroupManager,
-      trustPlan,
-      journalPlan,
-      oneCore,
-      llmPlatform,
-      ollamaValidator,
-      llmConfigManager
-    } = this.deps;
+    const { leuteModel, channelManager, topicModel, settings, topicGroupManager, trustPlan, journalPlan, oneCore } = this.deps;
 
-    // LLM management (platform-agnostic) - MUST be created before AIAssistantPlan
-    // Use injected platform adapter instead of creating browser-specific instance
-    this.llmManager = new LLMManager(llmPlatform!);
+    // LLM management - uses injected platform
+    this.llmManager = new LLMManager(this.llmPlatform);
 
     // Set channelManager on llmManager for LLM storage access
     this.llmManager.channelManager = channelManager;
+
+    // Capture 'this' for closures
+    const that = this;
 
     // LLMObjectManager - platform-agnostic LLM object management using ONE.core abstractions
     this.llmObjectManager = new LLMObjectManager(
@@ -232,7 +242,7 @@ export class AIModule implements Module {
       topicModel: topicModel!,
       leuteModel: leuteModel!,
       llmManager: this.llmManager,
-      platform: llmPlatform!, // Use injected platform adapter
+      platform: llmPlatform,
       stateManager: undefined, // Optional - not used in browser
       llmObjectManager: this.llmObjectManager, // Platform-agnostic LLM object manager
       contextEnrichmentService: undefined, // Optional - not used in browser
@@ -259,15 +269,14 @@ export class AIModule implements Module {
 
     // Create LLMConfigPlan with settings for secure API key storage
     // Settings uses ONE.core's master key encryption automatically
-    // Use injected adapters instead of browser-specific implementations
     this.llmConfigPlan = new LLMConfigPlan(
       oneCore!,
       this.aiAssistantPlan,
       this.llmManager,
       settings!, // ONE.core SettingsModel (encrypted storage)
-      ollamaValidator!, // Injected platform-specific validator
+      this.llmConfigAdapter.ollamaValidator,
       {
-        computeBaseUrl: llmConfigManager!.computeBaseUrl.bind(llmConfigManager)
+        computeBaseUrl: this.llmConfigAdapter.configManager.computeBaseUrl.bind(this.llmConfigAdapter.configManager)
       }
     );
 
@@ -452,10 +461,7 @@ export class AIModule implements Module {
       this.deps.trustPlan &&
       this.deps.journalPlan &&
       this.deps.oneCore &&
-      this.deps.topicAnalysisModel &&
-      this.deps.llmPlatform &&
-      this.deps.ollamaValidator &&
-      this.deps.llmConfigManager
+      this.deps.topicAnalysisModel
     );
   }
 }
