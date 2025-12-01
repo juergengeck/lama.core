@@ -318,28 +318,24 @@ Summary:`;
         ? response.content
         : response;
 
+      // NOTE: Summary is now per-subject, not per-topic.
+      // This legacy method creates a topic-level summary by using topicId as subject.
+      // Future: Refactor to generate per-subject summaries.
       const summary = new Summary({
-        id: topicId,
+        subject: topicId,  // Using topicId as subject for legacy compatibility
         topic: topicId,
-        content: String(responseContent).trim(),
-        subjects: subjects.map((s: any) => s.id),
-        keywords: this.collectAllKeywords(subjects),
-        version: 1,
-        changeReason: 'AI-generated summary from conversation analysis'
+        prose: String(responseContent).trim()
       });
 
       return summary;
     } catch (error) {
       console.error('[TopicAnalyzer] Error generating summary:', error);
       // Fallback summary
+      const fallbackContent = `This conversation covers ${subjects.length} main topics including ${subjects.slice(0, 3).map((s: any) => s.keywords.join(' and ')).join(', ')}.`;
       return new Summary({
-        id: topicId,
+        subject: topicId,  // Using topicId as subject for legacy compatibility
         topic: topicId,
-        content: `This conversation covers ${subjects.length} main topics including ${subjects.slice(0, 3).map((s: any) => s.keywords.join(' and ')).join(', ')}.`,
-        subjects: subjects.map((s: any) => s.id),
-        keywords: this.collectAllKeywords(subjects),
-        version: 1,
-        changeReason: 'Fallback summary'
+        prose: fallbackContent
       });
     }
   }

@@ -258,9 +258,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
               console.error('[AIMessageProcessor] ❌ NO PLATFORM - cannot emit thinking stream!');
             }
           },
-          onAnalysis: (analysis: { keywords: string[]; description?: string }) => {
-            // Phase 2 analytics callback - receives keywords and description
-            console.log(`[AIMessageProcessor] 📊 Phase 2 analytics received: ${analysis.keywords.length} keywords`);
+          onAnalysis: (analysis: { keywords: string[]; description?: string; summaryUpdate?: string }) => {
+            // Phase 2 analytics callback - receives keywords, description, and summaryUpdate
+            console.log(`[AIMessageProcessor] 📊 Phase 2 analytics received: ${analysis.keywords.length} keywords, summaryUpdate: ${analysis.summaryUpdate ? 'yes' : 'no'}`);
             // Analysis will be included in onComplete callback
           },
           onComplete: async (completionResult: { response: string; thinking?: string; analysis?: any }) => {
@@ -277,7 +277,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
             }
 
             // Process analysis in background (non-blocking)
-            if (analysis && this.taskManager) {
+            if (analysis && this.topicAnalysisModel) {
               setTimeout(async () => {
                 try {
                   console.log('[AIMessageProcessor] Processing analysis in background...');
@@ -305,7 +305,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                     type: 'CLOB',
                     metadata: {
                       name: 'thinking.txt',
-                      mimeType: 'text/plain'
+                      mimeType: 'text/plain',
+                      size: new TextEncoder().encode(thinking).length
                     }
                   }], aiPersonId, aiPersonId);
                   console.log(`[AIMessageProcessor] ✅ Stored AI response with thinking attachment (${thinking.length} chars) to channel ${topicId}`);
@@ -703,9 +704,78 @@ Ask what you can help them with today.`;
 
     let subjectCreated = false;
 
-    // If description is present, subject has changed - create new subject
+    // If description is present, subject has changed - create Summary for previous subject, then create new subject
     if (description) {
-      console.log('[AIMessageProcessor] Subject changed - creating new subject');
+      console.log('[AIMessageProcessor] Subject changed - processing previous subject and creating new one');
+
+      // Get existing subjects to find the previous one
+      const existingSubjects = await this.topicAnalysisModel.getSubjects(topicId);
+      const previousSubject = existingSubjects.length > 0 ? existingSubjects[existingSubjects.length - 1] : null;
+
+      // Create Summary for previous subject if summaryUpdate is present
+      const summaryUpdate = analysis.summaryUpdate;
+      if (previousSubject && summaryUpdate) {
+        console.log(`[AIMessageProcessor] 📝 Creating Summary for previous subject: ${previousSubject.keywordCombination}`);
+        try {
+          // Import storeVersionedObject for Summary storage
+          const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+
+          // Create Summary object (identity: subject + topic)
+          const summaryData = {
+            $type$: 'Summary' as const,
+            subject: previousSubject.idHash,
+            topic: topicId,
+            prose: summaryUpdate
+          };
+
+          // Store Summary using ONE.core versioned storage
+          const result = await storeVersionedObject(summaryData);
+          console.log(`[AIMessageProcessor] ✅ Stored Summary for subject ${previousSubject.keywordCombination} (idHash: ${result.idHash})`);
+
+          // Memory integration - create Memory version from Summary
+          // Get instance owner for Memory.author
+          const { getInstanceOwnerIdHash } = await import('@refinio/one.core/lib/instance.js');
+          const authorIdHash = getInstanceOwnerIdHash();
+
+          if (authorIdHash) {
+            // Create Memory object from Summary
+            const memoryData = {
+              $type$: 'Memory' as const,
+              title: previousSubject.keywordCombination || previousSubject.description || 'Untitled',
+              author: authorIdHash,
+              facts: [],
+              entities: [],
+              relationships: [],
+              prose: summaryUpdate,
+              sourceSubjects: [previousSubject.idHash]
+            };
+
+            const memoryResult = await storeVersionedObject(memoryData);
+            console.log(`[AIMessageProcessor] ✅ Stored Memory (idHash: ${memoryResult.idHash})`);
+
+            // Update Subject with Memory reference
+            // Get fresh subject data to avoid stale state
+            const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+            const subjectResult = await getObjectByIdHash(previousSubject.idHash);
+            if (subjectResult?.obj) {
+              const subjectObj = subjectResult.obj as any;
+              const updatedSubject = {
+                ...subjectObj,
+                memories: [...(subjectObj.memories || []), memoryResult.idHash]
+              };
+              await storeVersionedObject(updatedSubject);
+              console.log(`[AIMessageProcessor] ✅ Updated Subject with Memory reference`);
+            }
+          } else {
+            console.warn('[AIMessageProcessor] Could not get instance owner for Memory creation');
+          }
+        } catch (summaryError) {
+          console.warn('[AIMessageProcessor] Failed to create Summary:', summaryError);
+          // Non-fatal - continue with subject creation
+        }
+      }
+
+      // Now create the new subject
       try {
         const keywordCombination = keywords.sort().join('+');
         const subject = await this.topicAnalysisModel.createSubject(
@@ -719,7 +789,6 @@ Ask what you can help them with today.`;
         console.log(`[AIMessageProcessor] ✅ Created subject: ${keywordCombination}`);
 
         // Prime cache to avoid race condition
-        const existingSubjects = await this.topicAnalysisModel.getSubjects(topicId);
         this.topicAnalysisModel.setCachedSubjects(topicId, [...existingSubjects, subject]);
 
         // Link keywords to subject

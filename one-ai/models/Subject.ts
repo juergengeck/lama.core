@@ -82,13 +82,18 @@ export async function createOrUpdateSubject(
   }
 
   // Step 2: Create candidate Subject in-memory (not stored yet)
+  const now = Date.now();
   const candidateSubject: Subject = {
     $type$: 'Subject',
     keywords: keywordIdHashes, // THIS IS THE ID PROPERTY - ONE.core auto-generates hash from this
     description,
-    topics: [topicId],  // Array of topic IDs
-    memories: [],  // Array of Memory IdHashes
-    feedbackRefs: []  // Array of Feedback IdHashes
+    timeRanges: [{ start: now, end: now }],  // Time spans when subject was discussed (UI uses for scrolling)
+    createdAt: now,       // Timestamp when subject was first created
+    lastSeenAt: now,      // Timestamp when subject was last referenced
+    messageCount: 1,      // Number of messages referencing this subject
+    topics: [topicId],    // Array of topic IDs
+    memories: [],         // Array of Memory IdHashes
+    feedbackRefs: []      // Array of Feedback IdHashes
   };
 
   // Step 3: Calculate ID hash from keywords (ONE.core does this automatically)
@@ -112,10 +117,13 @@ export async function createOrUpdateSubject(
       // ✅ Same concept - store as new version
       console.log(`[Subject] Storing new version of subject with keywords: ${keywordTerms.join(', ')}`);
 
-      // Update with new description and add topic if not present
+      // Update with new description, timestamps, timeRanges, and add topic if not present
       const updatedSubject: Subject = {
         ...existing,
         description, // Use new description (might be more refined)
+        timeRanges: [...existing.timeRanges, { start: now, end: now }],  // Add new time range
+        lastSeenAt: now,  // Update last seen timestamp
+        messageCount: existing.messageCount + 1,  // Increment message count
         topics: existing.topics.includes(topicId) ? existing.topics : [...existing.topics, topicId]
       };
 
@@ -190,10 +198,21 @@ export function generateKeywordCombination(keywords: any): any {
 
 /**
  * Update Subject message count
- * @deprecated Subject no longer has messageCount metadata (moved to Story/Assembly)
+ * Increments the messageCount and updates lastSeenAt
  */
-export async function updateSubjectMessageCount(subjectHash: any, increment = 1): Promise<any> {
-  throw new Error('updateSubjectMessageCount is deprecated - metadata is in Story/Assembly, not Subject');
+export async function updateSubjectMessageCount(subjectIdHash: SHA256IdHash<Subject>, increment = 1): Promise<Subject> {
+  const result = await getObjectByIdHash(subjectIdHash);
+  if (!result || !result.obj) {
+    throw new Error(`Subject not found: ${subjectIdHash}`);
+  }
+  const existing = result.obj as Subject;
+  const updatedSubject: Subject = {
+    ...existing,
+    lastSeenAt: Date.now(),
+    messageCount: existing.messageCount + increment
+  };
+  await storeVersionedObject(updatedSubject);
+  return updatedSubject;
 }
 
 /**
@@ -208,8 +227,8 @@ export function subjectMatchesKeywords(subjectData: any, keywords = []): any {
 
 /**
  * Check if subject is significant enough to keep
- * @deprecated Subject no longer has messageCount metadata (moved to Story/Assembly)
+ * A subject is significant if it has been referenced multiple times
  */
-export function isSubjectSignificant(subjectData: any): any {
-  throw new Error('isSubjectSignificant is deprecated - metadata is in Story/Assembly, not Subject');
+export function isSubjectSignificant(subject: Subject, minMessageCount = 2): boolean {
+  return subject.messageCount >= minMessageCount;
 }

@@ -29,6 +29,7 @@ export interface Proposal {
   relevanceScore: number;
   sourceTopicId: string;
   pastSubjectName: string;
+  pastSubjectDescription?: string;  // Human-readable description
   createdAt: number;
 }
 
@@ -98,6 +99,42 @@ export interface ShareResponse {
     description?: string; // Human-readable description of the subject
     keywords: string[];
     messages?: any[];
+  };
+}
+
+export interface GetDetailsRequest {
+  pastSubjectIdHash: SHA256IdHash<Subject>;
+  topicId: string;
+}
+
+export interface GetDetailsResponse {
+  success: boolean;
+  details: {
+    subject: {
+      hash: string;
+      name: string;
+      description?: string;
+      timeRanges?: Array<{ start: number; end: number }>;  // Time spans when subject was discussed
+      createdAt?: number;  // First message timestamp
+      lastSeenAt?: number; // Last message timestamp
+    };
+    keywords: Array<{ hash: string; value: string }>;
+    messages: Array<{
+      hash: string;
+      conversationHash: string;
+      role: 'user' | 'assistant';
+      text: string;
+      timestamp: string;
+    }>;
+    memories: Array<{
+      hash: string;
+      content: string;
+      timestamp?: string;
+    }>;
+    summary?: {
+      hash: string;
+      text: string;
+    };
   };
 }
 
@@ -503,6 +540,210 @@ export class ProposalsPlan {
         throw error;
       }
       throw new Error(`SHARE_FAILED: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get detailed content for a proposal (on-demand fetch)
+   * Used when user expands the ProposalCard to see selectable content
+   */
+  async getDetails(request: GetDetailsRequest): Promise<GetDetailsResponse> {
+    try {
+      // Get subject with full metadata (including timestamps) from topic via channel
+      // This retrieves lastSeenAt, createdAt etc. from the channel entry
+      const topicId = request.topicId;
+      let pastSubject: any = null;
+
+      // Try to find subject in the topic's channel with full metadata
+      if (topicId && this.topicAnalysisModel) {
+        const subjects = await this.topicAnalysisModel.getSubjects(topicId);
+        pastSubject = subjects.find((s: any) =>
+          String(s.idHash) === String(request.pastSubjectIdHash)
+        );
+      }
+
+      // Fallback to raw object if not found in channel
+      if (!pastSubject) {
+        const result = await getObjectByIdHash(request.pastSubjectIdHash);
+        if (!result || !result.obj) {
+          throw new Error('SUBJECT_NOT_FOUND: Past subject no longer exists');
+        }
+        pastSubject = result.obj as Subject;
+      }
+
+      const subjectName = pastSubject.description || pastSubject.topics?.[0] || 'Unknown Subject';
+      const description = pastSubject.description;
+
+      // Log subject metadata for debugging
+      console.log(`[ProposalsPlan] getDetails: Subject has timestamps - lastSeenAt: ${pastSubject.lastSeenAt}, createdAt: ${pastSubject.createdAt}`);
+      console.log(`[ProposalsPlan] getDetails: Subject topics: ${pastSubject.topics?.join(', ') || 'none'}`);
+
+      // Retrieve keywords with hashes
+      const keywords: Array<{ hash: string; value: string }> = [];
+      for (const keywordIdHash of pastSubject.keywords || []) {
+        try {
+          const keywordResult = await getObjectByIdHash(keywordIdHash);
+          if (keywordResult && keywordResult.obj) {
+            const keyword = keywordResult.obj as any;
+            if (keyword.term) {
+              keywords.push({
+                hash: String(keywordIdHash),
+                value: keyword.term,
+              });
+            }
+          }
+        } catch (error) {
+          console.error(`[ProposalsPlan] Error fetching keyword ${keywordIdHash}:`, error);
+        }
+      }
+
+      // Messages: Get from subject's source topics within timeRanges
+      // Subject stores timeRanges which define the temporal spans when this subject was discussed
+      const messages: Array<{
+        hash: string;
+        conversationHash: string;
+        role: 'user' | 'assistant';
+        text: string;
+        timestamp: string;
+      }> = [];
+
+      // Query messages from each topic the subject references
+      const sourceTopics = pastSubject.topics || [];
+      const timeRanges = pastSubject.timeRanges || [];
+
+      console.log(`[ProposalsPlan] getDetails: Querying messages from ${sourceTopics.length} topics, ${timeRanges.length} time ranges`);
+
+      if (sourceTopics.length > 0 && this.nodeOneCore?.channelManager && timeRanges.length > 0) {
+        // Get overall time bounds from timeRanges
+        const minTime = Math.min(...timeRanges.map(r => r.start));
+        const maxTime = Math.max(...timeRanges.map(r => r.end));
+
+        for (const sourceTopicId of sourceTopics) {
+          try {
+            // Use time-based query with from/to options
+            const entries = await this.nodeOneCore.channelManager.getObjects({
+              channelId: sourceTopicId,
+              from: new Date(minTime - 1000),  // 1 second buffer
+              to: new Date(maxTime + 1000)
+            });
+
+            // Filter to messages only
+            for (const entry of entries) {
+              // Skip non-message types
+              if (!entry.data || entry.data.$type$ === 'MessageAttestation' ||
+                  entry.data.$type$ === 'Subject' || entry.data.$type$ === 'Keyword') {
+                continue;
+              }
+
+              const text = entry.data.text || entry.data.content || '';
+              if (text) {
+                const entryTime = entry.creationTime
+                  ? new Date(entry.creationTime).getTime()
+                  : entry.data.timestamp
+                    ? new Date(entry.data.timestamp).getTime()
+                    : 0;
+
+                messages.push({
+                  hash: String(entry.hash || entry.channelEntryHash),
+                  conversationHash: String(sourceTopicId),
+                  role: entry.data.sender === 'assistant' || entry.data.role === 'assistant' ? 'assistant' : 'user',
+                  text,
+                  timestamp: new Date(entryTime).toISOString(),
+                });
+              }
+            }
+          } catch (error) {
+            console.error(`[ProposalsPlan] Error fetching messages from topic ${sourceTopicId}:`, error);
+          }
+        }
+
+        // Sort messages by timestamp (oldest first for reading context)
+        messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        // Limit to last 10 messages to avoid overwhelming the UI
+        if (messages.length > 10) {
+          messages.splice(0, messages.length - 10);
+        }
+      }
+
+      console.log(`[ProposalsPlan] getDetails: Found ${messages.length} messages in time ranges`);
+      console.log(`[ProposalsPlan] getDetails: Subject memories: ${pastSubject.memories?.length || 0}`);
+
+      // Retrieve linked memories if available
+      const memories: Array<{
+        hash: string;
+        content: string;
+        timestamp?: string;
+      }> = [];
+
+      if ((pastSubject as any).memories && Array.isArray((pastSubject as any).memories)) {
+        for (const memoryRef of (pastSubject as any).memories) {
+          try {
+            const memResult = await getObjectByIdHash(memoryRef);
+            if (memResult && memResult.obj) {
+              const mem = memResult.obj as any;
+              memories.push({
+                hash: String(memoryRef),
+                content: mem.content || mem.text || '',
+                timestamp: mem.timestamp,
+              });
+            }
+          } catch (error) {
+            console.error(`[ProposalsPlan] Error fetching memory:`, error);
+          }
+        }
+      }
+
+      // Retrieve summary if available
+      // Summary is identified by (subject + topic) - calculate its ID hash
+      let summary: { hash: string; text: string } | undefined;
+      if (request.topicId) {
+        try {
+          // Summary ID is calculated from subject + topic (isId: true fields)
+          const summaryIdObj = {
+            $type$: 'Summary' as const,
+            subject: String(request.pastSubjectIdHash),
+            topic: request.topicId,
+          };
+          const summaryIdHash = await calculateIdHashOfObj(summaryIdObj as any);
+          const summaryResult = await getObjectByIdHash(summaryIdHash);
+          if (summaryResult && summaryResult.obj) {
+            const sum = summaryResult.obj as any;
+            summary = {
+              hash: String(summaryIdHash),
+              text: sum.prose || sum.text || sum.content || '',
+            };
+            console.log(`[ProposalsPlan] Found summary for subject: ${summary.text.slice(0, 50)}...`);
+          }
+        } catch (error) {
+          // Summary not found is normal - not all subjects have summaries
+          console.log(`[ProposalsPlan] No summary found for subject in topic ${request.topicId}`);
+        }
+      }
+
+      console.log(`[ProposalsPlan] getDetails: ${keywords.length} keywords, ${messages.length} messages, ${memories.length} memories`);
+
+      return {
+        success: true,
+        details: {
+          subject: {
+            hash: String(request.pastSubjectIdHash),
+            name: subjectName,
+            description,
+            // Time ranges when this subject was discussed (UI uses for scrolling to messages)
+            timeRanges: pastSubject.timeRanges,
+            createdAt: pastSubject.createdAt,
+            lastSeenAt: pastSubject.lastSeenAt,
+          },
+          keywords,
+          messages,
+          memories,
+          summary,
+        },
+      };
+    } catch (error: any) {
+      console.error('[ProposalsPlan] Error in getDetails:', error);
+      throw new Error(`GET_DETAILS_FAILED: ${error.message}`);
     }
   }
 

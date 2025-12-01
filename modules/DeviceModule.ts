@@ -2,7 +2,7 @@
 import type { Module } from '@refinio/api';
 
 // Device core plans (platform-agnostic)
-import { NetworkDeviceInfoPlan, DevicePlan, DeviceDiscoveryPlan } from '@device/core';
+import { NetworkDeviceInfoPlan, DevicePlan, DeviceDiscoveryPlan } from '@refinio/device.core';
 import type { DiscoveryService } from '@connection/core';
 
 // NOTE: QuicVCDiscoveryAdapter NOT imported - it requires Node.js dgram

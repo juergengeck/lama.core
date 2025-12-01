@@ -16,7 +16,7 @@ import { SummaryRecipe } from '../one-ai/recipes/SummaryRecipe.js';
 import { WordCloudSettingsRecipe } from '../one-ai/recipes/WordCloudSettingsRecipe.js';
 import { KeywordAccessStateRecipe } from '../one-ai/recipes/KeywordAccessState.js';
 import { FeedbackRecipe } from '../one-ai/recipes/FeedbackRecipe.js';
-import { MemoryRecipe } from '@memory/core/recipes/MemoryRecipe.js';
+import { MemoryRecipe } from '@memory/core';
 
 /**
  * All recipes that need to be registered with ONE.core

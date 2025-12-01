@@ -5,7 +5,8 @@ import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.j
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
 import ProfileModel from '@refinio/one.models/lib/models/Leute/ProfileModel.js';
-import {ConnectionPlan, type TrustPlanDependencies, type PairingEventCallbacks} from '@connection/core/plans/ConnectionPlan.js';
+import {ConnectionPlan, type PairingEventCallbacks} from '@connection/core/plans/ConnectionPlan.js';
+import type {TrustPlanDependencies} from '@connection/core/plans/TrustPlan.js';
 import {GroupChatPlan, type GroupChatPlanDependencies} from '@connection/core/plans/GroupChatPlan.js';
 import {TrustPlan} from '@trust/core/plans/TrustPlan.js';
 import {DiscoveryService} from '@connection/core';
@@ -190,9 +191,8 @@ export class ConnectionModule implements Module {
   }
 
   async shutdown(): Promise<void> {
+    // DiscoveryService has shutdown, Plans don't
     await this.discoveryService?.shutdown?.();
-    await this.groupChatPlan?.shutdown?.();
-    await this.connectionPlan?.shutdown?.();
 
     console.log('[ConnectionModule] Shutdown complete');
   }

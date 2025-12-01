@@ -286,13 +286,19 @@ export class LLMAnalysisService implements AnalysisService {
   "analysis": {
     "subjects": [{
       "name": "subject-name",
-      "description": "Brief explanation of the subject",
+      "description": "3-8 word specific summary",
       "isNew": true,
       "keywords": [{"term": "keyword", "confidence": 0.8}]
     }],
     "summaryUpdate": "Brief summary of the conversation"
   }
 }
+
+CRITICAL for descriptions:
+- Maximum 8 words, ideally 3-5
+- Be SPECIFIC, not generic (e.g., "React hook for state sync" not "Discussion about programming concepts")
+- No filler words like "related to", "discussion about", "involves"
+- State the concrete thing, action, or concept
 
 Keep your "response" field under 2000 characters for reliability.`;
 

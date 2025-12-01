@@ -12,20 +12,16 @@ declare module '@OneObjectInterfaces' {
     // NOTE: Subject and Keyword types are now defined in @OneObjectInterfaces.d.ts
     // to match the recipes exactly. Do not redefine them here.
 
-    // Summary of a topic conversation with versioning support
+    /**
+     * Summary - unversioned snapshot of a Subject within a Topic.
+     * Identity: (subject + topic) - one Summary per Subject per Topic.
+     * When subject switch is detected, Summary is created/replaced.
+     */
     export interface Summary {
         $type$: 'Summary';
-        id: string; // format: ${topicId}-v${version}
-        topic: string; // reference to parent topic
-        content: string;
-        subjects: string[]; // Subject IDs
-        keywords: string[]; // All keywords from all subjects
-        version: number;
-        previousVersion?: string; // Hash of previous summary
-        createdAt: number;
-        updatedAt: number;
-        changeReason?: string;
-        hash?: string;
+        subject: string;  // Subject IdHash being summarized
+        topic: string;    // Topic IdHash (scope)
+        prose: string;    // LLM-generated summary text
     }
 
     // WordCloudSettings for visualization preferences

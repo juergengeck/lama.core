@@ -59,17 +59,45 @@ export default class TopicAnalysisModel extends Model {
     async createSubject(topicId: any, keywordTerms: string[], keywordCombination: any, description: any, confidence: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
-        // Calculate Keyword ID hashes from terms
+        // Ensure all Keywords exist BEFORE creating Subject (referential integrity)
+        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
         const keywordIdHashes = [];
+        const now = Date.now();
 
         for (const term of keywordTerms) {
-            // Create a minimal Keyword ID object to calculate its ID hash
-            // Only ID properties are needed for calculateIdHashOfObj
+            const normalizedTerm = term.toLowerCase().trim();
+
+            // Calculate the expected ID hash for this keyword
             const keywordIdObj = {
                 $type$: 'Keyword' as const,
-                term: term.toLowerCase().trim()
+                term: normalizedTerm
             };
             const keywordIdHash = await calculateIdHashOfObj(keywordIdObj as any);
+
+            // Check if keyword already exists
+            let keywordExists = false;
+            try {
+                await getObjectByIdHash(keywordIdHash);
+                keywordExists = true;
+            } catch {
+                // Keyword doesn't exist yet
+            }
+
+            // Create keyword if it doesn't exist
+            if (!keywordExists) {
+                const keywordObj = {
+                    $type$: 'Keyword' as const,
+                    term: normalizedTerm,
+                    frequency: 1,
+                    subjects: [], // Will be updated by addKeywordToSubject later
+                    score: 1.0,
+                    createdAt: now,
+                    lastSeen: now
+                };
+                await storeVersionedObject(keywordObj);
+                console.log('[TopicAnalysisModel] 📝 Pre-created Keyword for Subject:', normalizedTerm);
+            }
+
             keywordIdHashes.push(keywordIdHash);
         }
 
@@ -77,6 +105,10 @@ export default class TopicAnalysisModel extends Model {
             $type$: 'Subject' as const,
             keywords: keywordIdHashes, // Array of Keyword ID hashes (this IS the ID property)
             description: description || undefined, // LLM-generated description
+            timeRanges: [{ start: now, end: now }],  // Time spans when subject was discussed (UI uses for scrolling)
+            createdAt: now,       // Timestamp when subject was first created
+            lastSeenAt: now,      // Timestamp when subject was last referenced
+            messageCount: 1,      // Number of messages referencing this subject
             topics: [topicId], // Array of topic/channel IDs where this subject is discussed
             memories: [], // Array of Memory IdHashes (from memory.core)
             feedbackRefs: [] // Array of Feedback IdHashes
@@ -300,35 +332,30 @@ export default class TopicAnalysisModel extends Model {
     }
 
     /**
-     * Create a Summary object
+     * Create a Summary for a Subject within a Topic.
+     * New format: Summary identity is (subject + topic), with prose content.
+     *
+     * @param subjectIdHash - The Subject being summarized
+     * @param topicId - The Topic scope
+     * @param prose - The LLM-generated summary prose
+     * @returns Stored Summary with idHash
      */
-    async createSummary(topicId: any, version: any, content: any, subjects: any, changeReason: any, previousVersion: any): Promise<any> {
+    async createSummary(subjectIdHash: string, topicId: string, prose: string): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
-        const now = Date.now();
         const summaryObj = {
             $type$: 'Summary' as const,
-            id: `${topicId}-v${version}`, // ID format: topicId-v1, topicId-v2, etc
+            subject: subjectIdHash,
             topic: topicId,
-            content,
-            subjects: subjects || [],
-            keywords: [], // Will be populated from subjects
-            version,
-            previousVersion: previousVersion || undefined,
-            createdAt: now,
-            updatedAt: now,
-            changeReason: changeReason || undefined
+            prose
         };
 
-        // CRITICAL: Store as versioned object FIRST - creates vheads file for ID hash lookups
+        // Store as versioned object - same identity = replacement
         const result = await storeVersionedObject(summaryObj);
-        console.log('[TopicAnalysisModel] ✅ Stored Summary with idHash:', result.idHash, 'id:', summaryObj.id);
+        console.log('[TopicAnalysisModel] ✅ Stored Summary for subject:', subjectIdHash, 'idHash:', result.idHash);
 
         // Post to the conversation's channel for sync
-        await this.channelManager.postToChannel(
-            topicId,
-            summaryObj
-        );
+        await this.channelManager.postToChannel(topicId, summaryObj);
 
         return { ...summaryObj, idHash: result.idHash, hash: result.hash };
     }
@@ -734,43 +761,11 @@ export default class TopicAnalysisModel extends Model {
     }
 
     /**
-     * Update topic summary with incremental changes
-     * @param {string} topicId - The topic ID
-     * @param {string} updateContent - The incremental update content
-     * @param {number} confidence - Confidence score for the update
-     * @returns {Promise<Object>} The updated summary object
+     * @deprecated Summary is now per-subject, not per-topic.
+     * Use createSummary(subjectIdHash, topicId, prose) instead.
+     * This method is kept for API compatibility but throws an error.
      */
-    async updateSummary(topicId: any, updateContent: any, confidence = 0.8): Promise<unknown> {
-        // Get current summary
-        const currentSummary: any = await this.getCurrentSummary(topicId);
-
-        if (!currentSummary) {
-            // Create first summary if none exists
-            const subjects: any = await this.getSubjects(topicId);
-            return await this.createSummary(
-                topicId,
-                1,
-                updateContent,
-                subjects.map((s: any) => s.id),
-                'Initial summary from message analysis',
-                null
-            );
-        }
-
-        // Create new version with incremental update
-        const newVersion = currentSummary.version + 1;
-        const subjects: any = await this.getSubjects(topicId);
-
-        // Combine existing content with update
-        const updatedContent = currentSummary.content + '\n\nUpdate: ' + updateContent;
-
-        return await this.createSummary(
-            topicId,
-            newVersion,
-            updatedContent,
-            subjects.map((s: any) => s.id),
-            'Incremental update from message analysis',
-            currentSummary.id
-        );
+    async updateSummary(_topicId: any, _updateContent: any, _confidence = 0.8): Promise<unknown> {
+        throw new Error('updateSummary is deprecated - Summary is now per-subject. Use createSummary(subjectIdHash, topicId, prose)');
     }
 }

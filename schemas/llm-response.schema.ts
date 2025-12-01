@@ -28,7 +28,7 @@ export const LLM_RESPONSE_SCHEMA = {
     },
     description: {
       type: 'string',
-      description: 'Brief one-sentence description of the NEW subject (only include if subject has changed)'
+      description: 'Concise topic label (2-5 words, NOT a sentence). Example: "pizza baking techniques"'
     },
     response: {
       type: 'string',

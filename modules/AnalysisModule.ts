@@ -5,7 +5,7 @@ import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.j
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 
 // LAMA core models
-import TopicAnalysisModel from '@lama/core/one-ai/models/TopicAnalysisModel';
+import TopicAnalysisModel from '@lama/core/one-ai/models/TopicAnalysisModel.js';
 
 /**
  * AnalysisModule - Analysis infrastructure for memories, topics, documents

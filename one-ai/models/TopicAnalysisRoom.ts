@@ -70,9 +70,9 @@ export default class TopicAnalysisRoom {
         for await (const entry of this.channelManager.multiChannelObjectIterator(channelInfos)) {
             // Accept both 'Subject' (lama.core) and 'SubjectAssembly' (memory.core)
             if (entry.data && (entry.data.$type$ === 'Subject' || entry.data.$type$ === 'SubjectAssembly')) {
-                // Subject has 'topic' field, SubjectAssembly has 'sources' array
+                // Subject has 'topics' array (plural), SubjectAssembly has 'sources' array
                 const matchesTopic = entry.data.$type$ === 'Subject'
-                    ? entry.data.topic === this.topicId
+                    ? entry.data.topics?.includes(this.topicId)
                     : entry.data.sources?.some((s: any) => s.type === 'chat' && s.id === this.topicId);
 
                 if (matchesTopic) {
@@ -154,7 +154,7 @@ export default class TopicAnalysisRoom {
                     keywords.push(entry.data);
                     break;
                 case 'Subject':
-                    if (entry.data.topic === this.topicId) {
+                    if (entry.data.topics?.includes(this.topicId)) {
                         subjects.push(entry.data);
                     }
                     break;

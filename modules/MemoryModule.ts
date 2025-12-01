@@ -1,8 +1,8 @@
 // packages/lama.browser/browser-ui/src/modules/MemoryModule.ts
 import type { Module } from '@refinio/api';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
-import type TopicAnalysisModel from '@lama/core/one-ai/models/TopicAnalysisModel';
-import type { SubjectsPlan } from '@lama/core/plans/SubjectsPlan';
+import type TopicAnalysisModel from '@lama/core/one-ai/models/TopicAnalysisModel.js';
+import type { SubjectsPlan } from '@lama/core/plans/SubjectsPlan.js';
 import type { MemoryPlan as UIMemoryPlan } from '@ui/core';
 
 // ONE.core storage imports
@@ -68,12 +68,19 @@ export class MemoryModule implements Module {
       getObjectByIdHash
     });
 
-    // Create core MemoryPlan with SubjectsPlan and TopicAnalysisModel
-    this.coreMemoryPlan = new CoreMemoryPlan(
-      subjectsPlan,
-      topicAnalysisModel,
-      channelManager
-    );
+    // Create core MemoryPlan with dependencies
+    this.coreMemoryPlan = new CoreMemoryPlan({
+      storeVersionedObject,
+      getObjectByIdHash,
+      getInstanceOwner: async () => {
+        // Get instance owner from oneCore
+        const { getInstanceOwnerIdHash } = await import('@refinio/one.core/lib/instance.js');
+        return getInstanceOwnerIdHash();
+      },
+      subjectsPlan: {
+        addMemoryToSubject: subjectsPlan!.addMemoryToSubject.bind(subjectsPlan)
+      }
+    });
 
     // Wire up ChatMemoryService with CoreMemoryPlan
     (this.chatMemoryService as any).deps.memoryPlan = this.coreMemoryPlan;
@@ -86,17 +93,6 @@ export class MemoryModule implements Module {
     // Create the UI-compatible memoryPlan adapter
     // This implements ui.core's MemoryPlan interface
     this.memoryPlan = this.createUIMemoryPlan(topicAnalysisModel!, this.chatMemoryService);
-
-    // Build memory index for fast keyword lookups
-    // Note: This may fail if SubjectsPlan interface doesn't fully match what CoreMemoryPlan expects
-    // The index can be built lazily on first search
-    console.log('[MemoryModule] Building memory index...');
-    try {
-      await this.coreMemoryPlan.buildIndex();
-      console.log('[MemoryModule] Memory index built');
-    } catch (error) {
-      console.warn('[MemoryModule] Index build skipped (will build lazily):', error);
-    }
 
     console.log('[MemoryModule] Initialized');
   }
@@ -113,53 +109,73 @@ export class MemoryModule implements Module {
       // Status and toggle methods delegate to chatMemoryService
       async getStatus(params: { topicId: string }) {
         try {
-          const status = chatMemoryService.getMemoryStatus(params.topicId);
-          return { enabled: status.enabled, config: status.config };
+          const enabled = chatMemoryService.isEnabled(params.topicId as any);
+          const config = chatMemoryService.getConfig(params.topicId as any);
+          return { enabled, config };
         } catch {
           return { enabled: false };
         }
       },
 
       async toggle(params: { topicId: string }) {
-        const enabled = await chatMemoryService.toggleMemories(params.topicId);
-        return { enabled };
+        const isEnabled = chatMemoryService.isEnabled(params.topicId as any);
+        if (isEnabled) {
+          await chatMemoryService.disableMemories(params.topicId as any);
+          return { enabled: false };
+        } else {
+          await chatMemoryService.enableMemories(params.topicId as any, {});
+          return { enabled: true };
+        }
       },
 
       async enable(params: { topicId: string; autoExtract?: boolean; keywords?: string[] }) {
         const config = await chatMemoryService.enableMemories(
-          params.topicId,
-          params.autoExtract ?? true,
-          params.keywords ?? []
+          params.topicId as any,
+          {
+            autoExtract: params.autoExtract ?? true,
+            keywords: params.keywords ?? []
+          }
         );
         return { enabled: true, config };
       },
 
       async disable(params: { topicId: string }) {
-        await chatMemoryService.disableMemories(params.topicId);
+        await chatMemoryService.disableMemories(params.topicId as any);
         return { enabled: false };
       },
 
       async extract(params: { topicId: string; limit?: number }) {
-        const result = await chatMemoryService.extractSubjects({
-          topicId: params.topicId,
-          limit: params.limit ?? 50,
-          includeContext: true
+        const result = await chatMemoryService.extractAndStoreSubjects({
+          topicId: params.topicId as any,
+          limit: params.limit ?? 50
         });
         return {
-          subjects: result.subjects,
+          subjects: result.subjects.map(s => ({
+            id: s.name.toLowerCase().replace(/\s+/g, '-'),
+            description: s.description || s.name,
+            keywords: s.keywords,
+            createdAt: Date.now(),
+            lastSeenAt: Date.now()
+          })),
           totalMessages: result.totalMessages,
           processingTime: result.processingTime
         };
       },
 
       async find(params: { topicId?: string; keywords: string[]; limit?: number }) {
-        const result = await chatMemoryService.findRelatedMemories(
-          params.topicId || '',
-          params.keywords,
-          params.limit ?? 10
-        );
+        const result = await chatMemoryService.findRelatedMemories({
+          keywords: params.keywords,
+          limit: params.limit ?? 10,
+          minRelevance: 0.3
+        });
         return {
-          memories: result.memories,
+          memories: result.memories.map(m => ({
+            id: m.subjectIdHash,
+            idHash: m.subjectIdHash,
+            description: m.name,
+            keywords: m.keywords,
+            relevanceScore: m.relevanceScore
+          })),
           searchKeywords: result.searchKeywords,
           totalFound: result.totalFound
         };

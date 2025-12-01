@@ -1,8 +1,16 @@
 /**
  * ONE.core Recipe for Summary objects
  *
- * Summary of a topic conversation with versioning support
- * Supports version history with previousVersion linking
+ * Summary is an unversioned snapshot of a Subject within a Topic.
+ * Identity: (subject + topic) - one Summary per Subject per Topic.
+ *
+ * When subject switch is detected, the Summary for the previous subject
+ * is created/replaced, then flows into Memory as a new version.
+ *
+ * Design principles:
+ * - Unversioned (replacement, not append)
+ * - Identity scoped to Subject + Topic
+ * - prose content from analytics summaryUpdate
  */
 export const SummaryRecipe = {
     $type$: 'Recipe',
@@ -13,71 +21,18 @@ export const SummaryRecipe = {
             itemtype: { type: 'string', regexp: /^Summary$/ }
         },
         {
-            itemprop: 'id',
-            itemtype: { type: 'string' },
-            isId: true // This makes Summary a versioned object
+            itemprop: 'subject',
+            itemtype: { type: 'string' },  // Subject IdHash being summarized
+            isId: true
         },
         {
             itemprop: 'topic',
-            itemtype: { type: 'string' } // Reference to parent Topic
+            itemtype: { type: 'string' },  // Topic IdHash (scope)
+            isId: true
         },
         {
-            itemprop: 'content',
-            itemtype: { type: 'string' }
-        },
-        {
-            itemprop: 'subjects',
-            itemtype: {
-                type: 'array',
-                item: { type: 'string' } // Subject IDs referenced in this summary
-            }
-        },
-        {
-            itemprop: 'keywords',
-            itemtype: {
-                type: 'array',
-                item: { type: 'string' } // All keywords from all subjects
-            }
-        },
-        {
-            itemprop: 'abstractionLevels',
-            itemtype: {
-                type: 'array',
-                item: { type: 'integer' } // Abstraction levels (1-42) of subjects
-            },
-            optional: true
-        },
-        {
-            itemprop: 'version',
-            itemtype: { type: 'integer' }
-        },
-        {
-            itemprop: 'previousVersion',
-            itemtype: { type: 'string' },
-            optional: true // Hash of previous summary version
-        },
-        {
-            itemprop: 'createdAt',
-            itemtype: { type: 'integer' }
-        },
-        {
-            itemprop: 'updatedAt',
-            itemtype: { type: 'integer' }
-        },
-        {
-            itemprop: 'changeReason',
-            itemtype: { type: 'string' },
-            optional: true
-        },
-        {
-            itemprop: 'hash',
-            itemtype: { type: 'string' },
-            optional: true
-        },
-        {
-            itemprop: '$versionHash$',
-            itemtype: { type: 'string' },
-            optional: true
+            itemprop: 'prose',
+            itemtype: { type: 'string' }   // LLM-generated summary text
         }
     ]
 };

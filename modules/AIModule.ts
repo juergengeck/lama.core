@@ -6,45 +6,47 @@ import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type PropertyTreeStore from '@refinio/one.models/lib/models/SettingsModel.js';
 import type TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 import type { TrustPlan } from '@trust/core/plans/TrustPlan.js';
-import type { JournalPlan } from '@lama/core/plans/JournalPlan';
 
 // ONE.core storage imports
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getIdObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject, storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
+
+// Assembly/Story imports for journal tracking
+import { StoryFactory } from '@refinio/api/plan-system';
 import { getAllEntries } from '@refinio/one.core/lib/reverse-map-query.js';
 import { createAccess } from '@refinio/one.core/lib/access.js';
 import { createDefaultKeys, hasDefaultKeys } from '@refinio/one.core/lib/keychain/keychain.js';
 
 // LAMA core plans (platform-agnostic business logic - AI-related)
-import { AIPlan } from '@lama/core/plans/AIPlan';
-import { AIAssistantPlan } from '@lama/core/plans/AIAssistantPlan';
-import { TopicAnalysisPlan } from '@lama/core/plans/TopicAnalysisPlan';
-import { ProposalsPlan } from '@lama/core/plans/ProposalsPlan';
-import { KeywordDetailPlan } from '@lama/core/plans/KeywordDetailPlan';
-import { WordCloudSettingsPlan } from '@lama/core/plans/WordCloudSettingsPlan';
-import { LLMConfigPlan } from '@lama/core/plans/LLMConfigPlan';
-import { CryptoPlan } from '@lama/core/plans/CryptoPlan';
-import { AuditPlan } from '@lama/core/plans/AuditPlan';
-import { SubjectsPlan } from '@lama/core/plans/SubjectsPlan';
-import { CubePlan } from '@lama/core/plans/CubePlan';
+import { AIPlan } from '@lama/core/plans/AIPlan.js';
+import { AIAssistantPlan } from '@lama/core/plans/AIAssistantPlan.js';
+import { TopicAnalysisPlan } from '@lama/core/plans/TopicAnalysisPlan.js';
+import { ProposalsPlan } from '@lama/core/plans/ProposalsPlan.js';
+import { KeywordDetailPlan } from '@lama/core/plans/KeywordDetailPlan.js';
+import { WordCloudSettingsPlan } from '@lama/core/plans/WordCloudSettingsPlan.js';
+import { LLMConfigPlan } from '@lama/core/plans/LLMConfigPlan.js';
+import { CryptoPlan } from '@lama/core/plans/CryptoPlan.js';
+import { AuditPlan } from '@lama/core/plans/AuditPlan.js';
+import { SubjectsPlan } from '@lama/core/plans/SubjectsPlan.js';
+import { CubePlan } from '@lama/core/plans/CubePlan.js';
 
 // LAMA core AI models (message listener)
-import { AIMessageListener } from '@lama/core/models/ai';
+import { AIMessageListener } from '@lama/core/models/ai/index.js';
 
 // LAMA core models (LLM and AI object management)
-import { LLMObjectManager } from '@lama/core/models/LLMObjectManager';
-import { AIObjectManager } from '@lama/core/models/AIObjectManager';
-import { AISettingsManager } from '@lama/core/models/settings/AISettingsManager';
+import { LLMObjectManager } from '@lama/core/models/LLMObjectManager.js';
+import { AIObjectManager } from '@lama/core/models/AIObjectManager.js';
+import { AISettingsManager } from '@lama/core/models/settings/AISettingsManager.js';
 
 // Proposal services
-import { ProposalEngine } from '@lama/core/services/proposal-engine';
-import { ProposalRanker } from '@lama/core/services/proposal-ranker';
-import { ProposalCache } from '@lama/core/services/proposal-cache';
+import { ProposalEngine } from '@lama/core/services/proposal-engine.js';
+import { ProposalRanker } from '@lama/core/services/proposal-ranker.js';
+import { ProposalCache } from '@lama/core/services/proposal-cache.js';
 
 // LAMA core services
-import { LLMManager } from '@lama/core/services/llm-manager';
-import type { LLMPlatform } from '@lama/core/services/llm-platform';
+import { LLMManager } from '@lama/core/services/llm-manager.js';
+import type { LLMPlatform } from '@lama/core/services/llm-platform.js';
 
 /**
  * Platform-specific LLM configuration interface
@@ -114,7 +116,6 @@ export class AIModule implements Module {
     settings?: PropertyTreeStore;
     topicGroupManager?: TopicGroupManager;
     trustPlan?: TrustPlan;
-    journalPlan?: JournalPlan;
     oneCore?: any;
     topicAnalysisModel?: any;
   } = {};
@@ -159,7 +160,7 @@ export class AIModule implements Module {
 
     console.log('[AIModule] Initializing AI module...');
 
-    const { leuteModel, channelManager, topicModel, settings, topicGroupManager, trustPlan, journalPlan, oneCore } = this.deps;
+    const { leuteModel, channelManager, topicModel, settings, topicGroupManager, trustPlan, oneCore } = this.deps;
 
     // LLM management - uses injected platform
     this.llmManager = new LLMManager(this.llmPlatform);
@@ -174,7 +175,10 @@ export class AIModule implements Module {
     this.llmObjectManager = new LLMObjectManager(
       {
         storeVersionedObject,
-        createAccess,
+        createAccess: async (accessRequests: any[]) => {
+          // Wrap createAccess to match expected void return type
+          await createAccess(accessRequests);
+        },
         queryAllLLMObjects: async function* () {
           // Query all LLM objects from storage using reverse map
           // This is needed to restore AI contacts on reload
@@ -182,11 +186,11 @@ export class AIModule implements Module {
           const myId = await leuteModel!.myMainIdentity();
           console.log(`[AIModule/queryAllLLMObjects] Got owner ID: ${myId.substring(0, 8)}...`);
 
-          const llmEntries = await getAllEntries(myId, 'LLM');
+          const llmEntries = await getAllEntries(myId, 'LLM' as any);
           console.log(`[AIModule/queryAllLLMObjects] Found ${llmEntries.length} LLM entries`);
 
           for (const entry of llmEntries) {
-            const objectHash = entry.obj || entry.hash || entry;
+            const objectHash = (entry as any).obj || (entry as any).hash || entry;
             const llmObject = await getObject(objectHash);
             if (llmObject && llmObject.$type$ === 'LLM') {
               console.log(`[AIModule/queryAllLLMObjects] Yielding LLM object: ${llmObject.name}`);
@@ -206,19 +210,22 @@ export class AIModule implements Module {
     this.aiObjectManager = new AIObjectManager(
       {
         storeVersionedObject,
-        createAccess,
+        createAccess: async (accessRequests: any[]) => {
+          // Wrap createAccess to match expected void return type
+          await createAccess(accessRequests);
+        },
         queryAllAIObjects: async function* () {
           // Query all AI objects from storage using reverse map
           console.log('[AIModule/queryAllAIObjects] Querying AI objects...');
           const myId = await leuteModel!.myMainIdentity();
-          const aiEntries = await getAllEntries(myId, 'AI');
+          const aiEntries = await getAllEntries(myId, 'AI' as any);
           console.log(`[AIModule/queryAllAIObjects] Found ${aiEntries.length} AI entries`);
 
           for (const entry of aiEntries) {
-            const objectHash = entry.obj || entry.hash || entry;
+            const objectHash = (entry as any).obj || (entry as any).hash || entry;
             const aiObject = await getObject(objectHash);
             if (aiObject && aiObject.$type$ === 'AI') {
-              console.log(`[AIModule/queryAllAIObjects] Yielding AI object: ${aiObject.displayName}`);
+              console.log(`[AIModule/queryAllAIObjects] Yielding AI object: ${(aiObject as any).displayName}`);
               yield aiObject;
             }
           }
@@ -242,7 +249,7 @@ export class AIModule implements Module {
       topicModel: topicModel!,
       leuteModel: leuteModel!,
       llmManager: this.llmManager,
-      platform: llmPlatform,
+      platform: this.llmPlatform,
       stateManager: undefined, // Optional - not used in browser
       llmObjectManager: this.llmObjectManager, // Platform-agnostic LLM object manager
       contextEnrichmentService: undefined, // Optional - not used in browser
@@ -261,7 +268,6 @@ export class AIModule implements Module {
         hasDefaultKeys,
         channelManager: channelManager!,    // Required: for querying LLM objects
         trustPlan: trustPlan!,              // For assigning 'high' trust to AI contacts
-        journalPlan: journalPlan!,          // For recording AI contact creation as assemblies
         aiObjectManager: this.aiObjectManager,  // For creating AI storage objects
         llmObjectManager: this.llmObjectManager // For creating/updating LLM storage objects
       }
@@ -274,10 +280,7 @@ export class AIModule implements Module {
       this.aiAssistantPlan,
       this.llmManager,
       settings!, // ONE.core SettingsModel (encrypted storage)
-      this.llmConfigAdapter.ollamaValidator,
-      {
-        computeBaseUrl: this.llmConfigAdapter.configManager.computeBaseUrl.bind(this.llmConfigAdapter.configManager)
-      }
+      this.llmConfigAdapter.ollamaValidator
     );
 
     // Set llmConfigPlan on aiAssistantPlan for settings persistence
@@ -288,14 +291,14 @@ export class AIModule implements Module {
     (this.aiAssistantPlan as any).deps.topicAnalysisModel = this.deps.topicAnalysisModel;
 
     // Also inject into messageProcessor for backwards compatibility
-    if (this.aiAssistantPlan.messageProcessor) {
-      (this.aiAssistantPlan.messageProcessor as any).topicAnalysisModel = this.deps.topicAnalysisModel;
+    if ((this.aiAssistantPlan as any).messageProcessor) {
+      ((this.aiAssistantPlan as any).messageProcessor as any).topicAnalysisModel = this.deps.topicAnalysisModel;
     }
 
     // CRITICAL: Inject topicAnalysisModel into taskManager so analysis can be processed
-    if (this.aiAssistantPlan.taskManager) {
+    if ((this.aiAssistantPlan as any).taskManager) {
       console.log('[AIModule] Injecting topicAnalysisModel into AITaskManager');
-      (this.aiAssistantPlan.taskManager as any).topicAnalysisModel = this.deps.topicAnalysisModel;
+      ((this.aiAssistantPlan as any).taskManager as any).topicAnalysisModel = this.deps.topicAnalysisModel;
     }
 
     // CRITICAL: Initialize AIAssistantPlan now that all dependencies are injected
@@ -303,16 +306,22 @@ export class AIModule implements Module {
     await this.aiAssistantPlan.init();
     console.log('[AIModule] AIAssistantPlan initialized');
 
+    // Wire up StoryFactory for Assembly tracking (AI contact creation visible in journal)
+    const storyFactory = new StoryFactory(storeVersionedObject);
+    await this.aiAssistantPlan.setStoryFactory(storyFactory);
+    console.log('[AIModule] StoryFactory wired to AIAssistantPlan');
+
     // CRITICAL: Set aiAssistantModel on oneCore so LLMConfigPlan can access it dynamically
     // LLMConfigPlan accesses it via this.nodeOneCore.aiAssistantModel
     console.log('[AIModule] Setting aiAssistantModel on oneCore for dynamic access');
     (oneCore as any).aiAssistantModel = this.aiAssistantPlan;
 
     // topicAnalysisPlan, proposalsPlan will be created after topicAnalysisModel is ready
-    this.keywordDetailPlan = new KeywordDetailPlan(oneCore!);
-    this.wordCloudSettingsPlan = new WordCloudSettingsPlan(oneCore!);
+    // Note: These plans have optional dependencies that will be set later via initTopicAnalysis
+    this.keywordDetailPlan = new KeywordDetailPlan(oneCore!, undefined, undefined, undefined);
+    this.wordCloudSettingsPlan = new WordCloudSettingsPlan(oneCore!, undefined, undefined);
     this.cryptoPlan = new CryptoPlan(oneCore!);
-    this.auditPlan = new AuditPlan(oneCore!);
+    this.auditPlan = new AuditPlan(undefined, undefined, undefined);
 
     // Subjects plan for managing memory/topics/keywords (uses TopicAnalysisModel)
     this.subjectsPlan = new SubjectsPlan();
@@ -363,15 +372,6 @@ export class AIModule implements Module {
     );
     console.log('[AIModule] ProposalsPlan initialized');
 
-    // Initialize all handlers
-    await this.topicAnalysisPlan.init?.();
-    await this.proposalsPlan.init?.();
-    await this.keywordDetailPlan.init?.();
-    await this.wordCloudSettingsPlan.init?.();
-    await this.llmConfigPlan.init?.();
-    await this.cryptoPlan.init?.();
-    await this.auditPlan.init?.();
-
     // Initialize AIPlan with all dependencies
     console.log('[AIModule] Initializing AIPlan with dependencies...');
     this.aiPlan.setModels(
@@ -396,7 +396,7 @@ export class AIModule implements Module {
       channelManager: channelManager!,
       topicModel: topicModel!,
       aiPlan: this.aiAssistantPlan,
-      ownerId: ownerId
+      ownerId: ownerId as any
     });
     await this.aiMessageListener.start();
     console.log('[AIModule] AIMessageListener started');
@@ -405,24 +405,11 @@ export class AIModule implements Module {
   async shutdown(): Promise<void> {
     console.log('[AIModule] Shutting down...');
 
-    const platformHandlers = [
-      { name: 'AIMessageListener', fn: () => this.aiMessageListener?.stop?.() },
-      { name: 'AuditPlan', fn: () => this.auditPlan?.shutdown?.() },
-      { name: 'CryptoPlan', fn: () => this.cryptoPlan?.shutdown?.() },
-      { name: 'LLMConfigPlan', fn: () => this.llmConfigPlan?.shutdown?.() },
-      { name: 'WordCloudSettingsPlan', fn: () => this.wordCloudSettingsPlan?.shutdown?.() },
-      { name: 'KeywordDetailPlan', fn: () => this.keywordDetailPlan?.shutdown?.() },
-      { name: 'ProposalsPlan', fn: () => this.proposalsPlan?.shutdown?.() },
-      { name: 'TopicAnalysisPlan', fn: () => this.topicAnalysisPlan?.shutdown?.() },
-      { name: 'AIPlan', fn: () => this.aiPlan?.shutdown?.() }
-    ];
-
-    for (const handler of platformHandlers) {
-      try {
-        await handler.fn();
-      } catch (error) {
-        console.error(`[AIModule] Shutdown error (${handler.name}):`, error);
-      }
+    // Stop the message listener
+    try {
+      await this.aiMessageListener?.stop?.();
+    } catch (error) {
+      console.error('[AIModule] Shutdown error (AIMessageListener):', error);
     }
 
     console.log('[AIModule] Shutdown complete');
@@ -459,7 +446,6 @@ export class AIModule implements Module {
       this.deps.settings &&
       this.deps.topicGroupManager &&
       this.deps.trustPlan &&
-      this.deps.journalPlan &&
       this.deps.oneCore &&
       this.deps.topicAnalysisModel
     );

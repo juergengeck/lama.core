@@ -176,6 +176,12 @@ declare module '@OneObjectInterfaces' {
         description?: string; // LLM-generated description
         abstractionLevel?: number; // 1-42 scale
 
+        // Timestamp fields for message navigation
+        timeRanges: Array<{ start: number; end: number }>;  // Time spans when subject was discussed (UI uses for scrolling)
+        createdAt: number;     // Unix timestamp when subject was first created
+        lastSeenAt: number;    // Unix timestamp when subject was last referenced
+        messageCount: number;  // Number of messages referencing this subject
+
         // References - content that discusses this subject
         topics: string[];  // Array of topic/channel IDs
         memories: string[]; // Array of Memory IdHashes (from memory.core)

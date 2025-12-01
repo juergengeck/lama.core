@@ -49,7 +49,7 @@ export class TrustModule implements Module {
   }
 
   async shutdown(): Promise<void> {
-    await this.trustPlan?.shutdown?.();
+    // TrustPlan doesn't have shutdown, TrustModel may
     await this.trustModel?.shutdown?.();
 
     console.log('[TrustModule] Shutdown complete');

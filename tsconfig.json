@@ -18,14 +18,21 @@
     "baseUrl": ".",
     "paths": {
       "@refinio/*": ["./packages/*"],
+      "@refinio/api": ["../refinio.api/dist"],
+      "@refinio/api/*": ["../refinio.api/dist/*"],
       "@anthropic-ai/*": ["../lama.browser/node_modules/@anthropic-ai/*"],
-      "@chat/core/*": ["../chat.core/dist/types/*", "../chat.core/*"],
-      "@connection/core/*": ["../connection.core/dist/types/*", "../connection.core/*"],
-      "@trust/core/*": ["../trust.core/*"],
-      "@memory/core/*": ["../memory.core/src/*"],
+      "@chat/core/*": ["../chat.core/*"],
+      "@connection/core/*": ["../connection.core/dist/types/*"],
+      "@trust/core/*": ["../trust.core/dist/*"],
+      "@memory/core": ["../memory.core/dist"],
+      "@memory/core/*": ["../memory.core/dist/*"],
+      "@ui/core": ["../ui.core/dist"],
+      "@ui/core/*": ["../ui.core/dist/*"],
+      "@lama/core/*": ["./*"],
       "@mcp/core": ["../mcp.core/dist"],
       "@cube/core": ["../../node_modules/@cube/core/dist"],
-      "@refinio/api/*": ["../../node_modules/@refinio/api/dist/*"]
+      "@device/core": ["../device.core/lib"],
+      "@device/core/*": ["../device.core/lib/*"]
     }
   },
   "include": ["ai/**/*.ts", "constants/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "modules/**/*.ts", "services/**/*.ts", "one-ai/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "ui/**/*.ts", "ui/**/*.tsx", "*.d.ts"],

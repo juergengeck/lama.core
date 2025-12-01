@@ -10,11 +10,12 @@ import { getObject, storeUnversionedObject } from '@refinio/one.core/lib/storage
 import { createAccess } from '@refinio/one.core/lib/access.js';
 import { calculateHashOfObj, calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
+// Note: storeUnversionedObject is still used by TopicGroupManager storage deps
+
 // Chat core plans (platform-agnostic business logic - chat-related)
 import { ChatPlan } from '@chat/core/plans/ChatPlan.js';
 import { GroupPlan } from '@chat/core/plans/GroupPlan.js';
 import { ContactsPlan } from '@chat/core/plans/ContactsPlan.js';
-import { ExportPlan } from '@chat/core/plans/ExportPlan.js';
 import { FeedForwardPlan } from '@chat/core/plans/FeedForwardPlan.js';
 
 // Chat core models
@@ -22,7 +23,6 @@ import TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 
 // Plan system for assembly tracking
 import { StoryFactory } from '@refinio/api/plan-system';
-import { AssemblyPlan } from '@assembly/core';
 
 /**
  * ChatModule - Chat functionality
@@ -45,7 +45,6 @@ export class ChatModule implements Module {
     { targetType: 'ChatPlan' },
     { targetType: 'GroupPlan' },
     { targetType: 'ContactsPlan' },
-    { targetType: 'ExportPlan' },
     { targetType: 'FeedForwardPlan' },
     { targetType: 'TopicGroupManager' }
   ];
@@ -61,7 +60,6 @@ export class ChatModule implements Module {
   public chatPlan!: ChatPlan;
   public groupPlan!: GroupPlan;
   public contactsPlan!: ContactsPlan;
-  public exportPlan!: ExportPlan;
   public feedForwardPlan!: FeedForwardPlan;
   public topicGroupManager!: TopicGroupManager;
 
@@ -76,10 +74,18 @@ export class ChatModule implements Module {
     this.topicGroupManager = new TopicGroupManager(
       oneCore, // OneCoreInstance (Model implements this)
       {
-        storeVersionedObject,
+        storeVersionedObject: async (obj: any) => {
+          const result = await storeVersionedObject(obj);
+          // Add versionHash alias for compatibility
+          return { ...result, versionHash: result.hash };
+        },
         storeUnversionedObject,
         getObjectByIdHash,
         getObject,
+        getAllOfType: async (_type: string) => {
+          // TopicGroupManager declares this in interface but never uses it
+          throw new Error('getAllOfType not implemented - not used by TopicGroupManager');
+        },
         createAccess,
         calculateIdHashOfObj,
         calculateHashOfObj
@@ -89,24 +95,13 @@ export class ChatModule implements Module {
     // Chat plans (platform-agnostic from chat.core)
     this.chatPlan = new ChatPlan(oneCore);
     this.contactsPlan = new ContactsPlan(oneCore);
-    this.exportPlan = new ExportPlan(oneCore);
     this.feedForwardPlan = new FeedForwardPlan(oneCore);
 
     // Initialize GroupPlan with StoryFactory for assembly tracking
-    // This enables assembly creation through the proper abstraction layers
-    console.log('[ChatModule] Initializing GroupPlan with StoryFactory and AssemblyPlan');
+    console.log('[ChatModule] Initializing GroupPlan with StoryFactory');
 
-    // Create AssemblyPlan (connects to ONE.core)
-    const assemblyPlan = new AssemblyPlan({
-      storeVersionedObject,
-      storeUnversionedObject,
-      getObjectByIdHash
-    });
-
-    // Create StoryFactory with storage function (NOT AssemblyPlan object)
-    // StoryFactory expects a function, not an object
+    // Create StoryFactory with storage function
     const storyFactory = new StoryFactory(storeVersionedObject);
-    console.log('[ChatModule] StoryFactory created with storeVersionedObject function');
 
     // Create GroupPlan with TopicGroupManager and StoryFactory
     this.groupPlan = new GroupPlan(
@@ -123,13 +118,7 @@ export class ChatModule implements Module {
   }
 
   async shutdown(): Promise<void> {
-    await this.feedForwardPlan?.shutdown?.();
-    await this.exportPlan?.shutdown?.();
-    await this.contactsPlan?.shutdown?.();
-    await this.groupPlan?.shutdown?.();
-    await this.chatPlan?.shutdown?.();
-    await this.topicGroupManager?.shutdown?.();
-
+    // Plans don't have shutdown methods - nothing to clean up
     console.log('[ChatModule] Shutdown complete');
   }
 
@@ -142,7 +131,6 @@ export class ChatModule implements Module {
     registry.supply('ChatPlan', this.chatPlan);
     registry.supply('GroupPlan', this.groupPlan);
     registry.supply('ContactsPlan', this.contactsPlan);
-    registry.supply('ExportPlan', this.exportPlan);
     registry.supply('FeedForwardPlan', this.feedForwardPlan);
     registry.supply('TopicGroupManager', this.topicGroupManager);
   }

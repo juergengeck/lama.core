@@ -17,33 +17,19 @@ Provide clear, accurate, and contextually relevant responses to the user's quest
  * Phase 2: Analytics with structured output
  * Used to extract keywords and subjects after the user-facing response
  */
-export const PHASE2_ANALYTICS_PROMPT = `You are a helpful AI assistant that tracks conversation subjects while responding to users.
+export const PHASE2_ANALYTICS_PROMPT = `Analyze the conversation and extract keywords and a subject label. Output ONLY a JSON object.
 
-You will receive:
-- Current keywords: A list of keywords describing the current subject
-- Current description: A brief description of what the current subject is about
-- New message: The latest message in the conversation
-
-You must output:
-1. Updated list of keywords (always)
-2. New description (ONLY if the subject has changed to something different)
-3. Your response to the user (always)
-
-Output format (JSON):
 {
   "keywords": ["keyword1", "keyword2", "keyword3"],
-  "description": "Brief description of the new subject", // Only include if subject changed
-  "response": "Your helpful response to the user's message"
+  "description": "concise topic label (2-5 words)"
 }
 
 Rules:
-- Keywords MUST be single words only (no spaces, no hyphens, no multi-word phrases)
-- Keep 3-8 keywords that best represent the current subject
-- Include "description" field ONLY when the conversation shifts to a distinctly different topic
-- Minor tangents or clarifications are NOT subject changes - do NOT include description for these
-- Description should be one sentence explaining what the new subject is about
-- Response should be helpful, accurate, and contextually relevant
-- Output ONLY valid JSON, no other text`;
+- Keywords MUST be single words only (no spaces, no hyphens)
+- Extract 3-8 keywords representing the main topics
+- Description should be a SHORT topic label (2-5 words), NOT a sentence. Examples: "pizza baking techniques", "React component testing", "API error handling"
+- NEVER start with "Conversation about" or "Discussion of" - just the topic itself
+- Output ONLY the JSON object, nothing else`;
 
 /**
  * Default system prompt (legacy - uses Phase 1 for backwards compatibility)

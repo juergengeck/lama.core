@@ -23,6 +23,7 @@ import type { Profile } from '@refinio/one.models/lib/recipes/Leute/Profile.js';
 import type { KeyPair } from '@refinio/one.core/lib/crypto/encryption.js';
 import type { SignKeyPair } from '@refinio/one.core/lib/crypto/sign.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import type { StoryFactory, ExecutionMetadata, ExecutionResult, Plan } from '@refinio/api/plan-system';
 
 // Storage dependencies (injected to avoid module duplication)
 export interface AIManagerDeps {
@@ -35,9 +36,18 @@ export interface AIManagerDeps {
   hasDefaultKeys?: (owner: SHA256IdHash<Person | Instance>) => Promise<boolean>;
   channelManager: any;  // Required: for querying LLM objects
   trustPlan?: any;
-  journalPlan?: any;
   aiObjectManager?: any;  // Optional: for creating AI storage objects
   llmObjectManager?: any;  // Optional: for creating LLM storage objects
+}
+
+// Response type for AI creation (includes Assembly tracking)
+export interface CreateAIResponse {
+  success: boolean;
+  personIdHash: SHA256IdHash<Person>;
+  profileIdHash: SHA256IdHash<Profile>;
+  someoneIdHash: SHA256IdHash<any>;
+  storyIdHash?: string;
+  assemblyIdHash?: string;
 }
 
 // Import AI and LLM types
@@ -73,6 +83,12 @@ type LLM = {
 };
 
 export class AIManager {
+  // Plan constants for Assembly tracking
+  static readonly PLAN_ID = 'AIPlan';
+  static readonly PLAN_NAME = 'AI Contact Plan';
+  static readonly PLAN_DESCRIPTION = 'Manages AI Person/Profile/Someone with Story/Assembly tracking';
+  static readonly PLAN_DOMAIN = 'ai-contacts';
+
   // Lookup tables: Person ID → AI/LLM metadata objects
   private aiByPerson: Map<SHA256IdHash<Person>, AI>;
   private llmByPerson: Map<SHA256IdHash<Person>, LLM>;
@@ -86,6 +102,11 @@ export class AIManager {
   // Profile ID cache: Person ID → Profile ID (for LLMs)
   private llmProfileIdByPerson: Map<SHA256IdHash<Person>, SHA256IdHash<Profile>>;
 
+  // StoryFactory for Assembly tracking
+  private storyFactory: StoryFactory | null = null;
+  /** Cached Plan idHash - populated when storyFactory is set */
+  private planIdHash: SHA256IdHash<Plan> | null = null;
+
   constructor(
     private leuteModel: LeuteModel,
     private deps: AIManagerDeps
@@ -98,7 +119,44 @@ export class AIManager {
   }
 
   /**
+   * Set the StoryFactory and register the Plan ONE object.
+   * This stores the Plan and caches its real SHA256IdHash.
+   */
+  async setStoryFactory(factory: StoryFactory): Promise<void> {
+    this.storyFactory = factory;
+
+    // Register the Plan ONE object and get its real hash
+    this.planIdHash = await factory.registerPlan({
+      id: AIManager.PLAN_ID,
+      name: AIManager.PLAN_NAME,
+      description: AIManager.PLAN_DESCRIPTION,
+      domain: AIManager.PLAN_DOMAIN,
+      demandPatterns: [
+        { keywords: ['ai', 'assistant', 'contact', 'creation'] },
+        { keywords: ['llm', 'model', 'chat', 'assistant'] }
+      ],
+      supplyPatterns: [
+        { keywords: ['ai', 'person', 'profile', 'someone'] },
+        { keywords: ['assistant', 'contact', 'identity'] }
+      ]
+    });
+
+    console.log(`[AIManager] Registered Plan with hash: ${this.planIdHash.substring(0, 8)}...`);
+  }
+
+  /**
+   * Get the Plan's real SHA256IdHash (must be initialized first)
+   */
+  getPlanIdHash(): SHA256IdHash<Plan> {
+    if (!this.planIdHash) {
+      throw new Error('[AIManager] Plan not registered - call setStoryFactory first');
+    }
+    return this.planIdHash;
+  }
+
+  /**
    * Create an AI Person that delegates to an LLM Profile (or another AI Profile)
+   * Wraps creation with StoryFactory for Assembly tracking (journal visibility)
    *
    * @param aiId - Unique identifier for the AI (e.g., "claude", "research-assistant")
    * @param name - Display name (e.g., "Claude", "Research Assistant")
@@ -121,6 +179,60 @@ export class AIManager {
       return cached;
     }
 
+    // If no StoryFactory, fall back to direct creation (no Assembly)
+    if (!this.storyFactory) {
+      console.warn('[AIManager] No StoryFactory - creating without Assembly');
+      const result = await this.createAIInternal(aiId, name, delegatesTo);
+      return result.personIdHash;
+    }
+
+    const myId = await this.leuteModel.myMainIdentity();
+    const modelId = aiId.startsWith('started-as-') ? aiId.substring('started-as-'.length) : aiId;
+
+    const metadata: ExecutionMetadata = {
+      title: `AI Contact Created: ${name}`,
+      description: `Created AI assistant contact for model ${modelId}`,
+      planId: this.getPlanIdHash(),
+      planTypeName: AIManager.PLAN_ID,
+      owner: myId as string,
+      domain: AIManager.PLAN_DOMAIN,
+      instanceVersion: `instance-${Date.now()}`,
+
+      // ASSEMBLY: Demand (need AI assistant) + Supply (AI provides assistant)
+      demand: {
+        domain: AIManager.PLAN_DOMAIN,
+        keywords: ['ai', 'assistant', 'contact', 'creation'],
+        trustLevel: 'trusted'
+      },
+      supply: {
+        domain: AIManager.PLAN_DOMAIN,
+        keywords: ['ai', 'person', 'profile', 'someone', modelId],
+        subjects: ['ai-contact', name],
+        ownerId: myId as string
+      },
+      matchScore: 1.0
+    };
+
+    const result = await this.storyFactory.recordExecution(
+      metadata,
+      async () => {
+        return await this.createAIInternal(aiId, name, delegatesTo);
+      }
+    );
+
+    console.log(`[AIManager] ✅ Created AI Person with Assembly: ${result.assemblyId?.toString().substring(0, 8)}...`);
+    return result.result!.personIdHash;
+  }
+
+  /**
+   * Internal implementation of AI Person creation
+   * @private
+   */
+  private async createAIInternal(
+    aiId: string,
+    name: string,
+    delegatesTo: SHA256IdHash<Profile>
+  ): Promise<CreateAIResponse> {
     try {
       // 1. Create Person object
       const email = `${aiId.replace(/[^a-zA-Z0-9]/g, '_')}@ai.local`;
@@ -161,13 +273,14 @@ export class AIManager {
 
       // 3a. Create AI metadata object (SEPARATE from Person/Profile)
       const now = Date.now();
+      const modelId = aiId.startsWith('started-as-') ? aiId.substring('started-as-'.length) : aiId;
       const aiObject: AI = {
         $type$: 'AI',
         aiId,
         displayName: name,
         personId: personIdHash,
         llmProfileId: delegatesTo,  // Delegates to LLM Profile
-        modelId: aiId.startsWith('started-as-') ? aiId.substring('started-as-'.length) : aiId,
+        modelId,
         owner: myId,
         created: now,
         modified: now,
@@ -233,22 +346,7 @@ export class AIManager {
         }
       }
 
-      // Extract model ID from aiId (format: "started-as-{modelId}")
-      const modelId = aiId.startsWith('started-as-') ? aiId.substring('started-as-'.length) : aiId;
-
-      // 9. Record in journal (CRITICAL: Must happen for all AI creations)
-      if (this.deps.journalPlan) {
-        try {
-          await this.deps.journalPlan.recordAIContactCreation(myId, personIdHash, modelId, name);
-          console.log(`[AIManager] 📝 Recorded AI creation in journal with AssemblyPlan and CubeAssemblies`);
-        } catch (error) {
-          console.warn(`[AIManager] Failed to record in journal:`, error);
-        }
-      } else {
-        console.warn(`[AIManager] ⚠️  journalPlan not available - AI creation NOT recorded in journal!`);
-      }
-
-      // 10. Create AI storage object (CRITICAL: Must happen for all AI creations)
+      // 9. Create AI storage object (CRITICAL: Must happen for all AI creations)
       if (this.deps.aiObjectManager) {
         try {
           await this.deps.aiObjectManager.create({
@@ -266,7 +364,7 @@ export class AIManager {
         console.warn(`[AIManager] ⚠️  aiObjectManager not available - AI storage object NOT created!`);
       }
 
-      // 11. Create LLM storage object (CRITICAL: Links modelId → aiPersonId)
+      // 10. Create LLM storage object (CRITICAL: Links modelId → aiPersonId)
       if (this.deps.llmObjectManager) {
         try {
           await this.deps.llmObjectManager.create({
@@ -284,7 +382,12 @@ export class AIManager {
       }
 
       console.log(`[AIManager] ✅ AI Person created: ${name}`);
-      return personIdHash;
+      return {
+        success: true,
+        personIdHash,
+        profileIdHash,
+        someoneIdHash
+      };
     } catch (error) {
       console.error(`[AIManager] Failed to create AI Person:`, error);
       throw error;

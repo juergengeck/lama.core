@@ -176,10 +176,22 @@ class SubjectStorage {
     const mergedFeedbackRefs = [...new Set([...(subject1.feedbackRefs || []), ...(subject2.feedbackRefs || [])])];
 
     // Create merged subject - ONE.core generates new ID hash from merged keywords
+    const now = Date.now();
+    // Merge timeRanges from both subjects
+    const mergedTimeRanges = [
+      ...(subject1.timeRanges || []),
+      ...(subject2.timeRanges || [])
+    ].sort((a, b) => a.start - b.start);  // Sort by start time
+
     const merged: Subject = {
       $type$: 'Subject',
       keywords: mergedKeywords.sort() as SHA256IdHash<Keyword>[], // Sort for deterministic ID hash
       description: subject1.description || subject2.description, // Prefer first description
+      // Timestamps: Merge timeRanges and use earliest createdAt / latest lastSeenAt
+      timeRanges: mergedTimeRanges.length > 0 ? mergedTimeRanges : [{ start: now, end: now }],
+      createdAt: Math.min(subject1.createdAt || now, subject2.createdAt || now),
+      lastSeenAt: Math.max(subject1.lastSeenAt || now, subject2.lastSeenAt || now),
+      messageCount: (subject1.messageCount || 0) + (subject2.messageCount || 0),
       topics: mergedTopics,
       memories: mergedMemories,
       feedbackRefs: mergedFeedbackRefs

@@ -20,6 +20,7 @@ import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import type { StoryFactory } from '@refinio/api/plan-system';
 import { AIManager, type AIManagerDeps } from '../models/ai/AIManager.js';
 import { AITopicManager } from '../models/ai/AITopicManager.js';
 import { AITaskManager } from '../models/ai/AITaskManager.js';
@@ -989,6 +990,14 @@ export class AIAssistantPlan {
    */
   getAIManager(): AIManager {
     return this.aiManager;
+  }
+
+  /**
+   * Set the StoryFactory for Assembly tracking
+   * Forwards to AIManager to enable journal visibility for AI contact creation
+   */
+  async setStoryFactory(factory: StoryFactory): Promise<void> {
+    await this.aiManager.setStoryFactory(factory);
   }
 
   /**

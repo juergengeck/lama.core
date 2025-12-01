@@ -109,12 +109,12 @@ export class CoreModule implements Module {
 
   async shutdown(): Promise<void> {
     try {
-      // Shutdown in reverse order
+      // Shutdown in reverse order (one.models classes have shutdown)
       if (this.connections) await this.connections.shutdown?.();
       if (this.topicModel) await this.topicModel.shutdown?.();
       if (this.channelManager) await this.channelManager.shutdown?.();
       if (this.leuteModel) await this.leuteModel.shutdown?.();
-      if (this.settings) await this.settings.shutdown?.();
+      // PropertyTreeStore doesn't have shutdown
 
       console.log('[CoreModule] Shutdown complete');
     } catch (error) {

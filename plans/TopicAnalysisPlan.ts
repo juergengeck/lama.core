@@ -376,15 +376,20 @@ ${String(conversationText).substring(0, 3000)}`;
         content: summaryPrompt
       }], modelId);
 
-      // Create summary
-      const summary: any = await this.topicAnalysisModel.createSummary(
-        request.topicId as SHA256IdHash<any>,
-        1,
-        summaryResponse,
-        [],
-        'AI-generated analysis',
-        null
-      );
+      // Create summary for each subject (new per-subject model)
+      // Use the first subject as the primary summary target, or skip if no subjects
+      let summary: any = null;
+      if (subjectsToStore.length > 0) {
+        const primarySubject = subjectsToStore[0];
+        summary = await this.topicAnalysisModel.createSummary(
+          primarySubject.idHash,  // subjectIdHash
+          request.topicId,        // topicId
+          summaryResponse         // prose
+        );
+        console.log('[TopicAnalysisPlan] Created summary for primary subject:', primarySubject.idHash);
+      } else {
+        console.log('[TopicAnalysisPlan] No subjects created, skipping summary creation');
+      }
 
       // Prime the cache with freshly created objects (bypasses channel propagation race condition)
       const createdSubjects = subjectsToStore.map(s => s.fullSubject);
@@ -450,18 +455,40 @@ ${String(conversationText).substring(0, 3000)}`;
               return result.obj.term;
             }
           } catch (err) {
-            console.warn('[TopicAnalysisPlan] Could not load keyword:', keywordHash.substring(0, 16), err);
+            console.warn('[TopicAnalysisPlan] Could not load keyword:', keywordHash?.substring?.(0, 16) || keywordHash, err);
           }
           return null;
         }));
 
         // Filter out nulls
-        const validKeywords = resolvedKeywords.filter(k => k !== null);
+        const validKeywords = resolvedKeywords.filter(k => k !== null) as string[];
 
-        // Return ONE.core Subject with resolved keyword terms
+        // Derive UI-required fields from ONE.core Subject data
+        // id: prefer readable keyword combination, then description, then short hash
+        const keywordId = validKeywords.length > 0 ? validKeywords.join('+') : null;
+        const shortHash = subject.idHash ? subject.idHash.substring(0, 8) : null;
+        const id = keywordId || subject.description || shortHash || 'unknown';
+
+        // name: derive from description or keywords joined
+        const keywordName = validKeywords.slice(0, 3).join(', ');
+        const name = subject.description || keywordName || 'Subject';
+
+        // messageCount: use existing or default to 0
+        const messageCount = subject.messageCount || 0;
+
+        // timestamp: prefer lastSeenAt, then current time as fallback
+        const timestamp = subject.lastSeenAt || subject.timestamp || Date.now();
+
+        // Return Subject with resolved keywords AND UI-required fields
         return {
           ...subject,
-          keywords: validKeywords
+          keywords: validKeywords,
+          // UI-required fields
+          id,
+          idHash: subject.idHash,
+          name,
+          messageCount,
+          timestamp
         };
       }));
 
@@ -660,14 +687,37 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       }
 
+      // Determine the subject ID hash for the summary (new per-subject model)
+      let subjectIdHash: string | null = null;
+
+      // First, try to use the existing summary's subject
+      if (currentSummary?.subject) {
+        subjectIdHash = currentSummary.subject;
+      }
+
+      // If no current summary with subject, get the first subject for this topic
+      if (!subjectIdHash) {
+        const subjects = await this.topicAnalysisModel.getSubjects(request.topicId as SHA256IdHash<any>);
+        if (subjects.length > 0) {
+          subjectIdHash = subjects[0].idHash;
+        }
+      }
+
+      if (!subjectIdHash) {
+        console.log('[TopicAnalysisPlan] No subjects found for topic, cannot create summary');
+        return {
+          success: false,
+          error: 'No subjects found for topic - analyze messages first to extract subjects',
+          data: { summary: null }
+        };
+      }
+
       const newSummary: any = await this.topicAnalysisModel.createSummary(
-        request.topicId as SHA256IdHash<any>,
-        newVersion,
-        summaryContent || request.content || '',
-        [],
-        request.changeReason || (request.autoGenerate ? 'AI-generated update based on new messages' : 'Manual update'),
-        currentSummary ? currentSummary.id : null
+        subjectIdHash,                           // subjectIdHash
+        request.topicId,                         // topicId
+        summaryContent || request.content || ''  // prose
       );
+      console.log('[TopicAnalysisPlan] Updated summary for subject:', subjectIdHash);
 
       return {
         success: true,
