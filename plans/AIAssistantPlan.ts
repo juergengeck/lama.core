@@ -267,63 +267,46 @@ export class AIAssistantPlan {
       this.messageProcessor.setAvailableLLMModels(models);
       console.log(`[AIAssistantPlan] Updated message processor with ${models.length} models`);
 
-      // Load saved default model from persistence - BUT only if default chats already exist
-      // If chats don't exist, user must select via UI (which creates chats)
-      if (models.length > 0) {
-        // Check if default chats (hi/lama) already exist
-        const hiExists = await this._checkTopicExists('hi');
-        const lamaExists = await this._checkTopicExists('lama');
+      // Load saved default model from persistence FIRST (don't gate on models.length)
+      // FIX: The default model ID is stored in AISettings, independent of model availability.
+      // The models list from llmManager may be empty during early init (channelManager not ready),
+      // but we already have LLM Persons loaded via aiManager.loadExisting() above.
+      const savedDefaultModel = await this._loadDefaultModelFromPersistence(models);
 
-        const savedDefaultModel = await this._loadDefaultModelFromPersistence(models);
+      if (savedDefaultModel) {
+        console.log(`[AIAssistantPlan] Found persisted default model: ${savedDefaultModel}`);
 
-        // If topics exist but no saved model, repair by scanning and registering them
-        if (hiExists && lamaExists && !savedDefaultModel) {
-          console.log(`[AIAssistantPlan] ⚠️  Found orphaned topics without saved model - will scan to register them`);
-          // Note: Topics will be registered during scanExistingConversations below
-          // No need to set default model here - user will select via UI
-        } else if (savedDefaultModel) {
-          // Verify the saved model exists in available models
-          const modelExists = models.some(m => m.id === savedDefaultModel);
-          if (modelExists) {
-            if (hiExists && lamaExists) {
-              // Chats exist - safe to auto-load the saved model
-              this.topicManager.setDefaultModel(savedDefaultModel);
-              console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel} (chats already exist)`);
+        // Set as default immediately - trust the persistence
+        // Topics will be detected/created during scanExistingConversations or createDefaultChats
+        this.topicManager.setDefaultModel(savedDefaultModel);
+        console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel}`);
 
-              // Ensure AI and LLM Persons exist for this model
-              const model = models.find(m => m.id === savedDefaultModel);
-              if (model) {
-                const displayName = model.displayName || model.name || savedDefaultModel;
-                const provider = model.provider || 'unknown';
+        // Try to find model info from available models (for display name, provider)
+        // If not found in available models, use reasonable defaults
+        const model = models.find(m => m.id === savedDefaultModel);
+        const displayName = model?.displayName || model?.name || savedDefaultModel;
+        const provider = model?.provider || 'ollama'; // Default to ollama for local models
 
-                // Create LLM Profile (createLLM returns Profile hash, not Person hash)
-                const llmProfileId = await this.aiManager.createLLM(savedDefaultModel, displayName, provider);
-                console.log(`[AIAssistantPlan] Created/retrieved LLM Profile for ${savedDefaultModel}`);
+        // Create LLM Profile (createLLM returns Profile hash, not Person hash)
+        const llmProfileId = await this.aiManager.createLLM(savedDefaultModel, displayName, provider);
+        console.log(`[AIAssistantPlan] Created/retrieved LLM Profile for ${savedDefaultModel}`);
 
-                // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
-                const familyName = this._extractModelFamily(savedDefaultModel);
+        // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
+        const familyName = this._extractModelFamily(savedDefaultModel);
 
-                // Create AI Person that delegates to LLM Profile (use family name, not full model name)
-                const aiId = `started-as-${savedDefaultModel}`;
-                let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
-                if (!aiPersonId) {
-                  // AIManager.createAI() accepts Profile hash for delegation
-                  aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
-                  console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
-                }
-
-                // Ensure topics exist and AI participants are in groups (this registers them)
-                await this.createDefaultChats();
-                console.log(`[AIAssistantPlan] Ensured existing chats have AI participants and are registered`);
-              }
-            } else {
-              // Chats don't exist - user must select via UI
-              console.log(`[AIAssistantPlan] Default chats missing - user must select model via UI`);
-            }
-          } else {
-            console.log(`[AIAssistantPlan] Saved model ${savedDefaultModel} not available`);
-          }
+        // Create AI Person that delegates to LLM Profile (use family name, not full model name)
+        const aiId = `started-as-${savedDefaultModel}`;
+        let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
+        if (!aiPersonId) {
+          // AIManager.createAI() accepts Profile hash for delegation
+          aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
+          console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
         }
+
+        // Ensure topics exist and AI participants are in groups (this registers them)
+        // createDefaultChats is idempotent - it will detect existing topics
+        await this.createDefaultChats();
+        console.log(`[AIAssistantPlan] Ensured default chats have AI participants and are registered`);
       }
 
       // Auto-select first available model on first run (when no saved default exists)
@@ -347,7 +330,7 @@ export class AIAssistantPlan {
       }
 
       // Note: Scan is NOT called here because ChannelManager hasn't loaded channels yet
-      // The scan will be called by CoreInitializer AFTER ChannelManager.init()
+      // The scan will be called by AIModule AFTER ChannelManager.init() via ModuleRegistry
 
       this.initialized = true;
       console.log('[AIAssistantPlan.init] 🟢 END - Initialization complete');
@@ -755,7 +738,7 @@ export class AIAssistantPlan {
       onStream?: (chunk: string) => void;
       onThinkingStream?: (chunk: string) => void;
       onProgress?: (status: string) => void;
-      onAnalysis?: (analysis: { keywords: string[]; description?: string }) => void;
+      onAnalysis?: (analysis: { keywords: string[]; description?: string; summaryUpdate?: string }) => void;
       onComplete?: (result: { response: string; thinking?: string; analysis?: any }) => void;
     }
   ): Promise<any> {
@@ -911,6 +894,9 @@ export class AIAssistantPlan {
               : JSON.stringify(analyticsResponse);
 
           const parsedAnalysis = JSON.parse(jsonResponse);
+          console.log('[AIAssistantPlan] PHASE 2 raw response:', jsonResponse);
+          console.log('[AIAssistantPlan] PHASE 2 parsed:', parsedAnalysis);
+
           analysis = {
             keywords: parsedAnalysis.keywords || [],
             description: parsedAnalysis.description

@@ -6,7 +6,6 @@ import PropertyTreeStore from '@refinio/one.models/lib/models/SettingsModel.js';
 import type { Module } from '@refinio/api';
 import { initializePlanObjectManager, registerStandardPlans } from '@refinio/api/plan-system';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
-import { recordOwnerAssembly } from '@lama/core/initialization/CoreInitializer.js';
 
 /**
  * CoreModule - ONE.core foundation models
@@ -86,8 +85,7 @@ export class CoreModule implements Module {
         console.log('[CoreModule] Set ownerId on oneCore:', oneCore.ownerId?.substring(0, 8));
       }
 
-      // Record owner Someone as Assembly for journal visibility (shared function)
-      await recordOwnerAssembly(this.leuteModel);
+      // Note: Owner Assembly recording moved to JournalModule which has proper existence checking
 
       // Create the 'lama' channel for application-level data (LLM configs, etc.)
       try {

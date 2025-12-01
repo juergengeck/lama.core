@@ -1,104 +1,55 @@
 # Core Initialization Pattern
 
-## Problem
+## Overview
 
-Initialization order was scattered across platforms with no enforcement:
-- lama.browser manually orchestrated init() calls
-- lama.cube manually orchestrated init() calls
-- ChatHandler depended on LLM cache being populated before channelManager processes messages
-- Easy to break, fragile, no fail-fast guarantees
+Initialization is handled via **ModuleRegistry** from `@refinio/api`. The old `CoreInitializer.ts` has been removed in favor of a unified module system.
 
-## Solution
+## How It Works
 
-**CoreInitializer** enforces correct initialization order in one place.
-
-### Flow
+Both platforms use the same modules from `lama.core/modules/`, with platform-specific adapters injected via dependency injection:
 
 ```
-connection.core → lama.core → chat.core
-     ↓              ↓            ↓
-  Models        AI/LLM      Chat handlers
+lama.core/modules/    → Shared modules (CoreModule, AIModule, ChatModule, etc.)
+lama.core/services/   → Platform abstraction interfaces (LLMPlatform)
+platform adapters     → BrowserLLMPlatform / ElectronLLMPlatform
 ```
 
-### Order Enforced
+### Initialization Flow
 
-1. **LeuteModel** - Contacts/identities foundation
-2. **LLM Infrastructure** - llmManager, aiAssistantModel (populates cache)
-3. **ChannelManager** - NOW safe to process existing messages
-4. **TopicModel** - Conversations
-5. **ConnectionsModel** - P2P/federation
-6. **Chat Handlers** - Business logic
-
-### Critical Dependencies
-
-- LLM cache **MUST** be populated before `channelManager.init()`
-- `channelManager.init()` processes existing messages from storage
-- ChatHandler needs LLM cache to identify AI senders in those messages
-- If cache is empty → error: "AI sender detected but no LLM object found"
-
-## Usage
-
-### Platform Initialization
+1. Platform supplies adapters to ModuleRegistry
+2. Platform registers shared modules from lama.core
+3. ModuleRegistry.initAll() topologically sorts and initializes
 
 ```typescript
-import { initializeCoreModels } from '@lama/core/initialization/CoreInitializer.js';
+import { ModuleRegistry } from '@refinio/api';
+import { CoreModule, AIModule, JournalModule } from '@lama/core/modules';
 
-// Create all dependencies FIRST
-const model = new Model();
-// ... create handlers, managers, etc ...
+const registry = new ModuleRegistry();
 
-// Then initialize in correct order via CoreInitializer
-await initializeCoreModels({
-    oneCore: this,
-    leuteModel: this.leuteModel,
-    channelManager: this.channelManager,
-    topicModel: this.topicModel,
-    connections: this.connections,
-    llmManager: this.llmManager,
-    llmObjectManager: this.llmObjectManager,
-    aiAssistantModel: this.aiAssistantModel,
-    chatHandler: this.chatHandler,
-    topicAnalysisModel: this.topicAnalysisModel,
-    topicGroupManager: this.topicGroupManager
-}, (progress) => {
-    console.log(`Init: ${progress.stage} (${progress.percent}%)`);
-});
+// Supply platform adapters
+registry.supply('OneCore', this);
+registry.supply('LLMPlatform', new BrowserLLMPlatform());
+
+// Register shared modules (same for both platforms)
+registry.register(new CoreModule(commServerUrl));
+registry.register(new JournalModule());
+registry.register(new AIModule());
+// ...
+
+await registry.initAll();  // Topological sort ensures correct order
 ```
 
-### Platform Shutdown
+## Module Dependencies
 
-```typescript
-import { shutdownCoreModels } from '@lama/core/initialization/CoreInitializer.js';
+ModuleRegistry uses static `demands` and `supplies` to determine initialization order:
 
-// Shutdown platform-specific handlers first
-await this.myPlatformHandler.shutdown();
-
-// Then use CoreInitializer for core models (reverse order)
-await shutdownCoreModels({
-    // same deps as init
-});
-```
+- **CoreModule**: demands OneCore → supplies LeuteModel, ChannelManager, TopicModel
+- **JournalModule**: demands LeuteModel, ChannelManager → supplies JournalPlan
+- **AIModule**: demands LeuteModel, ChannelManager, LLMPlatform → supplies AIAssistantPlan
 
 ## Benefits
 
-✅ **Enforced order** - Can't accidentally break initialization sequence
-✅ **Centralized** - One place to fix flow control issues
-✅ **Fail fast** - No fallbacks, no mitigation - proper dependencies
-✅ **Platform agnostic** - Works for browser, electron, worker, etc.
-✅ **Progress tracking** - Optional callback for UI feedback
-
-## Platforms
-
-### lama.browser ✅
-- Uses CoreInitializer (Model.ts:413)
-- Removed manual init() orchestration
-- Clean separation: platform handlers → CoreInitializer → done
-
-### lama.cube ⏸️
-- TODO: Migrate to CoreInitializer
-- Currently manual orchestration in node-one-core.ts
-
-## Files
-
-- `CoreInitializer.ts` - Main initialization logic
-- `README.md` - This file
+- **Single source of truth**: Modules in lama.core, platforms only supply adapters
+- **Automatic ordering**: ModuleRegistry's topological sort ensures correct order
+- **Type-safe DI**: Platform adapters implement shared interfaces
+- **No duplication**: Same module code runs on both browser and electron
