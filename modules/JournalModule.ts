@@ -3,8 +3,10 @@ import type { Module } from '@refinio/api';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 
 // Plan system imports
-import { StoryFactory } from '@refinio/refinio.api/plan-system';
-import { AssemblyPlan, AssemblyListener, JournalPlan } from '@assembly/core';
+import { StoryFactory } from '@refinio/api/plan-system';
+import { AssemblyPlan, AssemblyListener, JournalPlan, AssemblyDimension } from '@assembly/core';
+import type { Assembly, Story, Plan } from '@assembly/core';
+import type { SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import { SomeonePlan } from '@contact/core';
 
 // ONE.core storage imports
@@ -33,19 +35,21 @@ export class JournalModule implements Module {
 
   static demands = [
     { targetType: 'OneCore', required: true },
-    { targetType: 'LeuteModel', required: true }
+    { targetType: 'LeuteModel', required: true },
+    { targetType: 'StoryFactory', required: true }
   ];
 
   static supplies = [
-    { targetType: 'StoryFactory' },
     { targetType: 'AssemblyPlan' },
     { targetType: 'AssemblyListener' },
+    { targetType: 'AssemblyDimension' },
     { targetType: 'JournalPlan' }
   ];
 
   private deps: {
     oneCore?: any;
     leuteModel?: LeuteModel;
+    storyFactory?: StoryFactory;
   } = {};
 
   // Journal components
@@ -53,6 +57,7 @@ export class JournalModule implements Module {
   public assemblyPlan!: AssemblyPlan;
   public assemblyListener!: AssemblyListener;
   public journalPlan!: JournalPlan;
+  public assemblyDimension!: AssemblyDimension;
 
   // In-memory cache of Assembly idHashes
   private assemblyCache: Set<string> = new Set();
@@ -64,7 +69,14 @@ export class JournalModule implements Module {
 
     console.log('[JournalModule] Initializing journal module...');
 
-    const { oneCore, leuteModel } = this.deps;
+    const { oneCore, leuteModel, storyFactory } = this.deps;
+
+    // Use the demanded StoryFactory from ModuleRegistry
+    if (!storyFactory) {
+      throw new Error('JournalModule requires StoryFactory');
+    }
+    this.storyFactory = storyFactory;
+    console.log('[JournalModule] Using StoryFactory from ModuleRegistry');
 
     // Create adapters for ONE.core storage functions
     const storeVersionedObjectAdapter = async (obj: any) => {
@@ -96,7 +108,7 @@ export class JournalModule implements Module {
       return await calculateIdHashOfObj(obj);
     };
 
-    // Initialize AssemblyPlan + StoryFactory for audit trail
+    // Initialize AssemblyPlan for audit trail
     this.assemblyPlan = new AssemblyPlan({
       oneCore: oneCore!,
       storeVersionedObject: storeVersionedObjectAdapter,
@@ -104,29 +116,27 @@ export class JournalModule implements Module {
       getObject: getObjectAdapter
     });
 
-    this.storyFactory = new StoryFactory(storeVersionedObjectAdapter);
-    console.log('[JournalModule] ✅ AssemblyPlan + StoryFactory initialized');
+    console.log('[JournalModule] ✅ AssemblyPlan initialized');
+
+    // Create and initialize AssemblyDimension for indexed queries FIRST
+    // (so it's available for AssemblyListener)
+    this.assemblyDimension = new AssemblyDimension();
+    await this.assemblyDimension.init();
 
     // Create AssemblyListener to connect StoryFactory to Assembly creation
+    // Include assemblyDimension and getPlan so new Assemblies are indexed
     this.assemblyListener = new AssemblyListener({
       storyFactory: this.storyFactory,
-      assemblyPlan: this.assemblyPlan
+      assemblyPlan: this.assemblyPlan,
+      assemblyDimension: this.assemblyDimension,
+      getPlan: getObjectByIdHashAdapter
     });
 
     // Initialize the listener to start listening to Story creation events
     this.assemblyListener.init();
     console.log('[JournalModule] ✅ AssemblyListener initialized and listening');
 
-    // Listen to Story creation to populate Assembly cache (for new Assemblies)
-    this.storyFactory.onStoryCreated(async (story) => {
-      // Story.product contains the Assembly idHash
-      if (story.product) {
-        this.assemblyCache.add(story.product as string);
-        console.log(`[JournalModule] Added Assembly ${(story.product as string).substring(0, 8)}... to cache (total: ${this.assemblyCache.size})`);
-      }
-    });
-
-    // Load existing Assemblies from storage (for Assemblies created in previous sessions)
+    // Load existing Assemblies from storage into the dimension
     await this.loadExistingAssemblies(getObjectByIdHashAdapter);
 
     // Record owner Someone as Assembly if needed
@@ -140,32 +150,15 @@ export class JournalModule implements Module {
       calculateIdHashOfObjAdapter
     );
 
-    // Create JournalPlan for journal queries
+    // NOTE: AI Persons get their Assemblies created when AIModule creates them
+    // via createAI() - the registerPlanInstance wrapping handles this automatically.
+    // We don't call recordAIPersonAssemblies() here because:
+    // 1. On first startup, AIModule hasn't run yet (runs later due to more dependencies)
+    // 2. On restart, it would redundantly create Assemblies for existing AI persons
+
+    // Create JournalPlan for journal queries using AssemblyDimension
     this.journalPlan = new JournalPlan({
-      // getAllAssemblies: query all Assembly objects from the cache
-      getAllAssemblies: async () => {
-        const assemblies: any[] = [];
-
-        console.log(`[JournalModule] getAllAssemblies: Loading ${this.assemblyCache.size} assemblies from cache`);
-
-        // Load each Assembly object from storage using the cached idHashes
-        for (const assemblyIdHash of this.assemblyCache) {
-          try {
-            const assembly = await getObjectByIdHashAdapter(assemblyIdHash as any);
-            assemblies.push(assembly);
-          } catch (error) {
-            console.error(`[JournalModule] Failed to load Assembly ${assemblyIdHash.substring(0, 8)}...:`, error);
-            // Skip assemblies that can't be loaded (they may have been deleted)
-          }
-        }
-
-        console.log(`[JournalModule] getAllAssemblies: Successfully loaded ${assemblies.length} assemblies`);
-        return assemblies;
-      },
-      // getStory: retrieve Story by ID hash
-      getStory: async (idHash) => {
-        return await getObjectByIdHashAdapter(idHash) as any;
-      }
+      assemblyDimension: this.assemblyDimension
     });
     console.log('[JournalModule] ✅ JournalPlan created for journal queries');
 
@@ -173,7 +166,7 @@ export class JournalModule implements Module {
   }
 
   /**
-   * Load existing Assembly objects from ONE.core storage into the cache
+   * Load existing Assembly objects from ONE.core storage into the dimension
    * This is called on startup to restore Assemblies created in previous sessions
    */
   private async loadExistingAssemblies(
@@ -193,8 +186,30 @@ export class JournalModule implements Module {
           if (obj && obj.$type$) {
             typesSeen.add(obj.$type$);
             if (obj.$type$ === 'Assembly') {
+              // Load related Story and Plan for indexing
+              const assembly = obj as Assembly;
               this.assemblyCache.add(idHash as string);
-              assemblyCount++;
+
+              try {
+                // Load Story from assembly.storyRef
+                const story = await getObjectByIdHashAdapter(assembly.storyRef) as Story;
+                // Load Plan from story.plan
+                const plan = await getObjectByIdHashAdapter(story.plan) as Plan;
+
+                // Index into dimension with full data
+                // Note: We use idHash as the key since we're iterating over id hashes
+                // In practice, both idHash and hash are SHA256 strings
+                this.assemblyDimension.indexAssembly(
+                  idHash as unknown as SHA256Hash<Assembly>,
+                  assembly,
+                  story,
+                  plan
+                );
+                assemblyCount++;
+              } catch (loadError) {
+                // Story or Plan might not exist yet - still add to cache
+                console.warn(`[JournalModule] Could not load Story/Plan for Assembly ${(idHash as string).substring(0, 8)}...`);
+              }
             }
           }
         } catch (error) {
@@ -242,29 +257,8 @@ export class JournalModule implements Module {
       const ownerIdHash = me.idHash;
       const personId = await leuteModel.myMainIdentity();
 
-      // Check if an Assembly already exists for the owner
-      // Look through the cache for an Assembly with domain 'identity' and ownerId matching
-      let hasOwnerAssembly = false;
-      for (const assemblyIdHash of this.assemblyCache) {
-        try {
-          const assembly = await getObjectByIdHashAdapter(assemblyIdHash as any);
-          if (assembly && assembly.supply && assembly.supply.domain === 'identity') {
-            // Found an identity Assembly - owner already has one
-            hasOwnerAssembly = true;
-            console.log(`[JournalModule] Owner already has Assembly ${assemblyIdHash.substring(0, 8)}...`);
-            break;
-          }
-        } catch (error) {
-          // Skip assemblies that can't be loaded
-        }
-      }
-
-      if (hasOwnerAssembly) {
-        console.log('[JournalModule] Owner Assembly exists, no action needed');
-        return;
-      }
-
       // Create SomeonePlan and record the owner
+      // SomeonePlan.recordExistingSomeone is idempotent - safe to call multiple times
       console.log('[JournalModule] Creating Assembly for owner Someone...');
 
       const plan = new SomeonePlan({
@@ -310,6 +304,12 @@ export class JournalModule implements Module {
       console.log('[JournalModule] AssemblyListener destroyed');
     }
 
+    // Clear the assembly dimension
+    if (this.assemblyDimension) {
+      this.assemblyDimension.clear();
+      console.log('[JournalModule] AssemblyDimension cleared');
+    }
+
     // Clear the assembly cache
     this.assemblyCache.clear();
     console.log('[JournalModule] Assembly cache cleared');
@@ -323,16 +323,18 @@ export class JournalModule implements Module {
   }
 
   emitSupplies(registry: any): void {
-    registry.supply('StoryFactory', this.storyFactory);
+    // StoryFactory is demanded from ModuleRegistry, not supplied here
     registry.supply('AssemblyPlan', this.assemblyPlan);
     registry.supply('AssemblyListener', this.assemblyListener);
+    registry.supply('AssemblyDimension', this.assemblyDimension);
     registry.supply('JournalPlan', this.journalPlan);
   }
 
   private hasRequiredDeps(): boolean {
     return !!(
       this.deps.oneCore &&
-      this.deps.leuteModel
+      this.deps.leuteModel &&
+      this.deps.storyFactory
     );
   }
 }

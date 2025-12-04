@@ -88,7 +88,8 @@ export class AIModule implements Module {
     { targetType: 'TrustPlan', required: true },
     { targetType: 'JournalPlan', required: true },
     { targetType: 'OneCore', required: true },
-    { targetType: 'TopicAnalysisModel', required: true }
+    { targetType: 'TopicAnalysisModel', required: true },
+    { targetType: 'StoryFactory', required: true }
   ];
 
   static supplies = [
@@ -118,6 +119,7 @@ export class AIModule implements Module {
     trustPlan?: TrustPlan;
     oneCore?: any;
     topicAnalysisModel?: any;
+    storyFactory?: StoryFactory;
   } = {};
 
   // AI Plans
@@ -301,15 +303,20 @@ export class AIModule implements Module {
       ((this.aiAssistantPlan as any).taskManager as any).topicAnalysisModel = this.deps.topicAnalysisModel;
     }
 
+    // CRITICAL: Wire up StoryFactory BEFORE init() so AI contact creation is tracked in journal
+    // AIManager.createAI() is called during init() and needs StoryFactory to create Assemblies
+    // Use the shared StoryFactory from ModuleRegistry so all modules share the same instance
+    const { storyFactory } = this.deps;
+    if (!storyFactory) {
+      throw new Error('AIModule requires StoryFactory from ModuleRegistry');
+    }
+    await this.aiAssistantPlan.setStoryFactory(storyFactory);
+    console.log('[AIModule] Using shared StoryFactory from ModuleRegistry');
+
     // CRITICAL: Initialize AIAssistantPlan now that all dependencies are injected
     console.log('[AIModule] Initializing AIAssistantPlan...');
     await this.aiAssistantPlan.init();
     console.log('[AIModule] AIAssistantPlan initialized');
-
-    // Wire up StoryFactory for Assembly tracking (AI contact creation visible in journal)
-    const storyFactory = new StoryFactory(storeVersionedObject);
-    await this.aiAssistantPlan.setStoryFactory(storyFactory);
-    console.log('[AIModule] StoryFactory wired to AIAssistantPlan');
 
     // CRITICAL: Set aiAssistantModel on oneCore so LLMConfigPlan can access it dynamically
     // LLMConfigPlan accesses it via this.nodeOneCore.aiAssistantModel
@@ -447,7 +454,8 @@ export class AIModule implements Module {
       this.deps.topicGroupManager &&
       this.deps.trustPlan &&
       this.deps.oneCore &&
-      this.deps.topicAnalysisModel
+      this.deps.topicAnalysisModel &&
+      this.deps.storyFactory
     );
   }
 }

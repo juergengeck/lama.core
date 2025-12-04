@@ -1,6 +1,13 @@
 /**
  * Journal Plan - Records LLM interactions using Plan + Story pattern
  *
+ * @deprecated Use assembly.core's JournalPlan.queryAssemblies() instead.
+ * The conversion layer (JournalEntry types) is no longer needed - JournalView
+ * now works with AssemblyWithStory directly, filtering by assembly.domain.
+ *
+ * This class remains for backward compatibility but should not be used for new code.
+ * See: @assembly/core/plans/JournalPlan.ts
+ *
  * Architecture (following assembly.core canonical pattern):
  * 1. Create Plan for each LLM call (learned pattern for future matching)
  * 2. Create Story documenting the execution (audit trail with all metadata)
@@ -139,6 +146,7 @@ export interface JournalPlanExternalDeps {
 
 /**
  * Journal Plan for recording LLM interactions
+ * @deprecated Use assembly.core's JournalPlan instead.
  */
 export class JournalPlan {
   private chatPlan?: any;
@@ -259,7 +267,6 @@ export class JournalPlan {
         instanceVersion: instanceVersion.toString(),
         outcome: metadata.response?.substring(0, 200) || metadata.error || 'No response',
         success: !metadata.error,
-        matchScore: metadata.error ? 0 : 1.0,
         metadata: storyMetadata,
         actor: metadata.userId.toString(),
         created: startTime,
@@ -370,7 +377,6 @@ export class JournalPlan {
         instanceVersion: instanceVersion.toString(),
         outcome: `AI contact ${displayName} created successfully`,
         success: true,
-        matchScore: 1.0,
         metadata: storyMetadata,
         actor: userId.toString(),
         created: now,
@@ -408,6 +414,10 @@ export class JournalPlan {
 
   /**
    * Get all journal entries from all sources in chronological order
+   *
+   * @deprecated Use assembly.core's JournalPlan.queryAssemblies() instead.
+   * This method aggregates from multiple sources and converts to JournalEntry format.
+   * The new approach queries Assembly objects directly by domain, eliminating conversion.
    *
    * Aggregates:
    * 1. Conversations (from ChatPlan)

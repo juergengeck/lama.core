@@ -278,34 +278,13 @@ export class AIAssistantPlan {
         console.log(`[AIAssistantPlan] Found persisted default model: ${savedDefaultModel}`);
 
         // Set as default immediately - trust the persistence
-        // Topics will be detected/created during scanExistingConversations or createDefaultChats
         this.topicManager.setDefaultModel(savedDefaultModel);
         console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel}`);
 
-        // Try to find model info from available models (for display name, provider)
-        // If not found in available models, use reasonable defaults
-        const model = models.find(m => m.id === savedDefaultModel);
-        const displayName = model?.displayName || model?.name || savedDefaultModel;
-        const provider = model?.provider || 'ollama'; // Default to ollama for local models
+        // Ensure AI/LLM Persons exist (single source of truth - don't duplicate createLLM/createAI logic)
+        await this.ensureAIForModel(savedDefaultModel);
 
-        // Create LLM Profile (createLLM returns Profile hash, not Person hash)
-        const llmProfileId = await this.aiManager.createLLM(savedDefaultModel, displayName, provider);
-        console.log(`[AIAssistantPlan] Created/retrieved LLM Profile for ${savedDefaultModel}`);
-
-        // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
-        const familyName = this._extractModelFamily(savedDefaultModel);
-
-        // Create AI Person that delegates to LLM Profile (use family name, not full model name)
-        const aiId = `started-as-${savedDefaultModel}`;
-        let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
-        if (!aiPersonId) {
-          // AIManager.createAI() accepts Profile hash for delegation
-          aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
-          console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
-        }
-
-        // Ensure topics exist and AI participants are in groups (this registers them)
-        // createDefaultChats is idempotent - it will detect existing topics
+        // Ensure topics exist and AI participants are in groups
         await this.createDefaultChats();
         console.log(`[AIAssistantPlan] Ensured default chats have AI participants and are registered`);
       }
@@ -471,21 +450,20 @@ export class AIAssistantPlan {
    * Creates both LLM Person and AI Person with delegation
    */
   async ensureAIForModel(modelId: string): Promise<SHA256IdHash<Person>> {
-    // Find model info
+    // Try to find model info from storage
     const models = await this.deps.llmManager?.getAvailableModels() || [];
     const model = models.find((m: any) => m.id === modelId);
 
-    if (!model) {
-      throw new Error(`[AIAssistantPlan] Model ${modelId} not found in available models`);
-    }
-
-    const displayName = model.displayName || model.name || modelId;
-    const provider = model.provider || 'unknown';
+    // Use model info if found, otherwise derive from modelId
+    // Models may not be in storage yet (e.g., fresh install with Ollama models)
+    const displayName = model?.displayName || model?.name || modelId;
+    const provider = model?.provider || (modelId.includes('claude') ? 'claude' : 'ollama');
 
     // Create LLM Profile if doesn't exist (keep detailed name for LLM)
-    // createLLM now returns Profile hash, not Person hash
+    // createLLM now returns response with profileIdHash
     console.log(`[AIAssistantPlan] Calling createLLM with: modelId="${modelId}", name="${displayName}", provider="${provider}"`);
-    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
+    const llmResult = await this.aiManager.createLLM(modelId, displayName, provider);
+    const llmProfileId = llmResult.profileIdHash;
     console.log(`[AIAssistantPlan] createLLM returned: ${llmProfileId ? llmProfileId.toString().substring(0, 16) + '...' : 'UNDEFINED'}`);
 
     if (!llmProfileId) {
@@ -500,7 +478,8 @@ export class AIAssistantPlan {
     let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
     if (!aiPersonId) {
       // AIManager.createAI() accepts Profile hash for delegation
-      aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
+      const aiResult = await this.aiManager.createAI(aiId, familyName, llmProfileId);
+      aiPersonId = aiResult.personIdHash;
       console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
     }
 
@@ -575,8 +554,9 @@ export class AIAssistantPlan {
     const provider = model.provider || 'unknown';
 
     // Get or create LLM Profile
-    // createLLM now returns Profile hash, not Person hash
-    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
+    // createLLM now returns response with profileIdHash
+    const llmResult = await this.aiManager.createLLM(modelId, displayName, provider);
+    const llmProfileId = llmResult.profileIdHash;
 
     // Update the AI's delegation to point to the new LLM Profile
     await this.aiManager.setAIDelegation(aiId.replace('ai:', ''), llmProfileId);
@@ -994,10 +974,28 @@ export class AIAssistantPlan {
 
   /**
    * Set the StoryFactory for Assembly tracking
-   * Forwards to AIManager to enable journal visibility for AI contact creation
+   * Wraps AIManager with a Proxy that auto-creates Stories for createAI/createLLM
    */
   async setStoryFactory(factory: StoryFactory): Promise<void> {
-    await this.aiManager.setStoryFactory(factory);
+    const myId = await this.deps.leuteModel.myMainIdentity();
+
+    // Wrap aiManager with auto-Story creation
+    this.aiManager = await factory.registerPlanInstance({
+      instance: this.aiManager,
+      plan: {
+        id: AIManager.PLAN_ID,
+        name: AIManager.PLAN_NAME,
+        description: AIManager.PLAN_DESCRIPTION,
+        domain: AIManager.PLAN_DOMAIN
+      },
+      methods: {
+        createAI: { product: 'personIdHash', title: 'Create AI Contact' },
+        createLLM: { product: 'profileIdHash', title: 'Create LLM Profile' },
+        loadExisting: { tracked: false }
+      },
+      owner: myId,
+      instanceVersion: `instance-${Date.now()}`
+    });
   }
 
   /**

@@ -264,27 +264,15 @@ export class AITopicManager implements IAITopicManager {
       throw new Error('No default model set - cannot create default chats');
     }
 
-    // Get model info for display name
-    const models = await this.llmManager?.getAvailableModels() || [];
-    const model = models.find((m: any) => m.id === this.defaultModelId);
-    const displayName = model?.displayName || model?.name || this.defaultModelId;
-    const provider = model?.provider || 'unknown';
-
-    // Create or get LLM Profile (createLLM is idempotent and returns Profile ID)
-    const llmProfileId = await aiManager.createLLM(this.defaultModelId, displayName, provider);
-    console.log(`[AITopicManager] Ensured LLM Person for ${this.defaultModelId}`);
-
-    // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
-    const familyName = this.extractModelFamily(this.defaultModelId);
-
-    // Create AI Person that delegates to LLM Profile (use family name, not full model name)
+    // Get existing AI Person ID - it MUST exist (ensureAIForModel creates it before this is called)
+    // Don't call createLLM/createAI here - that's redundant and causes duplicate Assemblies
     const aiId = `started-as-${this.defaultModelId}`;
-    let aiPersonId = aiManager.getPersonId(`ai:${aiId}`);
+    const aiPersonId = aiManager.getPersonId(`ai:${aiId}`);
     if (!aiPersonId) {
-      // AIManager.createAI() now handles both AI and LLM storage object creation
-      aiPersonId = await aiManager.createAI(aiId, familyName, llmProfileId);
-      console.log(`[AITopicManager] Created AI Person: ${aiId} (display name: ${familyName})`);
+      // Fail fast - AI Person should have been created by ensureAIForModel
+      throw new Error(`[AITopicManager] AI Person not found for ${aiId} - ensureAIForModel must be called first`);
     }
+    console.log(`[AITopicManager] Using existing AI Person for ${this.defaultModelId}`);
 
     // Create Hi chat (static welcome message - no LLM generation)
     await this.ensureHiChat(this.defaultModelId, aiPersonId, onTopicCreated);

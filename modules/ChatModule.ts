@@ -1,5 +1,5 @@
-// packages/lama.browser/browser-ui/src/modules/ChatModule.ts
-import type { Module } from '@refinio/api/plan-system';
+// packages/lama.core/modules/ChatModule.ts
+import type { Module } from '@refinio/api';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
@@ -10,8 +10,6 @@ import { getObject, storeUnversionedObject } from '@refinio/one.core/lib/storage
 import { createAccess } from '@refinio/one.core/lib/access.js';
 import { calculateHashOfObj, calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
-// Note: storeUnversionedObject is still used by TopicGroupManager storage deps
-
 // Chat core plans (platform-agnostic business logic - chat-related)
 import { ChatPlan } from '@chat/core/plans/ChatPlan.js';
 import { GroupPlan } from '@chat/core/plans/GroupPlan.js';
@@ -20,9 +18,6 @@ import { FeedForwardPlan } from '@chat/core/plans/FeedForwardPlan.js';
 
 // Chat core models
 import TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
-
-// Plan system for assembly tracking
-import { StoryFactory } from '@refinio/api/plan-system';
 
 /**
  * ChatModule - Chat functionality
@@ -97,17 +92,23 @@ export class ChatModule implements Module {
     this.contactsPlan = new ContactsPlan(oneCore);
     this.feedForwardPlan = new FeedForwardPlan(oneCore);
 
-    // Initialize GroupPlan with StoryFactory for assembly tracking
-    console.log('[ChatModule] Initializing GroupPlan with StoryFactory');
+    // Initialize GroupPlan with StorageFunctions for assembly tracking
+    // GroupPlan creates its own internal StoryFactory from StorageFunctions
+    console.log('[ChatModule] Initializing GroupPlan with StorageFunctions');
 
-    // Create StoryFactory with storage function
-    const storyFactory = new StoryFactory(storeVersionedObject);
-
-    // Create GroupPlan with TopicGroupManager and StoryFactory
+    // Create GroupPlan with TopicGroupManager and StorageFunctions
+    // GroupPlan will create its own StoryFactory internally
     this.groupPlan = new GroupPlan(
       this.topicGroupManager,
       oneCore,  // oneCore
-      storyFactory
+      {
+        storeVersionedObject: async (obj: any) => {
+          const result = await storeVersionedObject(obj);
+          return { ...result, versionHash: result.hash };
+        },
+        getObjectByIdHash,
+        getObject
+      }
     );
 
     // Inject GroupPlan into ChatPlan for assembly creation
