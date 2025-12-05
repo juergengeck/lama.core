@@ -80,12 +80,21 @@ export class CoreModule implements Module {
       await this.connections.init();
       await this.settings.init();
 
-      // CRITICAL: Set ownerId on oneCore IMMEDIATELY after leuteModel init
+      // CRITICAL: Set ownerId and instanceId on oneCore IMMEDIATELY after leuteModel init
       // Other modules (AIModule -> TopicGroupManager) need this during their init
       const oneCore = this.deps.oneCore;
       if (oneCore && this.leuteModel) {
         oneCore.ownerId = await this.leuteModel.myMainIdentity();
         console.log('[CoreModule] Set ownerId on oneCore:', oneCore.ownerId?.substring(0, 8));
+
+        // Set instanceId for InstancePlan (dynamic import to avoid circular deps)
+        try {
+          const { getInstanceIdHash } = await import('@refinio/one.core/lib/instance.js');
+          oneCore.instanceId = getInstanceIdHash();
+          console.log('[CoreModule] Set instanceId on oneCore:', oneCore.instanceId?.substring(0, 8));
+        } catch (e) {
+          console.warn('[CoreModule] Could not get instanceId:', e);
+        }
       }
 
       // Note: Owner Assembly recording moved to JournalModule which has proper existence checking
