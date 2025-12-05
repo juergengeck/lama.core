@@ -32,6 +32,7 @@ export class CoreModule implements Module {
     { targetType: 'ConnectionsModel' },
     { targetType: 'Settings' },
     { targetType: 'PlanObjectManager' }
+    // Note: StoryFactory is supplied by ModuleRegistry.setStorageFunction()
   ];
 
   private deps: {
@@ -60,6 +61,8 @@ export class CoreModule implements Module {
       initializePlanObjectManager({ storeVersionedObject });
       await registerStandardPlans();
       console.log('[CoreModule] PlanObjectManager initialized and standard Plans registered');
+      // Note: StoryFactory is created by ModuleRegistry.setStorageFunction() - NOT here
+      // All modules share that single instance via the registry
 
       // Create ONE.core models
       this.leuteModel = new LeuteModel(this.commServerUrl, false);
@@ -135,5 +138,6 @@ export class CoreModule implements Module {
     registry.supply('ConnectionsModel', this.connections);
     registry.supply('Settings', this.settings);
     registry.supply('PlanObjectManager', true); // Signal that PlanObjectManager is ready
+    // Note: StoryFactory is already supplied by ModuleRegistry - not here
   }
 }

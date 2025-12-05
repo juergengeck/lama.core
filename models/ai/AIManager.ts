@@ -23,7 +23,7 @@ import type { Profile } from '@refinio/one.models/lib/recipes/Leute/Profile.js';
 import type { KeyPair } from '@refinio/one.core/lib/crypto/encryption.js';
 import type { SignKeyPair } from '@refinio/one.core/lib/crypto/sign.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
-import type { StoryFactory, ExecutionMetadata, ExecutionResult, Plan } from '@refinio/api/plan-system';
+import type { StoryFactory, Plan } from '@refinio/api/plan-system';
 
 // Storage dependencies (injected to avoid module duplication)
 export interface AIManagerDeps {
@@ -38,6 +38,8 @@ export interface AIManagerDeps {
   trustPlan?: any;
   aiObjectManager?: any;  // Optional: for creating AI storage objects
   llmObjectManager?: any;  // Optional: for creating LLM storage objects
+  /** Instance idHash from ONE.core - used for Story tracking */
+  instanceIdHash?: SHA256IdHash<Instance>;
 }
 
 // Response type for AI creation (includes Assembly tracking)
@@ -102,9 +104,7 @@ export class AIManager {
   // Profile ID cache: Person ID → Profile ID (for LLMs)
   private llmProfileIdByPerson: Map<SHA256IdHash<Person>, SHA256IdHash<Profile>>;
 
-  // StoryFactory for Assembly tracking
-  private storyFactory: StoryFactory | null = null;
-  /** Cached Plan idHash - populated when storyFactory is set */
+  /** Cached Plan idHash - populated when setStoryFactory is called */
   private planIdHash: SHA256IdHash<Plan> | null = null;
 
   constructor(
@@ -119,12 +119,10 @@ export class AIManager {
   }
 
   /**
-   * Set the StoryFactory and register the Plan ONE object.
-   * This stores the Plan and caches its real SHA256IdHash.
+   * Register the Plan ONE object with StoryFactory.
+   * Caches the Plan's real SHA256IdHash.
    */
   async setStoryFactory(factory: StoryFactory): Promise<void> {
-    this.storyFactory = factory;
-
     // Register the Plan ONE object and get its real hash
     this.planIdHash = await factory.registerPlan({
       id: AIManager.PLAN_ID,
@@ -170,58 +168,24 @@ export class AIManager {
   ): Promise<SHA256IdHash<Person>> {
     console.log(`[AIManager] Creating AI Person: ${name} (${aiId})`);
 
-    // Check cache first
+    // Check cache first - return with _cached flag so proxy skips Story creation
     const cached = this.entities.get(`ai:${aiId}`);
     if (cached) {
       console.log(`[AIManager] AI Person already exists: ${aiId}`);
       // Update delegation if changed
       await this.setAIDelegation(aiId, delegatesTo);
-      return cached;
+      // Return with _cached flag so proxy knows to skip Story creation
+      return { idHash: cached, _cached: true } as any;
     }
 
-    // If no StoryFactory, fall back to direct creation (no Assembly)
-    if (!this.storyFactory) {
-      console.warn('[AIManager] No StoryFactory - creating without Assembly');
-      const result = await this.createAIInternal(aiId, name, delegatesTo);
-      return result.personIdHash;
-    }
+    // Create the AI contact - the proxy wrapper (from registerPlanInstance)
+    // handles Story/Assembly creation automatically
+    const result = await this.createAIInternal(aiId, name, delegatesTo);
+    console.log(`[AIManager] Created AI Person: ${result.personIdHash.toString().substring(0, 8)}...`);
 
-    const myId = await this.leuteModel.myMainIdentity();
-    const modelId = aiId.startsWith('started-as-') ? aiId.substring('started-as-'.length) : aiId;
-
-    const metadata: ExecutionMetadata = {
-      title: `AI Contact Created: ${name}`,
-      description: `Created AI assistant contact for model ${modelId}`,
-      planId: this.getPlanIdHash(),
-      planTypeName: AIManager.PLAN_ID,
-      owner: myId as string,
-      domain: AIManager.PLAN_DOMAIN,
-      instanceVersion: `instance-${Date.now()}`,
-
-      // ASSEMBLY: Demand (need AI assistant) + Supply (AI provides assistant)
-      demand: {
-        domain: AIManager.PLAN_DOMAIN,
-        keywords: ['ai', 'assistant', 'contact', 'creation'],
-        trustLevel: 'trusted'
-      },
-      supply: {
-        domain: AIManager.PLAN_DOMAIN,
-        keywords: ['ai', 'person', 'profile', 'someone', modelId],
-        subjects: ['ai-contact', name],
-        ownerId: myId as string
-      },
-      matchScore: 1.0
-    };
-
-    const result = await this.storyFactory.recordExecution(
-      metadata,
-      async () => {
-        return await this.createAIInternal(aiId, name, delegatesTo);
-      }
-    );
-
-    console.log(`[AIManager] ✅ Created AI Person with Assembly: ${result.assemblyId?.toString().substring(0, 8)}...`);
-    return result.result!.personIdHash;
+    // Return object with idHash for proxy to extract (consistent with storeVersionedObject)
+    // The proxy will create Story and return just the idHash
+    return { idHash: result.personIdHash } as any;
   }
 
   /**
@@ -417,18 +381,18 @@ export class AIManager {
     const cachedPersonId = this.entities.get(`llm:${modelId}`);
     if (cachedPersonId) {
       console.log(`[AIManager] LLM Person already exists: ${modelId}`);
-      // Return cached Profile ID
+      // Return cached Profile ID with _cached flag so proxy skips Story creation
       const cachedProfileId = this.llmProfileIdByPerson.get(cachedPersonId);
       if (cachedProfileId) {
         console.log(`[AIManager] Returning cached Profile ID: ${cachedProfileId.toString().substring(0, 8)}...`);
-        return cachedProfileId;
+        return { idHash: cachedProfileId, _cached: true } as any;
       }
       // If Profile ID not cached, query for it
       try {
         const profileIdHash = await this._getMainProfileForPerson(cachedPersonId);
         // Cache it for next time
         this.llmProfileIdByPerson.set(cachedPersonId, profileIdHash);
-        return profileIdHash;
+        return { idHash: profileIdHash, _cached: true } as any;
       } catch (error) {
         console.error(`[AIManager] Failed to get Profile for existing LLM:`, error);
         throw error;
@@ -520,7 +484,8 @@ export class AIManager {
       this.llmProfileIdByPerson.set(personIdHash, profileIdHash);  // Cache Profile ID
 
       console.log(`[AIManager] ✅ LLM Person created: ${name}`);
-      return profileIdHash;  // Return Profile ID, not Person ID
+      // Return full storage result - proxy extracts idHash as entity
+      return profileResult;
     } catch (error) {
       console.error(`[AIManager] Failed to create LLM Person:`, error);
       throw error;

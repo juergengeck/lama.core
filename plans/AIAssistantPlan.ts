@@ -460,10 +460,9 @@ export class AIAssistantPlan {
     const provider = model?.provider || (modelId.includes('claude') ? 'claude' : 'ollama');
 
     // Create LLM Profile if doesn't exist (keep detailed name for LLM)
-    // createLLM now returns response with profileIdHash
+    // createLLM returns the Profile idHash directly
     console.log(`[AIAssistantPlan] Calling createLLM with: modelId="${modelId}", name="${displayName}", provider="${provider}"`);
-    const llmResult = await this.aiManager.createLLM(modelId, displayName, provider);
-    const llmProfileId = llmResult.profileIdHash;
+    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
     console.log(`[AIAssistantPlan] createLLM returned: ${llmProfileId ? llmProfileId.toString().substring(0, 16) + '...' : 'UNDEFINED'}`);
 
     if (!llmProfileId) {
@@ -477,9 +476,8 @@ export class AIAssistantPlan {
     const aiId = `started-as-${modelId}`;
     let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
     if (!aiPersonId) {
-      // AIManager.createAI() accepts Profile hash for delegation
-      const aiResult = await this.aiManager.createAI(aiId, familyName, llmProfileId);
-      aiPersonId = aiResult.personIdHash;
+      // AIManager.createAI() returns Person idHash directly
+      aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
       console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
     }
 
@@ -554,9 +552,8 @@ export class AIAssistantPlan {
     const provider = model.provider || 'unknown';
 
     // Get or create LLM Profile
-    // createLLM now returns response with profileIdHash
-    const llmResult = await this.aiManager.createLLM(modelId, displayName, provider);
-    const llmProfileId = llmResult.profileIdHash;
+    // createLLM returns the Profile idHash directly
+    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
 
     // Update the AI's delegation to point to the new LLM Profile
     await this.aiManager.setAIDelegation(aiId.replace('ai:', ''), llmProfileId);
@@ -989,8 +986,8 @@ export class AIAssistantPlan {
         domain: AIManager.PLAN_DOMAIN
       },
       methods: {
-        createAI: { product: 'personIdHash', title: 'Create AI Contact' },
-        createLLM: { product: 'profileIdHash', title: 'Create LLM Profile' },
+        createAI: { product: 'idHash', title: 'Create AI Contact' },
+        createLLM: { product: 'idHash', title: 'Create LLM Profile' },
         loadExisting: { tracked: false }
       },
       owner: myId,
