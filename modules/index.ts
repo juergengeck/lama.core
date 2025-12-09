@@ -18,3 +18,4 @@ export { AnalysisModule } from './AnalysisModule.js';
 export { MemoryModule } from './MemoryModule.js';
 export { DeviceModule } from './DeviceModule.js';
 export { JournalModule } from './JournalModule.js';
+export { MCPModule } from './MCPModule.js';

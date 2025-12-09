@@ -30,7 +30,11 @@
       "@ui/core/*": ["../ui.core/dist/*"],
       "@lama/core/*": ["./*"],
       "@mcp/core": ["../mcp.core/dist"],
+      "@mcp/core/*": ["../mcp.core/dist/*"],
       "@cube/core": ["../../node_modules/@cube/core/dist"],
+      "@cube/meaning.core": ["../meaning.core/dist"],
+      "@assembly/core": ["../assembly.core/dist"],
+      "@assembly/core/*": ["../assembly.core/dist/*"],
       "@device/core": ["../device.core/lib"],
       "@device/core/*": ["../device.core/lib/*"]
     }

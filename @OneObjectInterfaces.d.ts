@@ -62,6 +62,7 @@ declare module '@OneObjectInterfaces' {
         streamResponses: boolean;
         autoSummarize: boolean;
         enableMCP: boolean;
+        embeddingModel?: string;
     }
 
     export interface AppSettings {
@@ -219,6 +220,7 @@ declare module '@OneObjectInterfaces' {
         recencyWeight: number; // 0.0 to 1.0 - weight given to recency
         recencyWindow: number; // milliseconds - time window for recency boost
         minJaccard: number; // 0.0 to 1.0 - minimum Jaccard similarity threshold
+        minSimilarity?: number; // 0.0 to 1.0 - minimum embedding similarity threshold
         maxProposals: number; // 1-50 - maximum number of proposals to return
         updatedAt: number; // Unix timestamp of last update
     }

@@ -56,7 +56,8 @@ export const ProposalInteractionResponseRecipe: Recipe = {
         },
         {
             itemprop: 'plan',
-            itemtype: { type: 'string' } // Reference to ProposalInteractionPlan hash
+            itemtype: { type: 'string' }, // Reference to ProposalInteractionPlan hash
+            isId: true // One response per plan (1:1 relationship)
         },
         {
             itemprop: 'success',

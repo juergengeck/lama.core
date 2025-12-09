@@ -83,6 +83,7 @@ export class InstancePlan {
       instanceVersion
     };
 
+    console.log(`[InstancePlan] Creating Instance Story with entity: ${this.instanceId.toString().substring(0, 8)}...`);
     const instanceResult = await this.storyFactory.wrapExecution(
       instanceMetadata,
       async (): Promise<OperationResult<{ success: boolean }>> => {
@@ -104,6 +105,7 @@ export class InstancePlan {
       instanceVersion
     };
 
+    console.log(`[InstancePlan] Creating Owner Story with entity: ${this.ownerId.toString().substring(0, 8)}...`);
     const ownerResult = await this.storyFactory.wrapExecution(
       ownerMetadata,
       async (): Promise<OperationResult<{ success: boolean }>> => {

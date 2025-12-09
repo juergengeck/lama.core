@@ -1,52 +1,14 @@
 /**
  * MCP Module for lama.core
  *
- * Platform-agnostic Model Context Protocol integration components
+ * Re-exports from @mcp/core for backward compatibility.
+ * All MCP functionality is now consolidated in @mcp/core.
  *
- * Usage:
- * ```typescript
- * import { createMCPToolInterface, MCPToolExecutor } from '@lama/core/services/mcp';
- *
- * const toolInterface = createMCPToolInterface({
- *   nodeOneCore,
- *   aiAssistantModel
- * });
- *
- * const result = await toolInterface.executeTool('send_message', {
- *   topicId: '...',
- *   message: 'Hello!'
- * });
- * ```
+ * For new code, import directly from @mcp/core:
+ * - Tool definitions: import { allTools } from '@mcp/core'
+ * - Tool interface: import { MCPToolInterface } from '@mcp/core'
+ * - Adapters: import { MCPLocalAdapter } from '@mcp/core/router'
  */
 
-// Types
-export type {
-  MCPToolDefinition,
-  MCPToolParameter,
-  MCPToolResult,
-  MCPToolContext,
-  MCPToolExecutor as IMCPToolExecutor,
-  MCPToolDependencies,
-  MCPToolCategory,
-  MCPToolRegistration
-} from './types.js';
-
-// Tool Definitions
-export {
-  chatTools,
-  contactTools,
-  connectionTools,
-  llmTools,
-  aiAssistantTools,
-  allTools,
-  getToolsByCategory,
-  getToolDefinition,
-  getAllToolNames
-} from './tool-definitions.js';
-export type { ToolDefinitionWithCategory } from './tool-definitions.js';
-
-// Tool Executor
-export { MCPToolExecutor } from './tool-executor.js';
-
-// Tool Interface
-export { MCPToolInterface, createMCPToolInterface } from './mcp-tool-interface.js';
+// Re-export everything from @mcp/core interface
+export * from '@mcp/core';

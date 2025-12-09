@@ -120,8 +120,7 @@ export class ConnectionModule implements Module {
       trustDeps,     // Trust dependencies - enables automatic trust after pairing
       pairingCallbacks,  // Platform-specific UI updates
       this.deps.trustPlan,    // trust.core TrustPlan for automatic trust level assignment
-      undefined,     // No storyFactory
-      this.commServerUrl  // CommServer URL for WebRTC signaling
+      undefined     // No storyFactory
     );
 
     // Group chat plan dependencies (platform-agnostic from connection.core)

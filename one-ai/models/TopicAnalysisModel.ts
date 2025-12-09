@@ -9,9 +9,12 @@ import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 import TopicAnalysisRoom from './TopicAnalysisRoom.js';
 import type { Subject } from '../types/Subject.js';
 import type { Keyword } from '../types/Keyword.js';
+
+const MessageBus = createMessageBus('TopicAnalysisModel');
 
 export default class TopicAnalysisModel extends Model {
   public channelManager: any;
@@ -95,7 +98,7 @@ export default class TopicAnalysisModel extends Model {
                     lastSeen: now
                 };
                 await storeVersionedObject(keywordObj);
-                console.log('[TopicAnalysisModel] 📝 Pre-created Keyword for Subject:', normalizedTerm);
+                MessageBus.send('debug', '[TopicAnalysisModel] 📝 Pre-created Keyword for Subject:', normalizedTerm);
             }
 
             keywordIdHashes.push(keywordIdHash);
@@ -115,13 +118,13 @@ export default class TopicAnalysisModel extends Model {
         };
 
         // STORE the versioned object first - this creates the vheads file for ID hash lookups
-        console.log('[TopicAnalysisModel] 🔍 About to store Subject with ID:', keywordCombination);
-        console.log('[TopicAnalysisModel] 🔍 Subject object:', JSON.stringify(subjectObj, null, 2));
+        MessageBus.send('debug', '[TopicAnalysisModel] 🔍 About to store Subject with ID:', keywordCombination);
+        MessageBus.send('debug', '[TopicAnalysisModel] 🔍 Subject object:', JSON.stringify(subjectObj, null, 2));
 
         const result = await storeVersionedObject(subjectObj);
 
-        console.log('[TopicAnalysisModel] ✅ Stored Subject with idHash:', result.idHash);
-        console.log('[TopicAnalysisModel] ✅ Stored Subject with hash:', result.hash);
+        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Subject with idHash:', result.idHash);
+        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Subject with hash:', result.hash);
 
         // Also post to channel for sync (optional - if you want it to sync across instances)
         await this.channelManager.postToChannel(
@@ -129,7 +132,7 @@ export default class TopicAnalysisModel extends Model {
             subjectObj
         );
 
-        console.log('[TopicAnalysisModel] ✅ Posted Subject to channel:', topicId);
+        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Posted Subject to channel:', topicId);
         return { ...subjectObj, idHash: result.idHash, hash: result.hash };
     }
 
@@ -152,7 +155,7 @@ export default class TopicAnalysisModel extends Model {
 
         // CRITICAL: Store as versioned object FIRST - creates vheads file for ID hash lookups
         const result = await storeVersionedObject(keywordObj);
-        console.log('[TopicAnalysisModel] ✅ Stored Keyword with idHash:', result.idHash, 'term:', keywordObj.term);
+        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Keyword with idHash:', result.idHash, 'term:', keywordObj.term);
 
         // Post to the conversation's channel for sync
         await this.channelManager.postToChannel(
@@ -182,7 +185,7 @@ export default class TopicAnalysisModel extends Model {
 
         // CRITICAL: Store as versioned object FIRST - creates vheads file for ID hash lookups
         const result = await storeVersionedObject(keywordObj);
-        console.log('[TopicAnalysisModel] ✅ Stored Keyword with subjects, idHash:', result.idHash, 'term:', keywordObj.term);
+        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Keyword with subjects, idHash:', result.idHash, 'term:', keywordObj.term);
 
         // Post to the conversation's channel for sync
         await this.channelManager.postToChannel(
@@ -248,7 +251,7 @@ export default class TopicAnalysisModel extends Model {
     async addKeywordToSubject(topicId: any, term: any, subjectIdHash: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
-        console.log('[TopicAnalysisModel] 🔍 addKeywordToSubject called:', { topicId, term, subjectIdHash });
+        MessageBus.send('debug', '[TopicAnalysisModel] 🔍 addKeywordToSubject called:', { topicId, term, subjectIdHash });
 
         if (!subjectIdHash) {
             throw new Error('Subject ID hash is required - keywords must be linked to subjects');
@@ -285,9 +288,9 @@ export default class TopicAnalysisModel extends Model {
             };
             if (!updatedKeyword.subjects.includes(subjectIdHash)) {
                 updatedKeyword.subjects.push(subjectIdHash);
-                console.log('[TopicAnalysisModel] ✅ Added subject ID hash to existing keyword:', { term: normalizedTerm, subjectIdHash, subjects: updatedKeyword.subjects });
+                MessageBus.send('debug', '[TopicAnalysisModel] ✅ Added subject ID hash to existing keyword:', { term: normalizedTerm, subjectIdHash, subjects: updatedKeyword.subjects });
             } else {
-                console.log('[TopicAnalysisModel] ℹ️  Subject ID hash already in keyword:', { term: normalizedTerm, subjectIdHash });
+                MessageBus.send('debug', '[TopicAnalysisModel] ℹ️  Subject ID hash already in keyword:', { term: normalizedTerm, subjectIdHash });
             }
 
             // Store updated version FIRST
@@ -313,7 +316,7 @@ export default class TopicAnalysisModel extends Model {
         // Store FIRST before posting to channel
         const result = await storeVersionedObject(keywordObj);
 
-        console.log('[TopicAnalysisModel] ✅ Created new keyword with subject:', { term: normalizedTerm, topicId, subjectIdHash, subjects: keywordObj.subjects, idHash: result.idHash });
+        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Created new keyword with subject:', { term: normalizedTerm, topicId, subjectIdHash, subjects: keywordObj.subjects, idHash: result.idHash });
         await this.channelManager.postToChannel(topicId, keywordObj);
         return { ...keywordObj, idHash: result.idHash, hash: result.hash };
     }
@@ -352,7 +355,7 @@ export default class TopicAnalysisModel extends Model {
 
         // Store as versioned object - same identity = replacement
         const result = await storeVersionedObject(summaryObj);
-        console.log('[TopicAnalysisModel] ✅ Stored Summary for subject:', subjectIdHash, 'idHash:', result.idHash);
+        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Summary for subject:', subjectIdHash, 'idHash:', result.idHash);
 
         // Post to the conversation's channel for sync
         await this.channelManager.postToChannel(topicId, summaryObj);
@@ -365,7 +368,7 @@ export default class TopicAnalysisModel extends Model {
      * Used after creating subjects to avoid race condition with channel propagation
      */
     setCachedSubjects(topicId: any, subjects: Subject[]): void {
-        console.log(`[TopicAnalysisModel] Priming subjects cache for topic ${topicId} with ${subjects.length} subjects`);
+        MessageBus.send('debug', `[TopicAnalysisModel] Priming subjects cache for topic ${topicId} with ${subjects.length} subjects`);
         this.subjectsCache.set(topicId, {
             data: subjects,
             timestamp: Date.now()
@@ -377,7 +380,7 @@ export default class TopicAnalysisModel extends Model {
      * Used after creating keywords to avoid race condition with channel propagation
      */
     setCachedKeywords(topicId: any, keywords: Keyword[]): void {
-        console.log(`[TopicAnalysisModel] Priming keywords cache for topic ${topicId} with ${keywords.length} keywords`);
+        MessageBus.send('debug', `[TopicAnalysisModel] Priming keywords cache for topic ${topicId} with ${keywords.length} keywords`);
         this.keywordsCache.set(topicId, {
             data: keywords,
             timestamp: Date.now()
@@ -415,12 +418,12 @@ export default class TopicAnalysisModel extends Model {
     async getKeywords(topicId: any, queryOptions = {}): Promise<Keyword[]> {
         this.state.assertCurrentState('Initialised');
 
-        console.log(`[TopicAnalysisModel] getKeywords called for topic: ${topicId}`);
+        MessageBus.send('debug', `[TopicAnalysisModel] getKeywords called for topic: ${topicId}`);
 
         // Check cache
         const cached = this.keywordsCache.get(topicId);
         if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-            console.log(`[TopicAnalysisModel] Returning ${cached.data.length} cached keywords`);
+            MessageBus.send('debug', `[TopicAnalysisModel] Returning ${cached.data.length} cached keywords`);
             return cached.data;
         }
 
@@ -428,7 +431,7 @@ export default class TopicAnalysisModel extends Model {
         // retrieveAllKeywords() hangs on multiChannelObjectIterator - likely malformed Keyword object
         const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
         const subjects = await analysisRoom.retrieveAllSubjects();
-        console.log(`[TopicAnalysisModel] Found ${subjects.length} subjects for topic: ${topicId}`);
+        MessageBus.send('debug', `[TopicAnalysisModel] Found ${subjects.length} subjects for topic: ${topicId}`);
 
         // Collect unique keyword ID hashes from all subjects
         const keywordIdSet = new Set<string>();
@@ -455,15 +458,15 @@ export default class TopicAnalysisModel extends Model {
                 // Skip missing keywords (can happen after storage clear or migration)
                 if (error?.code === 'SB-READ2' && error?.type === 'vheads') {
                     missingKeywordCount++;
-                    console.log(`[TopicAnalysisModel] Skipping missing keyword ${keywordId.substring(0, 8)}...`);
+                    MessageBus.send('debug', `[TopicAnalysisModel] Skipping missing keyword ${keywordId.substring(0, 8)}...`);
                 } else {
-                    console.error(`[TopicAnalysisModel] Failed to fetch keyword ${keywordId}:`, error);
+                    MessageBus.send('error', `[TopicAnalysisModel] Failed to fetch keyword ${keywordId}:`, error);
                 }
             }
         }
 
         if (missingKeywordCount > 0) {
-            console.log(`[TopicAnalysisModel] ⚠️  Skipped ${missingKeywordCount} missing keywords (likely from old subjects)`);
+            MessageBus.send('debug', `[TopicAnalysisModel] ⚠️  Skipped ${missingKeywordCount} missing keywords (likely from old subjects)`);
         }
 
         // Cache the result
@@ -482,12 +485,12 @@ export default class TopicAnalysisModel extends Model {
     async getAllTopics(): Promise<string[]> {
         this.state.assertCurrentState('Initialised');
 
-        console.log('[TopicAnalysisModel] getAllTopics called');
+        MessageBus.send('debug', '[TopicAnalysisModel] getAllTopics called');
 
         // Get all topics from TopicModel
         const allTopics = await this.topicModel.topics.all();
 
-        console.log('[TopicAnalysisModel] Found topics:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Found topics:', {
             topicCount: allTopics?.length || 0
         });
 
@@ -502,12 +505,12 @@ export default class TopicAnalysisModel extends Model {
     async getAllSubjects(): Promise<any[]> {
         this.state.assertCurrentState('Initialised');
 
-        console.log('[TopicAnalysisModel] getAllSubjects called');
+        MessageBus.send('debug', '[TopicAnalysisModel] getAllSubjects called');
 
         // Get all topics from TopicModel
         const allTopics = await this.topicModel.topics.all();
 
-        console.log('[TopicAnalysisModel] Found topics:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Found topics:', {
             topicCount: allTopics?.length || 0
         });
 
@@ -527,11 +530,11 @@ export default class TopicAnalysisModel extends Model {
                     allSubjects.push(...subjectsWithTopic);
                 }
             } catch (err) {
-                console.error('[TopicAnalysisModel] Error getting subjects for topic:', topic.id, err);
+                MessageBus.send('error', '[TopicAnalysisModel] Error getting subjects for topic:', topic.id, err);
             }
         }
 
-        console.log('[TopicAnalysisModel] Retrieved all subjects:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Retrieved all subjects:', {
             topicCount: allTopics?.length || 0,
             totalSubjects: allSubjects.length
         });
@@ -546,12 +549,12 @@ export default class TopicAnalysisModel extends Model {
     async getAllKeywords(): Promise<any[]> {
         this.state.assertCurrentState('Initialised');
 
-        console.log('[TopicAnalysisModel] getAllKeywords called');
+        MessageBus.send('debug', '[TopicAnalysisModel] getAllKeywords called');
 
         // Get all topics from TopicModel
         const allTopics = await this.topicModel.topics.all();
 
-        console.log('[TopicAnalysisModel] Found topics:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Found topics:', {
             topicCount: allTopics?.length || 0
         });
 
@@ -571,11 +574,11 @@ export default class TopicAnalysisModel extends Model {
                     allKeywords.push(...keywordsWithTopic);
                 }
             } catch (err) {
-                console.error('[TopicAnalysisModel] Error getting keywords for topic:', topic.id, err);
+                MessageBus.send('error', '[TopicAnalysisModel] Error getting keywords for topic:', topic.id, err);
             }
         }
 
-        console.log('[TopicAnalysisModel] Retrieved all keywords:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Retrieved all keywords:', {
             topicCount: allTopics?.length || 0,
             totalKeywords: allKeywords.length
         });
@@ -599,7 +602,7 @@ export default class TopicAnalysisModel extends Model {
         // Find the keyword by term
         const keyword = allKeywords.find((k: any) => k.term === normalizedTerm);
 
-        console.log('[TopicAnalysisModel] Keyword lookup via channel:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Keyword lookup via channel:', {
             term: normalizedTerm,
             totalKeywords: allKeywords.length,
             sampleKeywords: allKeywords.slice(0, 3).map((k: any) => k.term),
@@ -624,7 +627,7 @@ export default class TopicAnalysisModel extends Model {
             subject.keywords?.some((k: any) => k.toLowerCase() === normalizedKeyword)
         );
 
-        console.log('[TopicAnalysisModel] Found subjects by keyword:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Found subjects by keyword:', {
             topicId,
             keyword: normalizedKeyword,
             matchCount: matchingSubjects.length
@@ -670,7 +673,7 @@ export default class TopicAnalysisModel extends Model {
         const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
         const summaries: any = await (analysisRoom as any).retrieveAllSummaries();
 
-        console.log('[TopicAnalysisModel] Retrieved summaries:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Retrieved summaries:', {
             topicId,
             summaryCount: summaries.length,
             latestVersion: summaries.length > 0 ? summaries[0].version : null
@@ -689,7 +692,7 @@ export default class TopicAnalysisModel extends Model {
         const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
         const summary: any = await (analysisRoom as any).retrieveLatestSummary();
 
-        console.log('[TopicAnalysisModel] Retrieved current summary:', {
+        MessageBus.send('debug', '[TopicAnalysisModel] Retrieved current summary:', {
             topicId,
             found: !!summary,
             version: summary?.version,

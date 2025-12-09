@@ -33,7 +33,7 @@ export interface LamaCoreDependencies {
   subjectService?: any;
   proposalEngine?: any;
   llmManager?: any;
-  // Add more as needed
+  meaningPlan?: any;
 }
 
 /**
@@ -92,6 +92,16 @@ export function registerLamaCorePlans(deps: LamaCoreDependencies): void {
     );
   }
 
+  // Register Meaning Plan (semantic similarity dimension)
+  if (deps.meaningPlan) {
+    planRegistry.registerPlan(
+      'meaning',
+      'semantic',
+      deps.meaningPlan,
+      'Semantic similarity search - find content by meaning using embeddings'
+    );
+  }
+
   console.log('[lama.core] Plan registration complete');
 }
 
@@ -106,6 +116,7 @@ export function getLamaCoreDepend(nodeOneCore: any): LamaCoreDependencies {
     chatMemoryHandler: nodeOneCore.chatMemoryHandler,
     subjectService: nodeOneCore.subjectService,
     proposalEngine: nodeOneCore.proposalEngine,
-    llmManager: nodeOneCore.llmManager
+    llmManager: nodeOneCore.llmManager,
+    meaningPlan: nodeOneCore.meaningPlan
   };
 }

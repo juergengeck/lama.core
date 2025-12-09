@@ -33,7 +33,8 @@ export const DEFAULT_AI_SETTINGS = {
   systemPrompt: undefined,
   streamResponses: true,
   autoSummarize: false,
-  enableMCP: false
+  enableMCP: false,
+  embeddingModel: 'nomic-embed-text'
 }
 
 /**
@@ -53,7 +54,8 @@ export function createAISettings(instanceName: string = 'default'): AISettings {
     systemPrompt: DEFAULT_AI_SETTINGS.systemPrompt,
     streamResponses: DEFAULT_AI_SETTINGS.streamResponses,
     autoSummarize: DEFAULT_AI_SETTINGS.autoSummarize,
-    enableMCP: DEFAULT_AI_SETTINGS.enableMCP
+    enableMCP: DEFAULT_AI_SETTINGS.enableMCP,
+    embeddingModel: DEFAULT_AI_SETTINGS.embeddingModel
   }
 }
 

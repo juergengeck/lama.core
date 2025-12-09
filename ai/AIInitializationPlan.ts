@@ -10,6 +10,11 @@
  * - Testable in isolation
  */
 
+import { MeaningDimension } from '@cube/meaning.core';
+import { createOllamaEmbeddingProvider } from '../services/ollama-embedding-provider.js';
+import { setMeaningDimension } from '../one-ai/models/Subject.js';
+import { SemanticProposalEngine } from '../services/semantic-proposal-engine.js';
+
 /**
  * Dependencies injected by platform (Electron, web, etc.)
  */
@@ -19,6 +24,7 @@ export interface AIDeps {
   getEnvVar: (key: string) => string | undefined;  // Platform-specific env access
   createUserSettingsManager: (storage: any, email: string) => any;  // Factory for UserSettingsManager
   initializeAIAssistant: (storage: any, llmManager: any) => Promise<any>;  // Factory for AI Assistant
+  ollamaBaseUrl?: string;  // Optional Ollama base URL override
 }
 
 export interface AIContext {
@@ -30,6 +36,8 @@ export interface AIServices {
   userSettingsManager: any;
   aiAssistantModel: any;
   anthropicApiKey?: string;
+  meaningDimension?: any;  // MeaningDimension instance (if Ollama available)
+  semanticEngine?: any;    // SemanticProposalEngine instance (if MeaningDimension available)
 }
 
 /**
@@ -60,12 +68,17 @@ export class AIInitializationPlan {
     // Step 4: Initialize AI Assistant (via factory)
     const aiAssistantModel = await this.initializeAIAssistant();
 
+    // Step 5: Initialize MeaningDimension (optional - graceful failure)
+    const { meaningDimension, semanticEngine } = await this.initializeMeaningDimension(userSettingsManager);
+
     console.log('[AIInitializationPlan] ✅ AI services initialized');
 
     return {
       userSettingsManager,
       aiAssistantModel,
-      anthropicApiKey
+      anthropicApiKey,
+      meaningDimension,
+      semanticEngine
     };
   }
 
@@ -117,5 +130,48 @@ export class AIInitializationPlan {
 
     console.log('[AIInitializationPlan] ✅ AI Assistant initialized');
     return aiAssistantModel;
+  }
+
+  private async initializeMeaningDimension(userSettingsManager: any): Promise<{
+    meaningDimension?: MeaningDimension;
+    semanticEngine?: SemanticProposalEngine;
+  }> {
+    console.log('[AIInitializationPlan] Initializing MeaningDimension...');
+
+    try {
+      // Get embedding model from AI settings
+      const aiSettings = await userSettingsManager.getSettings();
+      const embeddingModel = aiSettings?.embeddingModel || 'nomic-embed-text';
+
+      // Get Ollama base URL (from config or default)
+      const ollamaBaseUrl = this.deps.ollamaBaseUrl || 'http://localhost:11434';
+
+      // Create embedding provider
+      const embeddingProvider = createOllamaEmbeddingProvider(
+        embeddingModel,
+        ollamaBaseUrl
+      );
+
+      // Create MeaningDimension
+      const meaningDimension = new MeaningDimension({
+        model: 'nomic-embed-text-v1.5',
+        embeddingProvider
+      });
+
+      await meaningDimension.init();
+      console.log('[AIInitializationPlan] ✅ MeaningDimension initialized with', embeddingModel);
+
+      // Set for Subject indexing
+      setMeaningDimension(meaningDimension);
+
+      // Create semantic engine
+      const semanticEngine = new SemanticProposalEngine(meaningDimension);
+
+      return { meaningDimension, semanticEngine };
+    } catch (err) {
+      console.warn('[AIInitializationPlan] MeaningDimension initialization failed (non-fatal):', err);
+      console.warn('[AIInitializationPlan] Semantic proposals will fall back to Jaccard similarity');
+      return {};
+    }
   }
 }

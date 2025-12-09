@@ -16,6 +16,17 @@ import { createKeyword } from './Keyword.js';
 import type { Subject } from '../types/Subject.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Keyword } from '../types/Keyword.js';
+import type { MeaningDimension } from '@cube/meaning.core';
+
+let meaningDimension: MeaningDimension | null = null;
+
+/**
+ * Set the MeaningDimension instance for subject embedding
+ * Called during initialization
+ */
+export function setMeaningDimension(dimension: MeaningDimension): void {
+  meaningDimension = dimension;
+}
 
 /**
  * Check if two descriptions are semantically aligned (represent the same concept)
@@ -128,6 +139,18 @@ export async function createOrUpdateSubject(
       };
 
       const result = await storeVersionedObject(updatedSubject);
+
+      // After storing the subject, index embedding if MeaningDimension is available
+      if (meaningDimension && description) {
+        try {
+          await meaningDimension.indexText(result.idHash as any, description);
+          console.log('[Subject] Indexed embedding for:', description.slice(0, 50));
+        } catch (err) {
+          console.warn('[Subject] Failed to index embedding:', err);
+          // Non-fatal - proposals will fall back to Jaccard
+        }
+      }
+
       return {
         subject: updatedSubject,
         hash: result.hash,
@@ -161,6 +184,18 @@ export async function createOrUpdateSubject(
     // ✅ New subject - store it
     console.log(`[Subject] Creating new subject with keywords: ${keywordTerms.join(', ')}`);
     const result = await storeVersionedObject(candidateSubject);
+
+    // After storing the subject, index embedding if MeaningDimension is available
+    if (meaningDimension && description) {
+      try {
+        await meaningDimension.indexText(result.idHash as any, description);
+        console.log('[Subject] Indexed embedding for:', description.slice(0, 50));
+      } catch (err) {
+        console.warn('[Subject] Failed to index embedding:', err);
+        // Non-fatal - proposals will fall back to Jaccard
+      }
+    }
+
     return {
       subject: candidateSubject,
       hash: result.hash,

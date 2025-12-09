@@ -3,6 +3,12 @@
   "version": "1.0.0",
   "description": "LAMA Core - Shared business logic handlers and services",
   "type": "module",
+  "files": [
+    "dist/",
+    "@OneObjectInterfaces.d.ts",
+    "@OneCoreTypes.d.ts",
+    "vendor/"
+  ],
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
@@ -13,13 +19,21 @@
     "./@OneObjectInterfaces": "./@OneObjectInterfaces.d.ts",
     "./@OneCoreTypes": "./@OneCoreTypes.d.ts",
     "./modules": "./dist/lama.core/modules/index.js",
+    "./plans": "./dist/lama.core/plans/index.js",
     "./plans/*": "./dist/lama.core/plans/*",
+    "./services": "./dist/lama.core/services/index.js",
     "./services/*": "./dist/lama.core/services/*",
+    "./models": "./dist/lama.core/models/index.js",
     "./models/*": "./dist/lama.core/models/*",
+    "./one-ai": "./dist/lama.core/one-ai/index.js",
     "./one-ai/*": "./dist/lama.core/one-ai/*",
+    "./ai": "./dist/lama.core/ai/index.js",
     "./ai/*": "./dist/lama.core/ai/*",
+    "./constants": "./dist/lama.core/constants/index.js",
     "./constants/*": "./dist/lama.core/constants/*",
+    "./initialization": "./dist/lama.core/initialization/index.js",
     "./initialization/*": "./dist/lama.core/initialization/*",
+    "./recipes": "./dist/lama.core/recipes/index.js",
     "./recipes/*": "./dist/lama.core/recipes/*"
   },
   "author": "lama.one Team",
@@ -32,6 +46,8 @@
   "peerDependencies": {
     "@refinio/one.core": "*",
     "@refinio/one.models": "*",
+    "@refinio/api": "*",
+    "@assembly/core": "*",
     "@chat/core": "*",
     "@mcp/core": "*",
     "@memory/core": "*"

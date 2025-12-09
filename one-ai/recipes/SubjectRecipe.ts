@@ -105,6 +105,13 @@ export const SubjectRecipe = {
                 type: 'array',
                 item: { type: 'string' }  // Feedback IdHashes
             }
+        },
+        // LLM-generated summary of this subject within the conversation context
+        // Stored directly on Subject for quick access in proposals (avoids Summary lookup)
+        {
+            itemprop: 'summary',
+            itemtype: { type: 'string' },
+            optional: true
         }
     ]
 };

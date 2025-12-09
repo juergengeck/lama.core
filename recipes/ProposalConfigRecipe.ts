@@ -37,6 +37,11 @@ export const ProposalConfigRecipe: Recipe = {
             itemtype: { type: 'number' } // 0.0 to 1.0, minimum threshold
         },
         {
+            itemprop: 'minSimilarity',
+            itemtype: { type: 'number' }, // 0.0 to 1.0, semantic similarity threshold
+            optional: true
+        },
+        {
             itemprop: 'maxProposals',
             itemtype: { type: 'integer' } // Maximum proposals to return
         },

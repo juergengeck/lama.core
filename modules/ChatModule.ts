@@ -15,9 +15,14 @@ import { ChatPlan } from '@chat/core/plans/ChatPlan.js';
 import { GroupPlan } from '@chat/core/plans/GroupPlan.js';
 import { ContactsPlan } from '@chat/core/plans/ContactsPlan.js';
 import { FeedForwardPlan } from '@chat/core/plans/FeedForwardPlan.js';
+import type { ExportPlan } from '@chat/core/plans/ExportPlan.js';
 
 // Chat core models
 import TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
+
+// Plan system for assembly tracking
+import { StoryFactory } from '@refinio/api/plan-system';
+import { AssemblyPlan } from '@assembly/core';
 
 /**
  * ChatModule - Chat functionality
@@ -33,7 +38,8 @@ export class ChatModule implements Module {
     { targetType: 'LeuteModel', required: true },
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicModel', required: true },
-    { targetType: 'OneCore', required: true }
+    { targetType: 'OneCore', required: true },
+    { targetType: 'ExportPlan', required: true }
   ];
 
   static supplies = [
@@ -49,12 +55,14 @@ export class ChatModule implements Module {
     channelManager?: ChannelManager;
     topicModel?: TopicModel;
     oneCore?: any;
+    exportPlan?: ExportPlan;  // Required - injected via setDependency
   } = {};
 
   // Chat Plans
   public chatPlan!: ChatPlan;
   public groupPlan!: GroupPlan;
   public contactsPlan!: ContactsPlan;
+  public exportPlan!: ExportPlan;
   public feedForwardPlan!: FeedForwardPlan;
   public topicGroupManager!: TopicGroupManager;
 
@@ -65,21 +73,23 @@ export class ChatModule implements Module {
 
     const { oneCore } = this.deps;
 
+    // Adapter for storeVersionedObject that adds versionHash alias
+    const storeVersionedObjectAdapter = async (obj: any) => {
+      const result = await storeVersionedObject(obj);
+      return { ...result, versionHash: result.hash };
+    };
+
     // Create TopicGroupManager with oneCore instance + storageDeps
     this.topicGroupManager = new TopicGroupManager(
       oneCore, // OneCoreInstance (Model implements this)
       {
-        storeVersionedObject: async (obj: any) => {
-          const result = await storeVersionedObject(obj);
-          // Add versionHash alias for compatibility
-          return { ...result, versionHash: result.hash };
-        },
+        storeVersionedObject: storeVersionedObjectAdapter,
         storeUnversionedObject,
         getObjectByIdHash,
         getObject,
         getAllOfType: async (_type: string) => {
-          // TopicGroupManager declares this in interface but never uses it
-          throw new Error('getAllOfType not implemented - not used by TopicGroupManager');
+          // TopicGroupManager declares this in interface but doesn't use it
+          throw new Error('getAllOfType not implemented');
         },
         createAccess,
         calculateIdHashOfObj,
@@ -92,23 +102,31 @@ export class ChatModule implements Module {
     this.contactsPlan = new ContactsPlan(oneCore);
     this.feedForwardPlan = new FeedForwardPlan(oneCore);
 
-    // Initialize GroupPlan with StorageFunctions for assembly tracking
-    // GroupPlan creates its own internal StoryFactory from StorageFunctions
-    console.log('[ChatModule] Initializing GroupPlan with StorageFunctions');
+    // ExportPlan is required - injected by platform via setDependency
+    this.exportPlan = this.deps.exportPlan!;
 
-    // Create GroupPlan with TopicGroupManager and StorageFunctions
-    // GroupPlan will create its own StoryFactory internally
+    // Initialize GroupPlan with StoryFactory for assembly tracking
+    // This enables assembly creation through the proper abstraction layers
+    console.log('[ChatModule] Initializing GroupPlan with StoryFactory and AssemblyPlan');
+
+    // Create AssemblyPlan (connects to ONE.core)
+    const assemblyPlan = new AssemblyPlan({
+      oneCore,
+      storeVersionedObject: storeVersionedObjectAdapter,
+      getObjectByIdHash,
+      getObject
+    });
+
+    // Create StoryFactory with storage function (NOT AssemblyPlan object)
+    // StoryFactory expects a function, not an object
+    const storyFactory = new StoryFactory(storeVersionedObject);
+    console.log('[ChatModule] StoryFactory created with storeVersionedObject function');
+
+    // Create GroupPlan with TopicGroupManager and StoryFactory
     this.groupPlan = new GroupPlan(
       this.topicGroupManager,
       oneCore,  // oneCore
-      {
-        storeVersionedObject: async (obj: any) => {
-          const result = await storeVersionedObject(obj);
-          return { ...result, versionHash: result.hash };
-        },
-        getObjectByIdHash,
-        getObject
-      }
+      storyFactory as any  // Type bridge between refinio.api and chat.core StoryFactory interfaces
     );
 
     // Inject GroupPlan into ChatPlan for assembly creation
@@ -119,7 +137,17 @@ export class ChatModule implements Module {
   }
 
   async shutdown(): Promise<void> {
-    // Plans don't have shutdown methods - nothing to clean up
+    // Plans don't have shutdown methods in current chat.core
+    // Use optional chaining with type assertion for future compatibility
+    await (this.feedForwardPlan as any)?.shutdown?.();
+    if (this.exportPlan) {
+      await (this.exportPlan as any)?.shutdown?.();
+    }
+    await (this.contactsPlan as any)?.shutdown?.();
+    await (this.groupPlan as any)?.shutdown?.();
+    await (this.chatPlan as any)?.shutdown?.();
+    await (this.topicGroupManager as any)?.shutdown?.();
+
     console.log('[ChatModule] Shutdown complete');
   }
 
@@ -132,6 +160,7 @@ export class ChatModule implements Module {
     registry.supply('ChatPlan', this.chatPlan);
     registry.supply('GroupPlan', this.groupPlan);
     registry.supply('ContactsPlan', this.contactsPlan);
+    // Note: ExportPlan is NOT supplied - ChatModule consumes it, platform supplies it directly
     registry.supply('FeedForwardPlan', this.feedForwardPlan);
     registry.supply('TopicGroupManager', this.topicGroupManager);
   }
@@ -141,7 +170,8 @@ export class ChatModule implements Module {
       this.deps.leuteModel &&
       this.deps.channelManager &&
       this.deps.topicModel &&
-      this.deps.oneCore
+      this.deps.oneCore &&
+      this.deps.exportPlan
     );
   }
 }

@@ -9,6 +9,7 @@ import { GlobalLLMSettingsRecipe } from './GlobalLLMSettingsRecipe.js';
 import { AISettingsRecipe } from './AISettingsRecipe.js';
 import { AppSettingsRecipe } from './AppSettingsRecipe.js';
 import { ProposalConfigRecipe } from './ProposalConfigRecipe.js';
+import { ProposalRecipe } from './ProposalRecipe.js';
 import { ProposalInteractionPlanRecipe, ProposalInteractionResponseRecipe } from './ProposalInteractionRecipes.js';
 import { SubjectRecipe } from '../one-ai/recipes/SubjectRecipe.js';
 import { KeywordRecipe } from '../one-ai/recipes/KeywordRecipe.js';
@@ -29,6 +30,7 @@ export const LAMA_CORE_RECIPES = [
     AISettingsRecipe,
     AppSettingsRecipe,
     ProposalConfigRecipe,
+    ProposalRecipe,
     ProposalInteractionPlanRecipe,
     ProposalInteractionResponseRecipe,
     SubjectRecipe,
@@ -48,6 +50,7 @@ export {
     AISettingsRecipe,
     AppSettingsRecipe,
     ProposalConfigRecipe,
+    ProposalRecipe,
     ProposalInteractionPlanRecipe,
     ProposalInteractionResponseRecipe,
     SubjectRecipe,

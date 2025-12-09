@@ -10,8 +10,11 @@
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 import type { Subject } from '../one-ai/types/Subject.js';
 import type { Keyword } from '../one-ai/types/Keyword.js';
+
+const MessageBus = createMessageBus('TopicAnalysisPlan');
 
 // Service types (will be properly typed via ambient registry)
 type TopicAnalysisModel = any;
@@ -204,7 +207,7 @@ export class TopicAnalysisPlan {
    * Analyze messages to extract subjects and keywords using LLM
    */
   async analyzeMessages(request: AnalyzeMessagesRequest): Promise<AnalyzeMessagesResponse> {
-    console.log('[TopicAnalysisPlan] Analyzing messages for topic:', request.topicId);
+    MessageBus.send('debug', `Analyzing messages for topic: ${request.topicId}`);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -224,7 +227,7 @@ export class TopicAnalysisPlan {
           }
           await topicRoom.leave();
         } catch (error) {
-          console.log('[TopicAnalysisPlan] Topic does not exist, skipping analysis:', request.topicId);
+          MessageBus.send('debug', `Topic does not exist, skipping analysis: ${request.topicId}`);
           return {
             success: true,
             data: {
@@ -267,7 +270,7 @@ export class TopicAnalysisPlan {
         .join('\n');
 
       // Extract keywords using LLM
-      console.log('[TopicAnalysisPlan] Extracting keywords with LLM using model:', modelId);
+      MessageBus.send('debug', `Extracting keywords with LLM using model: ${modelId}`);
       const keywordPrompt = `Analyze this conversation and extract the most important keywords (single words or short phrases).
 Return ONLY a JSON array of keywords, no explanation.
 Focus on: main topics, technical terms, product names, important concepts.
@@ -284,7 +287,7 @@ Return format: ["keyword1", "keyword2", ...]`;
       }], modelId);
 
       // Identify subjects using LLM (subjects contain keywords)
-      console.log('[TopicAnalysisPlan] Identifying subjects with LLM...');
+      MessageBus.send('debug', `Identifying subjects with LLM...`);
       const subjectPrompt = `Analyze this conversation and identify the main subjects/themes being discussed.
 For each subject, provide:
 1. A list of 2-3 keywords that define it
@@ -305,7 +308,7 @@ ${String(conversationText).substring(0, 3000)}`;
       try {
         subjects = JSON.parse(subjectResponse);
       } catch (e) {
-        console.warn('[TopicAnalysisPlan] Failed to parse subject JSON, extracting keywords for fallback');
+        MessageBus.send('alert', `Failed to parse subject JSON, extracting keywords for fallback`);
         let fallbackKeywords: string[] = [];
         try {
           fallbackKeywords = JSON.parse(keywordResponse);
@@ -334,7 +337,7 @@ ${String(conversationText).substring(0, 3000)}`;
 
       // Index subjects in cube.core for efficient cross-topic queries
       if (this.cubeStorage && subjectsToStore.length > 0) {
-        console.log(`[TopicAnalysisPlan] 📦 Indexing ${subjectsToStore.length} subjects in cube.core...`);
+        MessageBus.send('debug', ` 📦 Indexing ${subjectsToStore.length} subjects in cube.core...`);
         for (const subject of subjectsToStore) {
           try {
             // Store subject in cube with dimensional metadata
@@ -343,9 +346,9 @@ ${String(conversationText).substring(0, 3000)}`;
               keyword: subject.keywords[0], // Primary keyword for indexing
               subjectType: 'analyzed' // Classification dimension
             });
-            console.log(`[TopicAnalysisPlan] ✅ Indexed subject: ${subject.keywords.join('+')} in cube`);
+            MessageBus.send('debug', ` ✅ Indexed subject: ${subject.keywords.join('+')} in cube`);
           } catch (error) {
-            console.error(`[TopicAnalysisPlan] ❌ Failed to index subject in cube:`, error);
+            MessageBus.send('error', ` ❌ Failed to index subject in cube:`, error);
             // Don't throw - indexing failure shouldn't break analysis
           }
         }
@@ -363,7 +366,7 @@ ${String(conversationText).substring(0, 3000)}`;
       }
 
       // Generate summary using LLM
-      console.log('[TopicAnalysisPlan] Generating summary with LLM...');
+      MessageBus.send('debug', `Generating summary with LLM...`);
       const summaryPrompt = `Create a concise summary of this conversation.
 Include: main topics discussed, key decisions or conclusions, important points.
 Keep it under 150 words.
@@ -386,25 +389,20 @@ ${String(conversationText).substring(0, 3000)}`;
           request.topicId,        // topicId
           summaryResponse         // prose
         );
-        console.log('[TopicAnalysisPlan] Created summary for primary subject:', primarySubject.idHash);
+        MessageBus.send('debug', `Created summary for primary subject: ${primarySubject.idHash}`);
       } else {
-        console.log('[TopicAnalysisPlan] No subjects created, skipping summary creation');
+        MessageBus.send('debug', `No subjects created, skipping summary creation`);
       }
 
       // Prime the cache with freshly created objects (bypasses channel propagation race condition)
       const createdSubjects = subjectsToStore.map(s => s.fullSubject);
       const createdKeywords = Array.from(keywordMap.values());
 
-      console.log('[TopicAnalysisPlan] Priming cache with', createdSubjects.length, 'subjects and', createdKeywords.length, 'keywords');
+      MessageBus.send('debug', `Priming cache with ${createdSubjects.length} subjects and ${createdKeywords.length} keywords`);
       this.topicAnalysisModel.setCachedSubjects(request.topicId as SHA256IdHash<any>, createdSubjects);
       this.topicAnalysisModel.setCachedKeywords(request.topicId as SHA256IdHash<any>, createdKeywords);
 
-      console.log('[TopicAnalysisPlan] Analysis complete:', {
-        topicId: request.topicId,
-        subjectsCreated: createdSubjects.length,
-        keywordsCreated: createdKeywords.length,
-        summaryCreated: !!summary
-      });
+      MessageBus.send('debug', `Analysis complete: topicId=${request.topicId}, subjects=${createdSubjects.length}, keywords=${createdKeywords.length}, summary=${!!summary}`);
 
       return {
         success: true,
@@ -415,7 +413,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error analyzing messages:', error);
+      MessageBus.send('error', `Error analyzing messages: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -432,10 +430,10 @@ ${String(conversationText).substring(0, 3000)}`;
    * Get all subjects for a topic with keyword resolution
    */
   async getSubjects(request: GetSubjectsRequest): Promise<GetSubjectsResponse> {
-    console.log('[TopicAnalysisPlan.getSubjects] Called for topicId:', request.topicId);
+    MessageBus.send('debug', `[getSubjects] Called for topicId: ${request.topicId}`);
     try {
       if (!this.topicAnalysisModel) {
-        console.log('[TopicAnalysisPlan.getSubjects] ❌ Topic Analysis Model not initialized');
+        MessageBus.send('debug', `[getSubjects] Topic Analysis Model not initialized`);
         return {
           success: false,
           error: 'Topic Analysis Model not initialized',
@@ -444,7 +442,7 @@ ${String(conversationText).substring(0, 3000)}`;
       }
 
       const subjects = await this.topicAnalysisModel.getSubjects(request.topicId as SHA256IdHash<any>);
-      console.log('[TopicAnalysisPlan.getSubjects] Got', subjects.length, 'subjects from model');
+      MessageBus.send('debug', `[getSubjects] Got ${subjects.length} subjects from model`);
 
       // Resolve keyword ID hashes to terms by loading the Keyword objects
       const resolvedSubjects = await Promise.all(subjects.map(async (subject: any) => {
@@ -455,7 +453,7 @@ ${String(conversationText).substring(0, 3000)}`;
               return result.obj.term;
             }
           } catch (err) {
-            console.warn('[TopicAnalysisPlan] Could not load keyword:', keywordHash?.substring?.(0, 16) || keywordHash, err);
+            MessageBus.send('alert', `Could not load keyword: ${keywordHash?.substring?.(0, 16) || keywordHash} - ${err}`);
           }
           return null;
         }));
@@ -496,9 +494,9 @@ ${String(conversationText).substring(0, 3000)}`;
         ? resolvedSubjects
         : resolvedSubjects.filter((s: any) => !s.archived);
 
-      console.log('[TopicAnalysisPlan.getSubjects] Returning', filteredSubjects.length, 'subjects');
+      MessageBus.send('debug', `[getSubjects] Returning ${filteredSubjects.length} subjects`);
       if (filteredSubjects.length > 0) {
-        console.log('[TopicAnalysisPlan.getSubjects] First subject:', JSON.stringify(filteredSubjects[0]).substring(0, 200));
+        MessageBus.send('debug', `[getSubjects] First subject: ${JSON.stringify(filteredSubjects[0]).substring(0, 200)}`);
       }
 
       return {
@@ -508,7 +506,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error getting subjects:', error);
+      MessageBus.send('error', `Error getting subjects: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -521,7 +519,7 @@ ${String(conversationText).substring(0, 3000)}`;
    * Get summary for a topic with optional history
    */
   async getSummary(request: GetSummaryRequest): Promise<GetSummaryResponse> {
-    console.log('[TopicAnalysisPlan] Getting summary for topic:', request.topicId);
+    MessageBus.send('debug', `Getting summary for topic: ${request.topicId}`);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -548,7 +546,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error getting summary:', error);
+      MessageBus.send('error', `Error getting summary: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -561,7 +559,7 @@ ${String(conversationText).substring(0, 3000)}`;
    * Generate conversation restart context for LLM continuity
    */
   async getConversationRestartContext(request: RestartContextRequest): Promise<RestartContextResponse> {
-    console.log('[TopicAnalysisPlan] Getting conversation restart context for topic:', request.topicId);
+    MessageBus.send('debug', `Getting conversation restart context for topic: ${request.topicId}`);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -615,7 +613,7 @@ ${String(conversationText).substring(0, 3000)}`;
         }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error getting restart context:', error);
+      MessageBus.send('error', `Error getting restart context: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -633,7 +631,7 @@ ${String(conversationText).substring(0, 3000)}`;
    * Update or create summary for a topic
    */
   async updateSummary(request: UpdateSummaryRequest, chatPlanGetMessages?: Function): Promise<UpdateSummaryResponse> {
-    console.log('[TopicAnalysisPlan] Updating summary for topic:', request.topicId);
+    MessageBus.send('debug', `Updating summary for topic: ${request.topicId}`);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -704,7 +702,7 @@ ${String(conversationText).substring(0, 3000)}`;
       }
 
       if (!subjectIdHash) {
-        console.log('[TopicAnalysisPlan] No subjects found for topic, cannot create summary');
+        MessageBus.send('debug', `No subjects found for topic, cannot create summary`);
         return {
           success: false,
           error: 'No subjects found for topic - analyze messages first to extract subjects',
@@ -717,14 +715,14 @@ ${String(conversationText).substring(0, 3000)}`;
         request.topicId,                         // topicId
         summaryContent || request.content || ''  // prose
       );
-      console.log('[TopicAnalysisPlan] Updated summary for subject:', subjectIdHash);
+      MessageBus.send('debug', `Updated summary for subject: ${subjectIdHash}`);
 
       return {
         success: true,
         data: { summary: newSummary }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error updating summary:', error);
+      MessageBus.send('error', `Error updating summary: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -737,7 +735,7 @@ ${String(conversationText).substring(0, 3000)}`;
    * Extract keywords from text using LLM
    */
   async extractKeywords(request: ExtractKeywordsRequest): Promise<ExtractKeywordsResponse> {
-    console.log('[TopicAnalysisPlan] Extracting keywords from text');
+    MessageBus.send('debug', `Extracting keywords from text`);
 
     try {
       if (!this.topicAnalysisModel) {
@@ -830,7 +828,7 @@ Return format: ["keyword1", "keyword2", ...]`;
         data: { keywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error extracting keywords:', error);
+      MessageBus.send('error', `Error extracting keywords: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -843,7 +841,7 @@ Return format: ["keyword1", "keyword2", ...]`;
    * Merge two subjects into one
    */
   async mergeSubjects(request: MergeSubjectsRequest): Promise<MergeSubjectsResponse> {
-    console.log('[TopicAnalysisPlan] Merging subjects:', request.subjectId1, request.subjectId2);
+    MessageBus.send('debug', `Merging subjects: ${request.subjectId1} ${request.subjectId2}`);
 
     try {
       // This would need to be implemented in the model
@@ -853,7 +851,7 @@ Return format: ["keyword1", "keyword2", ...]`;
         data: { merged: true }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error merging subjects:', error);
+      MessageBus.send('error', `Error merging subjects: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -866,11 +864,11 @@ Return format: ["keyword1", "keyword2", ...]`;
    * Extract single-word keywords for real-time display using LLM
    */
   async extractRealtimeKeywords(request: RealtimeKeywordsRequest): Promise<RealtimeKeywordsResponse> {
-    console.log('[TopicAnalysisPlan] Extracting realtime keywords with LLM');
+    MessageBus.send('debug', `Extracting realtime keywords with LLM`);
 
     try {
       if (!this.llmManager) {
-        console.error('[TopicAnalysisPlan] LLM Manager not available');
+        MessageBus.send('error', `LLM Manager not available`);
         return {
           success: false,
           error: 'LLM not available for keyword extraction',
@@ -931,7 +929,7 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
         data: { keywords: finalKeywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error extracting realtime keywords:', error);
+      MessageBus.send('error', `Error extracting realtime keywords: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -944,11 +942,11 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
    * Extract keywords from all messages in a conversation using LLM
    */
   async extractConversationKeywords(request: ConversationKeywordsRequest, chatPlanGetMessages?: Function): Promise<ConversationKeywordsResponse> {
-    console.log('[TopicAnalysisPlan] Extracting conversation keywords with LLM for topic:', request.topicId);
+    MessageBus.send('debug', `Extracting conversation keywords with LLM for topic: ${request.topicId}`);
 
     try {
       if (!this.llmManager) {
-        console.error('[TopicAnalysisPlan] LLM Manager not available');
+        MessageBus.send('error', `LLM Manager not available`);
         return {
           success: false,
           error: 'LLM not available for keyword extraction',
@@ -962,7 +960,7 @@ Example: ["pizza", "delivery", "restaurant", "italian"]`;
       }
 
       if (!modelId) {
-        console.error('[TopicAnalysisPlan] No AI model configured for topic:', request.topicId);
+        MessageBus.send('error', `No AI model configured for topic: ${request.topicId}`);
         return {
           success: false,
           error: 'No AI model configured for this topic',
@@ -1033,7 +1031,7 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
           keywords = JSON.parse(jsonMatch[0]);
         }
       } catch (e) {
-        console.warn('[TopicAnalysisPlan] Failed to parse LLM response as JSON');
+        MessageBus.send('alert', `Failed to parse LLM response as JSON`);
         keywords = response.toLowerCase().match(/\b[a-z]{4,}\b/g) || [];
       }
 
@@ -1047,7 +1045,7 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
         data: { keywords: keywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error extracting conversation keywords:', error);
+      MessageBus.send('error', `Error extracting conversation keywords: ${error}`);
       return {
         success: false,
         error: (error as Error).message,
@@ -1061,7 +1059,7 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
    */
   async getKeywords(request: GetKeywordsRequest): Promise<GetKeywordsResponse> {
     try {
-      console.log('[TopicAnalysisPlan] Getting keywords for topic:', request.topicId, 'limit:', request.limit);
+      MessageBus.send('debug', `Getting keywords for topic: ${request.topicId}, limit: ${request.limit}`);
 
       if (!this.topicAnalysisModel) {
         return {
@@ -1072,17 +1070,17 @@ Example: ["blockchain", "ethereum", "smartcontract", "defi", "wallet"]`;
       }
 
       const keywords: any = await this.topicAnalysisModel.getKeywords(request.topicId as SHA256IdHash<any>);
-      console.log('[TopicAnalysisPlan] Model returned', keywords?.length || 0, 'keywords');
+      MessageBus.send('debug', `Model returned ${keywords?.length || 0} keywords`);
 
       const limitedKeywords = request.limit ? keywords.slice(0, request.limit) : keywords;
-      console.log('[TopicAnalysisPlan] Returning', limitedKeywords?.length || 0, 'keywords (limited)');
+      MessageBus.send('debug', `Returning ${limitedKeywords?.length || 0} keywords (limited)`);
 
       return {
         success: true,
         data: { keywords: limitedKeywords }
       };
     } catch (error) {
-      console.error('[TopicAnalysisPlan] Error getting keywords:', error);
+      MessageBus.send('error', `Error getting keywords: ${error}`);
       return {
         success: false,
         error: (error as Error).message,

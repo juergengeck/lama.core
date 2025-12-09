@@ -18,6 +18,9 @@
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
+
+const MessageBus = createMessageBus('AIManager');
 import type { Person, Instance, Keys } from '@refinio/one.core/lib/recipes.js';
 import type { Profile } from '@refinio/one.models/lib/recipes/Leute/Profile.js';
 import type { KeyPair } from '@refinio/one.core/lib/crypto/encryption.js';
@@ -139,7 +142,7 @@ export class AIManager {
       ]
     });
 
-    console.log(`[AIManager] Registered Plan with hash: ${this.planIdHash.substring(0, 8)}...`);
+    MessageBus.send('debug', `Registered Plan with hash: ${this.planIdHash.substring(0, 8)}...`);
   }
 
   /**
@@ -166,12 +169,11 @@ export class AIManager {
     name: string,
     delegatesTo: SHA256IdHash<Profile>
   ): Promise<SHA256IdHash<Person>> {
-    console.log(`[AIManager] Creating AI Person: ${name} (${aiId})`);
+    MessageBus.send('debug', `Creating AI Person: ${name} (${aiId})`);
 
     // Check cache first - return with _cached flag so proxy skips Story creation
     const cached = this.entities.get(`ai:${aiId}`);
     if (cached) {
-      console.log(`[AIManager] AI Person already exists: ${aiId}`);
       // Update delegation if changed
       await this.setAIDelegation(aiId, delegatesTo);
       // Return with _cached flag so proxy knows to skip Story creation
@@ -181,7 +183,6 @@ export class AIManager {
     // Create the AI contact - the proxy wrapper (from registerPlanInstance)
     // handles Story/Assembly creation automatically
     const result = await this.createAIInternal(aiId, name, delegatesTo);
-    console.log(`[AIManager] Created AI Person: ${result.personIdHash.toString().substring(0, 8)}...`);
 
     // Return object with idHash for proxy to extract (consistent with storeVersionedObject)
     // The proxy will create Story and return just the idHash
@@ -208,7 +209,6 @@ export class AIManager {
 
       const personResult: any = await this.deps.storeVersionedObject(personData);
       const personIdHash = ensureIdHash(typeof personResult === 'object' && personResult?.idHash ? personResult.idHash : personResult);
-      console.log(`[AIManager] Created AI Person: ${personIdHash.toString().substring(0, 8)}...`);
 
       // 2. Create PersonName
       const personNameResult = await this.deps.storeUnversionedObject({
@@ -233,7 +233,7 @@ export class AIManager {
 
       const profileResult: any = await this.deps.storeVersionedObject(profileObj);
       const profileIdHash = ensureIdHash(typeof profileResult === 'object' && profileResult?.idHash ? profileResult.idHash : profileResult);
-      console.log(`[AIManager] Created standard Profile: ${profileIdHash.toString().substring(0, 8)}...`);
+      MessageBus.send('debug', `Created standard Profile: ${profileIdHash.toString().substring(0, 8)}...`);
 
       // 3a. Create AI metadata object (SEPARATE from Person/Profile)
       const now = Date.now();
@@ -254,7 +254,6 @@ export class AIManager {
 
       const aiResult: any = await this.deps.storeVersionedObject(aiObject);
       const aiIdHash = ensureIdHash(typeof aiResult === 'object' && aiResult?.idHash ? aiResult.idHash : aiResult);
-      console.log(`[AIManager] Created AI object: ${aiIdHash.toString().substring(0, 8)}...`);
 
       // Store in lookup table
       this.aiByPerson.set(personIdHash, aiObject);
@@ -272,7 +271,6 @@ export class AIManager {
 
       // 5. Register with LeuteModel
       await this.leuteModel.addSomeoneElse(someoneIdHash);
-      console.log(`[AIManager] Registered AI Someone: ${someoneIdHash.toString().substring(0, 8)}...`);
 
       // 6. Generate keys for the AI Person
       if (this.deps.createDefaultKeys && this.deps.hasDefaultKeys) {
@@ -280,15 +278,12 @@ export class AIManager {
           const hasKeys = await this.deps.hasDefaultKeys(personIdHash);
           if (!hasKeys) {
             await this.deps.createDefaultKeys(personIdHash);
-            console.log(`[AIManager] ✅ Generated keys for AI Person`);
-          } else {
-            console.log(`[AIManager] Keys already exist for AI Person`);
           }
         } catch (error) {
-          console.warn(`[AIManager] Failed to generate keys (AI won't be able to sign messages):`, error);
+          MessageBus.send('alert', 'Failed to generate keys for AI Person:', error);
         }
       } else {
-        console.warn(`[AIManager] ⚠️  createDefaultKeys not available - AI Person will not have keys!`);
+        MessageBus.send('alert', 'createDefaultKeys not available - AI Person will not have keys');
       }
 
       // 7. Cache the entity
@@ -304,9 +299,8 @@ export class AIManager {
             establishedBy: myId,
             reason: `AI assistant: ${name}`
           });
-          console.log(`[AIManager] ✅ Assigned trust level to AI`);
         } catch (error) {
-          console.warn(`[AIManager] Failed to assign trust level:`, error);
+          MessageBus.send('alert', 'Failed to assign trust level:', error);
         }
       }
 
@@ -320,12 +314,11 @@ export class AIManager {
             llmProfileId: delegatesTo,
             modelId
           });
-          console.log(`[AIManager] 💾 Created AI storage object for ${aiId}`);
         } catch (error) {
-          console.error(`[AIManager] Failed to create AI storage object:`, error);
+          MessageBus.send('error', 'Failed to create AI storage object:', error);
         }
       } else {
-        console.warn(`[AIManager] ⚠️  aiObjectManager not available - AI storage object NOT created!`);
+        MessageBus.send('alert', 'aiObjectManager not available - AI storage object NOT created');
       }
 
       // 10. Create LLM storage object (CRITICAL: Links modelId → aiPersonId)
@@ -337,15 +330,14 @@ export class AIManager {
             server: 'http://localhost:11434', // Default Ollama server
             aiPersonId: personIdHash
           });
-          console.log(`[AIManager] 💾 Created LLM storage object linking ${modelId} → AI Person`);
         } catch (error) {
-          console.error(`[AIManager] Failed to create LLM storage object:`, error);
+          MessageBus.send('error', 'Failed to create LLM storage object:', error);
         }
       } else {
-        console.warn(`[AIManager] ⚠️  llmObjectManager not available - LLM storage object NOT created!`);
+        MessageBus.send('alert', 'llmObjectManager not available - LLM storage object NOT created');
       }
 
-      console.log(`[AIManager] ✅ AI Person created: ${name}`);
+      MessageBus.send('debug', `AI Person created: ${name}`);
       return {
         success: true,
         personIdHash,
@@ -353,7 +345,7 @@ export class AIManager {
         someoneIdHash
       };
     } catch (error) {
-      console.error(`[AIManager] Failed to create AI Person:`, error);
+      MessageBus.send('error', 'Failed to create AI Person:', error);
       throw error;
     }
   }
@@ -373,18 +365,21 @@ export class AIManager {
     name: string,
     provider: string,
     llmConfigId?: string,
-    server?: string
+    server?: string,
+    email?: string
   ): Promise<SHA256IdHash<Profile>> {
-    console.log(`[AIManager] Creating LLM Person: ${name} (${modelId})`);
+    // Generate email from name if not provided (Person identity is based on email)
+    const personEmail = email || `${name.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_')}@ai.local`;
+    const entityKey = `llm:${personEmail}`;  // Cache by email, not modelId
 
-    // Check cache first - returns Person ID, need to get Profile ID
-    const cachedPersonId = this.entities.get(`llm:${modelId}`);
+    MessageBus.send('debug', `Creating LLM Person: ${name} (${modelId})`);
+
+    // Check cache by email (Person identity) - allows same model for multiple Persons
+    const cachedPersonId = this.entities.get(entityKey);
     if (cachedPersonId) {
-      console.log(`[AIManager] LLM Person already exists: ${modelId}`);
       // Return cached Profile ID with _cached flag so proxy skips Story creation
       const cachedProfileId = this.llmProfileIdByPerson.get(cachedPersonId);
       if (cachedProfileId) {
-        console.log(`[AIManager] Returning cached Profile ID: ${cachedProfileId.toString().substring(0, 8)}...`);
         return { idHash: cachedProfileId, _cached: true } as any;
       }
       // If Profile ID not cached, query for it
@@ -394,23 +389,21 @@ export class AIManager {
         this.llmProfileIdByPerson.set(cachedPersonId, profileIdHash);
         return { idHash: profileIdHash, _cached: true } as any;
       } catch (error) {
-        console.error(`[AIManager] Failed to get Profile for existing LLM:`, error);
+        MessageBus.send('error', 'Failed to get Profile for existing LLM:', error);
         throw error;
       }
     }
 
     try {
-      // 1. Create Person object
-      const email = `${modelId.replace(/[^a-zA-Z0-9]/g, '_')}@llm.local`;
+      // 1. Create Person object with email-based identity
       const personData = {
         $type$: 'Person' as const,
-        email,
+        email: personEmail,
         name,
       };
 
       const personResult: any = await this.deps.storeVersionedObject(personData);
       const personIdHash = ensureIdHash(typeof personResult === 'object' && personResult?.idHash ? personResult.idHash : personResult);
-      console.log(`[AIManager] Created LLM Person: ${personIdHash.toString().substring(0, 8)}...`);
 
       // 2. Create PersonName
       const personNameResult = await this.deps.storeUnversionedObject({
@@ -421,11 +414,11 @@ export class AIManager {
         ? personNameResult.hash
         : personNameResult;
 
-      // 3. Create standard Profile (NO LLM-specific fields)
+      // 3. Create standard Profile (profileId based on email for uniqueness)
       const myId = await this.leuteModel.myMainIdentity();
       const profileObj: any = {
         $type$: 'Profile' as const,
-        profileId: `llm:${modelId}`,
+        profileId: entityKey,  // Use email-based key for Profile ID too
         personId: personIdHash,
         owner: myId,
         nickname: name,
@@ -435,7 +428,7 @@ export class AIManager {
 
       const profileResult: any = await this.deps.storeVersionedObject(profileObj);
       const profileIdHash = ensureIdHash(typeof profileResult === 'object' && profileResult?.idHash ? profileResult.idHash : profileResult);
-      console.log(`[AIManager] Created standard Profile: ${profileIdHash.toString().substring(0, 8)}...`);
+      MessageBus.send('debug', `Created standard Profile: ${profileIdHash.toString().substring(0, 8)}...`);
 
       // 3a. Create LLM metadata object (SEPARATE from Person/Profile)
       const now = Date.now();
@@ -458,15 +451,14 @@ export class AIManager {
 
       const llmResult: any = await this.deps.storeVersionedObject(llmObject);
       const llmIdHash = ensureIdHash(typeof llmResult === 'object' && llmResult?.idHash ? llmResult.idHash : llmResult);
-      console.log(`[AIManager] Created LLM object: ${llmIdHash.toString().substring(0, 8)}...`);
 
       // Store in lookup table
       this.llmByPerson.set(personIdHash, llmObject);
 
-      // 4. Create Someone
+      // 4. Create Someone (use email-based key)
       const someoneObj: any = {
         $type$: 'Someone' as const,
-        someoneId: `llm:${modelId}`,
+        someoneId: entityKey,
         mainProfile: profileIdHash,
         identities: new Map([[personIdHash, new Set([profileIdHash])]])
       };
@@ -476,18 +468,17 @@ export class AIManager {
 
       // 5. Register with LeuteModel
       await this.leuteModel.addSomeoneElse(someoneIdHash);
-      console.log(`[AIManager] Registered LLM Someone: ${someoneIdHash.toString().substring(0, 8)}...`);
 
-      // 6. Cache the entity (store Person ID for lookups)
-      this.entities.set(`llm:${modelId}`, personIdHash);
-      this.personToEntity.set(personIdHash, `llm:${modelId}`);
+      // 6. Cache the entity by email (Person identity)
+      this.entities.set(entityKey, personIdHash);
+      this.personToEntity.set(personIdHash, entityKey);
       this.llmProfileIdByPerson.set(personIdHash, profileIdHash);  // Cache Profile ID
 
-      console.log(`[AIManager] ✅ LLM Person created: ${name}`);
+      MessageBus.send('debug', `LLM Person created: ${name}`);
       // Return full storage result - proxy extracts idHash as entity
       return profileResult;
     } catch (error) {
-      console.error(`[AIManager] Failed to create LLM Person:`, error);
+      MessageBus.send('error', 'Failed to create LLM Person:', error);
       throw error;
     }
   }
@@ -498,7 +489,7 @@ export class AIManager {
    * Updates the AI object (not Profile)
    */
   async setAIDelegation(aiId: string, delegatesTo: SHA256IdHash<Profile>): Promise<void> {
-    console.log(`[AIManager] Updating AI delegation: ${aiId} → ${delegatesTo.toString().substring(0, 8)}...`);
+    MessageBus.send('debug', `Updating AI delegation: ${aiId}`);
 
     const aiPersonId = this.entities.get(`ai:${aiId}`);
     if (!aiPersonId) {
@@ -521,10 +512,8 @@ export class AIManager {
 
       await this.deps.storeVersionedObject(updatedAI);
       this.aiByPerson.set(aiPersonId, updatedAI);
-
-      console.log(`[AIManager] ✅ Updated AI delegation for ${aiId}`);
     } catch (error) {
-      console.error(`[AIManager] Failed to update AI delegation:`, error);
+      MessageBus.send('error', 'Failed to update AI delegation:', error);
       throw error;
     }
   }
@@ -691,7 +680,7 @@ export class AIManager {
       // Not AI or LLM - return null silently (this is normal for user messages)
       return null;
     } catch (error) {
-      console.error(`[AIManager] getLLMId: Failed to get LLM ID for ${(personId as string).substring(0, 8)}...`, error);
+      MessageBus.send('error', 'getLLMId failed:', error);
       return null;
     }
   }
@@ -705,7 +694,7 @@ export class AIManager {
    * @returns Person ID of the new identity
    */
   async renameAI(aiId: string, newName: string): Promise<SHA256IdHash<Person>> {
-    console.log(`[AIManager] Renaming AI: ${aiId} → ${newName}`);
+    MessageBus.send('debug', `Renaming AI: ${aiId} → ${newName}`);
 
     const currentPersonId = this.entities.get(`ai:${aiId}`);
     if (!currentPersonId) {
@@ -735,7 +724,6 @@ export class AIManager {
 
       const newPersonResult: any = await this.deps.storeVersionedObject(newPersonData);
       const newPersonId = ensureIdHash(typeof newPersonResult === 'object' && newPersonResult?.idHash ? newPersonResult.idHash : newPersonResult);
-      console.log(`[AIManager] Created new Person: ${newPersonId.toString().substring(0, 8)}...`);
 
       // 4. Create PersonName for new Person
       const personNameResult = await this.deps.storeUnversionedObject({
@@ -762,12 +750,10 @@ export class AIManager {
 
       const newProfileResult: any = await this.deps.storeVersionedObject(newProfileObj);
       const newProfileIdHash = ensureIdHash(typeof newProfileResult === 'object' && newProfileResult?.idHash ? newProfileResult.idHash : newProfileResult);
-      console.log(`[AIManager] Created new Profile: ${newProfileIdHash.toString().substring(0, 8)}...`);
 
       // 6. Add new Person to Someone's identities and set as mainProfile
       await someone.addProfile(newProfileIdHash);
       await someone.setMainProfile(newProfileIdHash);
-      console.log(`[AIManager] Added new Profile to Someone and set as mainProfile`);
 
       // 7. Generate keys for the new Person identity
       if (this.deps.createDefaultKeys && this.deps.hasDefaultKeys) {
@@ -775,15 +761,12 @@ export class AIManager {
           const hasKeys = await this.deps.hasDefaultKeys(newPersonId);
           if (!hasKeys) {
             await this.deps.createDefaultKeys(newPersonId);
-            console.log(`[AIManager] ✅ Generated keys for renamed AI Person`);
-          } else {
-            console.log(`[AIManager] Keys already exist for renamed AI Person`);
           }
         } catch (error) {
-          console.warn(`[AIManager] Failed to generate keys for renamed Person:`, error);
+          MessageBus.send('alert', 'Failed to generate keys for renamed Person:', error);
         }
       } else {
-        console.warn(`[AIManager] ⚠️  createDefaultKeys not available - renamed Person will not have keys!`);
+        MessageBus.send('alert', 'createDefaultKeys not available - renamed Person will not have keys');
       }
 
       // 8. Update AI object with new Person ID
@@ -808,10 +791,10 @@ export class AIManager {
       this.entities.set(newProfileId, newPersonId);
       this.personToEntity.set(newPersonId, newProfileId);
 
-      console.log(`[AIManager] ✅ AI renamed: ${aiId} → ${newName}`);
+      MessageBus.send('debug', `AI renamed: ${aiId} → ${newName}`);
       return newPersonId;
     } catch (error) {
-      console.error(`[AIManager] Failed to rename AI:`, error);
+      MessageBus.send('error', 'Failed to rename AI:', error);
       throw error;
     }
   }
@@ -861,7 +844,7 @@ export class AIManager {
 
       return pastIdentities;
     } catch (error) {
-      console.error(`[AIManager] Failed to get past identities:`, error);
+      MessageBus.send('error', 'Failed to get past identities:', error);
       return [];
     }
   }
@@ -885,10 +868,9 @@ export class AIManager {
       // Store in lookup table
       this.aiByPerson.set(personId, aiObject);
 
-      console.log(`[AIManager] 💾 Loaded AI object: ${aiId} → ${aiObject.llmProfileId.toString().substring(0, 8)}...`);
       return aiObject;
     } catch (error) {
-      console.warn(`[AIManager] Failed to load AI object for aiId ${aiId}:`, error);
+      MessageBus.send('alert', `Failed to load AI object for aiId ${aiId}:`, error);
       return null;
     }
   }
@@ -912,10 +894,9 @@ export class AIManager {
       // Store in lookup table
       this.llmByPerson.set(personId, llmObject);
 
-      console.log(`[AIManager] 💾 Loaded LLM object: ${modelId} (${llmObject.modelId})`);
       return llmObject;
     } catch (error) {
-      console.warn(`[AIManager] Failed to load LLM object for modelId ${modelId}:`, error);
+      MessageBus.send('alert', `Failed to load LLM object for modelId ${modelId}:`, error);
       return null;
     }
   }
@@ -939,16 +920,14 @@ export class AIManager {
           if (llm.personId === personId && llm.name === modelId) {
             // Store in lookup table
             this.llmByPerson.set(personId, llm);
-            console.log(`[AIManager] 💾 Loaded LLM object: ${modelId} from ${llm.server || 'remote'}`);
             return llm;
           }
         }
       }
 
-      console.warn(`[AIManager] No LLM object found for personId ${personId.substring(0, 8)}...`);
       return null;
     } catch (error) {
-      console.warn(`[AIManager] Failed to load LLM object for personId ${personId}:`, error);
+      MessageBus.send('alert', 'Failed to load LLM object:', error);
       return null;
     }
   }
@@ -992,7 +971,7 @@ export class AIManager {
    * Loads AI and LLM metadata objects (not Profile pollution)
    */
   async loadExisting(): Promise<{aiCount: number, llmCount: number}> {
-    console.log('[AIManager] Loading existing AI and LLM objects...');
+    MessageBus.send('debug', 'Loading existing AI and LLM objects...');
 
     let aiCount = 0;
     let llmCount = 0;
@@ -1001,7 +980,6 @@ export class AIManager {
       // TODO: Query storage for all AI objects
       // For now, we'll iterate through contacts and check entity IDs
       const others = await this.leuteModel.others();
-      console.log(`[AIManager] 🔍 DEBUG: Found ${others.length} Someone objects in leuteModel.others()`);
 
       for (const someone of others) {
         try {
@@ -1009,10 +987,8 @@ export class AIManager {
           const someoneResult = await this.deps.getObjectByIdHash(someone.idHash);
           const someoneId = someoneResult.obj.someoneId;
           const personId = await someone.mainIdentity();
-          console.log(`[AIManager] 🔍 DEBUG: Someone - someoneId: "${someoneId}", personId: ${personId?.substring(0, 8)}...`);
 
           if (!someoneId) {
-            console.log(`[AIManager] 🔍 DEBUG: Skipping - no someoneId`);
             continue;
           }
 
@@ -1029,12 +1005,9 @@ export class AIManager {
 
               if (aiObject) {
                 aiCount++;
-                console.log(`[AIManager] ✅ Loaded AI: ${someoneId} with delegation`);
-              } else {
-                console.warn(`[AIManager] ⚠️  Could not load AI object for ${someoneId}`);
               }
             } catch (error) {
-              console.warn(`[AIManager] Failed to load AI for ${someoneId}:`, error);
+              MessageBus.send('alert', `Failed to load AI for ${someoneId}:`, error);
               // Still cache the entity mapping
               this.entities.set(someoneId, personId);
               this.personToEntity.set(personId, someoneId);
@@ -1057,31 +1030,31 @@ export class AIManager {
                 const profileIdHash = await this._getMainProfileForPerson(personId);
                 this.llmProfileIdByPerson.set(personId, profileIdHash);
               } catch (error) {
-                console.warn(`[AIManager] Failed to cache Profile ID for ${someoneId}:`, error);
+                MessageBus.send('alert', `Failed to cache Profile ID for ${someoneId}:`, error);
               }
 
               if (llmObject) {
                 llmCount++;
-                console.log(`[AIManager] ✅ Loaded LLM: ${someoneId} from server ${llmObject.server || 'remote'}`);
+                MessageBus.send('debug', `Loaded LLM: ${someoneId} from server ${llmObject.server || 'remote'}`);
               } else {
-                console.warn(`[AIManager] ⚠️  Could not load LLM object for ${someoneId}`);
+                MessageBus.send('alert', `Could not load LLM object for ${someoneId}`);
               }
             } catch (error) {
-              console.warn(`[AIManager] Failed to load LLM object for ${someoneId}:`, error);
+              MessageBus.send('alert', `Failed to load LLM object for ${someoneId}:`, error);
               // Still cache the entity mapping
               this.entities.set(someoneId, personId);
               this.personToEntity.set(personId, someoneId);
             }
           }
         } catch (error) {
-          console.warn('[AIManager] Failed to load Someone:', error);
+          MessageBus.send('alert', 'Failed to load Someone:', error);
         }
       }
 
-      console.log(`[AIManager] ✅ Loaded ${aiCount} AI Persons, ${llmCount} LLM Persons from storage using ONE.core reverse map queries`);
+      MessageBus.send('debug', `Loaded ${aiCount} AI Persons, ${llmCount} LLM Persons`);
       return { aiCount, llmCount };
     } catch (error) {
-      console.error('[AIManager] Failed to load existing entities:', error);
+      MessageBus.send('error', 'Failed to load existing entities:', error);
       throw error;
     }
   }

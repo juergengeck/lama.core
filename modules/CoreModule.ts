@@ -6,6 +6,7 @@ import PropertyTreeStore from '@refinio/one.models/lib/models/SettingsModel.js';
 import type { Module } from '@refinio/api';
 import { initializePlanObjectManager, registerStandardPlans } from '@refinio/api/plan-system';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { getInstanceIdHash, getInstanceOwnerEmail } from '@refinio/one.core/lib/instance.js';
 
 /**
  * CoreModule - ONE.core foundation models
@@ -87,14 +88,14 @@ export class CoreModule implements Module {
         oneCore.ownerId = await this.leuteModel.myMainIdentity();
         console.log('[CoreModule] Set ownerId on oneCore:', oneCore.ownerId?.substring(0, 8));
 
-        // Set instanceId for InstancePlan (dynamic import to avoid circular deps)
-        try {
-          const { getInstanceIdHash } = await import('@refinio/one.core/lib/instance.js');
-          oneCore.instanceId = getInstanceIdHash();
-          console.log('[CoreModule] Set instanceId on oneCore:', oneCore.instanceId?.substring(0, 8));
-        } catch (e) {
-          console.warn('[CoreModule] Could not get instanceId:', e);
-        }
+        oneCore.instanceId = getInstanceIdHash();
+        console.log('[CoreModule] Set instanceId on oneCore:', oneCore.instanceId?.substring(0, 8));
+      }
+
+      // Ensure profile has a display name (using email from Instance object)
+      const email = getInstanceOwnerEmail();
+      if (email) {
+        await this.ensureProfileName(email);
       }
 
       // Note: Owner Assembly recording moved to JournalModule which has proper existence checking
@@ -116,6 +117,33 @@ export class CoreModule implements Module {
     } catch (error) {
       console.error('[CoreModule] Initialization failed:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Ensure the user's profile has a display name derived from email
+   */
+  private async ensureProfileName(email: string): Promise<void> {
+    const me = await this.leuteModel.me();
+    if (!me) return;
+
+    const profile = await me.mainProfile();
+    const hasName = profile.personDescriptions?.some((d: any) => d.$type$ === 'PersonName');
+
+    if (!hasName) {
+      // Extract username from email (e.g., "demo@example.com" -> "Demo")
+      const emailParts = email.split('@');
+      const userPart = emailParts[0];
+      const displayName = userPart.charAt(0).toUpperCase() + userPart.slice(1);
+
+      profile.personDescriptions = profile.personDescriptions || [];
+      profile.personDescriptions.push({
+        $type$: 'PersonName',
+        name: displayName
+      });
+
+      await profile.saveAndLoad();
+      console.log(`[CoreModule] Profile updated with name: ${displayName}`);
     }
   }
 

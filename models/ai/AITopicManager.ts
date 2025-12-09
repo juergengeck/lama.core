@@ -14,6 +14,9 @@
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
+
+const MessageBus = createMessageBus('AITopicManager');
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
@@ -69,7 +72,7 @@ export class AITopicManager implements IAITopicManager {
 
   // Backwards compatibility - deprecated
   get topicModelMap(): ReadonlyMap<string, string> {
-    console.warn('[AITopicManager] topicModelMap is deprecated - use topicAIMap instead');
+    MessageBus.send('alert', 'topicModelMap is deprecated - use topicAIMap instead');
     return new Map();
   }
 
@@ -85,7 +88,7 @@ export class AITopicManager implements IAITopicManager {
    * Register an AI topic with its AI Person
    */
   registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): void {
-    console.log(`[AITopicManager] Registered AI topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
+    MessageBus.send('debug', `Registered AI topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
     this._topicAIMap.set(topicId, aiPersonId);
   }
 
@@ -159,7 +162,7 @@ export class AITopicManager implements IAITopicManager {
     // Clamp priority to valid range
     const clampedPriority = Math.max(1, Math.min(10, priority));
     this.topicPriorities.set(topicId, clampedPriority);
-    console.log(`[AITopicManager] Set priority for topic ${topicId}: ${clampedPriority}`);
+    MessageBus.send('debug', `Set priority for topic ${topicId}: ${clampedPriority}`);
   }
 
   /**
@@ -188,7 +191,7 @@ export class AITopicManager implements IAITopicManager {
     const oldAIPersonId = this._topicAIMap.get(topicId);
     this._topicAIMap.set(topicId, newAIPersonId);
 
-    console.log(`[AITopicManager] Switched topic ${topicId} from AI Person ${oldAIPersonId?.toString().substring(0, 8)}... to ${newAIPersonId.toString().substring(0, 8)}...`);
+    MessageBus.send('debug', `Switched topic ${topicId} from AI Person ${oldAIPersonId?.toString().substring(0, 8)}... to ${newAIPersonId.toString().substring(0, 8)}...`);
   }
 
   /**
@@ -208,7 +211,7 @@ export class AITopicManager implements IAITopicManager {
   ): Promise<void> {
     // If already ensuring, return the existing promise (prevents race condition)
     if (this.ensuringDefaultChats) {
-      console.log('[AITopicManager] ensureDefaultChats already in progress, waiting...');
+      MessageBus.send('debug', 'ensureDefaultChats already in progress, waiting...');
       return this.ensuringDefaultChats;
     }
 
@@ -258,7 +261,7 @@ export class AITopicManager implements IAITopicManager {
     aiManager: any,
     onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
-    console.log('[AITopicManager] Ensuring default AI chats...');
+    MessageBus.send('debug', 'Ensuring default AI chats...');
 
     if (!this.defaultModelId) {
       throw new Error('No default model set - cannot create default chats');
@@ -272,7 +275,7 @@ export class AITopicManager implements IAITopicManager {
       // Fail fast - AI Person should have been created by ensureAIForModel
       throw new Error(`[AITopicManager] AI Person not found for ${aiId} - ensureAIForModel must be called first`);
     }
-    console.log(`[AITopicManager] Using existing AI Person for ${this.defaultModelId}`);
+    MessageBus.send('debug', `Using existing AI Person for ${this.defaultModelId}`);
 
     // Create Hi chat (static welcome message - no LLM generation)
     await this.ensureHiChat(this.defaultModelId, aiPersonId, onTopicCreated);
@@ -295,7 +298,7 @@ export class AITopicManager implements IAITopicManager {
     aiPersonId: SHA256IdHash<Person>,
     _onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
-    console.log('[AITopicManager] Ensuring Hi chat...');
+    MessageBus.send('debug', 'Ensuring Hi chat...');
 
     if (!this.topicGroupManager) {
       throw new Error('topicGroupManager not initialized - cannot create topics');
@@ -324,12 +327,12 @@ export class AITopicManager implements IAITopicManager {
 
         // Create Assembly for this topic
         if (this.assemblyManager) {
-          console.log('[AITopicManager] Creating Assembly for Hi chat');
+          MessageBus.send('debug', 'Creating Assembly for Hi chat');
           await this.assemblyManager.createChatAssembly(topicId, 'Hi');
         }
       } else {
         // Topic exists - ensure AI participant is in the group
-        console.log('[AITopicManager] Hi chat exists, ensuring AI participant is in group...');
+        MessageBus.send('debug', 'Hi chat exists, ensuring AI participant is in group...');
         await this.topicGroupManager.addParticipantsToTopic(topicId, [aiPersonId]);
         topicRoom = await this.topicModel.enterTopicRoom(topicId);
         const messages = await topicRoom.retrieveAllMessages();
@@ -346,7 +349,7 @@ export class AITopicManager implements IAITopicManager {
 
       // Post static welcome message directly (NO LLM generation for Hi chat)
       if (needsWelcome) {
-        console.log('[AITopicManager] ✅ Hi chat created, posting static welcome message');
+        MessageBus.send('debug', 'Hi chat created, posting static welcome message');
 
         // Get model provider to determine welcome message
         let modelProvider: string | undefined;
@@ -354,20 +357,20 @@ export class AITopicManager implements IAITopicManager {
           const model = this.llmManager?.getModel(modelId);
           if (model) {
             modelProvider = model.provider;
-            console.log('[AITopicManager] Model provider:', modelProvider);
+            MessageBus.send('debug', 'Model provider:', modelProvider);
           }
         } catch (error) {
-          console.warn('[AITopicManager] Could not get model provider, using default message:', error);
+          MessageBus.send('alert', 'Could not get model provider, using default message:', error);
         }
 
         const welcomeMessage = getWelcomeMessage(modelProvider);
         await topicRoom.sendMessage(welcomeMessage, aiPersonId, aiPersonId);
-        console.log('[AITopicManager] ✅ Static welcome message posted to Hi chat');
+        MessageBus.send('debug', 'Static welcome message posted to Hi chat');
       } else {
-        console.log('[AITopicManager] ✅ Hi chat already exists');
+        MessageBus.send('debug', 'Hi chat already exists');
       }
     } catch (error) {
-      console.error('[AITopicManager] Failed to ensure Hi chat:', error);
+      MessageBus.send('error', 'Failed to ensure Hi chat:', error);
       throw error;
     }
   }
@@ -381,7 +384,7 @@ export class AITopicManager implements IAITopicManager {
     privateAiPersonId: SHA256IdHash<Person>,
     onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
-    console.log(`[AITopicManager] Ensuring LAMA chat with AI Person: ${privateAiPersonId.toString().substring(0, 8)}...`);
+    MessageBus.send('debug', `Ensuring LAMA chat with AI Person: ${privateAiPersonId.toString().substring(0, 8)}...`);
 
     if (!this.topicGroupManager) {
       throw new Error('topicGroupManager not initialized - cannot create topics');
@@ -410,12 +413,12 @@ export class AITopicManager implements IAITopicManager {
 
         // Create Assembly for this topic
         if (this.assemblyManager) {
-          console.log('[AITopicManager] Creating Assembly for LAMA chat');
+          MessageBus.send('debug', 'Creating Assembly for LAMA chat');
           await this.assemblyManager.createChatAssembly(topicId, 'LAMA');
         }
       } else {
         // Topic exists - ensure AI participant is in the group
-        console.log('[AITopicManager] LAMA chat exists, ensuring AI participant is in group...');
+        MessageBus.send('debug', 'LAMA chat exists, ensuring AI participant is in group...');
         await this.topicGroupManager.addParticipantsToTopic(topicId, [privateAiPersonId]);
         topicRoom = await this.topicModel.enterTopicRoom(topicId);
         const messages = await topicRoom.retrieveAllMessages();
@@ -432,17 +435,17 @@ export class AITopicManager implements IAITopicManager {
 
       // Trigger LLM-generated welcome message via callback (fire and forget - don't block)
       if (needsWelcome && onTopicCreated) {
-        console.log('[AITopicManager] ✅ LAMA chat created, triggering LLM welcome message generation (background)');
+        MessageBus.send('debug', 'LAMA chat created, triggering LLM welcome message generation (background)');
         onTopicCreated(topicId, privateAiPersonId).catch(err => {
-          console.error('[AITopicManager] Failed to generate LAMA welcome message:', err);
+          MessageBus.send('error', 'Failed to generate LAMA welcome message:', err);
         });
       } else if (needsWelcome) {
-        console.log('[AITopicManager] ✅ LAMA chat created (no callback provided for welcome message)');
+        MessageBus.send('debug', 'LAMA chat created (no callback provided for welcome message)');
       } else {
-        console.log('[AITopicManager] ✅ LAMA chat already exists');
+        MessageBus.send('debug', 'LAMA chat already exists');
       }
     } catch (error) {
-      console.error('[AITopicManager] Failed to create LAMA chat:', error);
+      MessageBus.send('error', 'Failed to create LAMA chat:', error);
       throw error;
     }
   }
@@ -466,12 +469,12 @@ export class AITopicManager implements IAITopicManager {
         const channels = await this.channelManager.getMatchingChannelInfos();
 
         // SUCCESS: ChannelManager is ready (even if 0 channels on fresh login)
-        console.log(`[AITopicManager] ✅ ChannelManager ready (${channels.length} channels found)`);
+        MessageBus.send('debug', `ChannelManager ready (${channels.length} channels found)`);
         return;
       } catch (error) {
         // ChannelManager not ready yet - keep polling
         attempt++;
-        console.log(`[AITopicManager] ⏳ ChannelManager not ready, polling... (attempt ${attempt}/${maxAttempts})`);
+        MessageBus.send('debug', `ChannelManager not ready, polling... (attempt ${attempt}/${maxAttempts})`);
 
         // Wait with exponential backoff (proper async pattern, not arbitrary delay)
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -488,7 +491,7 @@ export class AITopicManager implements IAITopicManager {
    * Uses channel participants as source of truth
    */
   async scanExistingConversations(aiManager: any): Promise<number> {
-    console.log('[AITopicManager] 🔍 SCAN START - Scanning existing conversations for AI participants...');
+    MessageBus.send('debug', 'SCAN START - Scanning existing conversations for AI participants...');
 
     try {
       // CRITICAL: Wait for channels to actually load (not just init() to return)
@@ -497,14 +500,14 @@ export class AITopicManager implements IAITopicManager {
 
       // Get all channels (now guaranteed to have loaded)
       const allChannels = await this.channelManager.getMatchingChannelInfos();
-      console.log(`[AITopicManager] 🔍 Found ${allChannels.length} total channels`);
+      MessageBus.send('debug', `Found ${allChannels.length} total channels`);
 
       // Log existing registered topics
       const existingTopics = Array.from(this._topicAIMap.keys());
-      console.log(`[AITopicManager] 🔍 Already registered topics: [${existingTopics.join(', ')}]`);
+      MessageBus.send('debug', `Already registered topics: [${existingTopics.join(', ')}]`);
 
       // Log available AI Persons
-      console.log(`[AITopicManager] 🔍 Checking what AI Persons are available...`);
+      MessageBus.send('debug', 'Checking what AI Persons are available...');
 
       let registeredCount = 0;
 
@@ -514,12 +517,12 @@ export class AITopicManager implements IAITopicManager {
           // For AI topics, the channel.id is the topic ID (channels created by createGroupTopic use topic.id as channel.id)
           const topicId = channelInfo.id;
 
-          console.log(`[AITopicManager] 🔍 Checking channel/topic: ${topicId}`);
+          MessageBus.send('debug', `Checking channel/topic: ${topicId}`);
 
           // Skip if already registered
           if (this._topicAIMap.has(topicId)) {
             const registeredAI = this._topicAIMap.get(topicId);
-            console.log(`[AITopicManager]   ↳ SKIP - already registered with AI Person: ${registeredAI?.toString().substring(0, 8)}...`);
+            MessageBus.send('debug', `  SKIP - already registered with AI Person: ${registeredAI?.toString().substring(0, 8)}...`);
             continue;
           }
 
@@ -530,12 +533,12 @@ export class AITopicManager implements IAITopicManager {
             topic = await this.topicModel.topics.queryById(topicId);
           } catch (e) {
             // Topic doesn't exist or can't be accessed
-            console.log(`[AITopicManager]   ↳ SKIP - topic doesn't exist or can't be accessed`);
+            MessageBus.send('debug', `  SKIP - topic doesn't exist or can't be accessed`);
             continue;
           }
 
           if (!topic) {
-            console.log(`[AITopicManager]   ↳ SKIP - topic not found in collection`);
+            MessageBus.send('debug', `  SKIP - topic not found in collection`);
             continue;
           }
 
@@ -551,7 +554,7 @@ export class AITopicManager implements IAITopicManager {
           }
 
           if (groupIdHash) {
-            console.log(`[AITopicManager]   ↳ Topic is a group topic, checking participants...`);
+            MessageBus.send('debug', `  Topic is a group topic, checking participants...`);
             const groupResult = await getObjectByIdHash(groupIdHash);
             const group = groupResult.obj as Group;
 
@@ -559,25 +562,25 @@ export class AITopicManager implements IAITopicManager {
             if (group.hashGroup) {
               const hashGroup = await getObject(group.hashGroup as SHA256Hash<HashGroup>) as HashGroup<Person>;
               if (hashGroup.person) {
-                console.log(`[AITopicManager]   ↳ Group has ${hashGroup.person.size} participants`);
+                MessageBus.send('debug', `  Group has ${hashGroup.person.size} participants`);
                 // Check each participant in the group to find AI Person
                 for (const memberId of hashGroup.person) {
                   const aiId = await aiManager.getAIId(memberId);
-                  console.log(`[AITopicManager]      - Participant ${memberId.toString().substring(0, 8)}... → AI ID: ${aiId || 'NOT AI'}`);
+                  MessageBus.send('debug', `    - Participant ${memberId.toString().substring(0, 8)}... → AI ID: ${aiId || 'NOT AI'}`);
                   if (aiId) {
                     aiPersonId = memberId;
-                    console.log(`[AITopicManager]   ↳ ✅ FOUND AI participant in ${topicId}: ${aiId}`);
+                    MessageBus.send('debug', `  FOUND AI participant in ${topicId}: ${aiId}`);
                     break;
                   }
                 }
               } else {
-                console.log(`[AITopicManager]   ↳ Group hashGroup has no participants`);
+                MessageBus.send('debug', `  Group hashGroup has no participants`);
               }
             } else {
-              console.log(`[AITopicManager]   ↳ Group has no hashGroup`);
+              MessageBus.send('debug', `  Group has no hashGroup`);
             }
           } else {
-            console.log(`[AITopicManager]   ↳ SKIP - topic has no group (not a group chat)`);
+            MessageBus.send('debug', `  SKIP - topic has no group (not a group chat)`);
           }
 
           // Register if AI participant found
@@ -585,19 +588,19 @@ export class AITopicManager implements IAITopicManager {
             this._topicAIMap.set(topicId, aiPersonId);
             registeredCount++;
             const aiId = await aiManager.getAIId(aiPersonId);
-            console.log(`[AITopicManager]   ↳ ✅ REGISTERED topic ${topicId} with AI Person ${aiId} (${aiPersonId.toString().substring(0, 8)}...)`);
+            MessageBus.send('debug', `  REGISTERED topic ${topicId} with AI Person ${aiId} (${aiPersonId.toString().substring(0, 8)}...)`);
           } else {
-            console.log(`[AITopicManager]   ↳ SKIP - no AI participant found in topic ${topicId}`);
+            MessageBus.send('debug', `  SKIP - no AI participant found in topic ${topicId}`);
           }
         } catch (error) {
-          console.warn(`[AITopicManager]   ↳ ERROR scanning topic:`, error);
+          MessageBus.send('alert', `  ERROR scanning topic:`, error);
         }
       }
 
-      console.log(`[AITopicManager] 🔍 SCAN COMPLETE - Registered ${registeredCount} new AI topics`);
+      MessageBus.send('debug', `SCAN COMPLETE - Registered ${registeredCount} new AI topics`);
       return registeredCount;
     } catch (error) {
-      console.error('[AITopicManager] 🔍 SCAN FAILED:', error);
+      MessageBus.send('error', 'SCAN FAILED:', error);
       throw error;
     }
   }

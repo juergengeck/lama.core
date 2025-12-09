@@ -158,11 +158,15 @@ export class JournalModule implements Module {
 
     // Create AssemblyListener to connect StoryFactory to Assembly creation
     // Include assemblyDimension and getPlan so new Assemblies are indexed
+    // onIndexed triggers persistence immediately when assemblies are indexed
     this.assemblyListener = new AssemblyListener({
       storyFactory: this.storyFactory,
       assemblyPlan: this.assemblyPlan,
       assemblyDimension: this.assemblyDimension,
-      getPlan: getObjectByIdHashAdapter
+      getPlan: getObjectByIdHashAdapter,
+      onIndexed: async () => {
+        await this.dimensionStateManager.saveAndPersistRef('assembly');
+      }
     });
 
     // Initialize the listener to start listening to Story creation events

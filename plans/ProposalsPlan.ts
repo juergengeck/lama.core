@@ -14,15 +14,20 @@ import {
 } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 import type { Subject } from '../one-ai/types/Subject.js';
+
+const MessageBus = createMessageBus('ProposalsPlan');
 import {
   createProposalInteractionPlan,
   createProposalInteractionResponse,
   isProposalDismissed,
 } from './ProposalInteractions.js';
+import { SemanticProposalEngine } from '../services/semantic-proposal-engine.js';
 
 // Re-export types for consumers
 export interface Proposal {
+  id: string;  // Same as pastSubject - the SHA256IdHash IS the unique identity
   pastSubject: SHA256IdHash<Subject>;
   currentSubject?: SHA256IdHash<Subject>;
   matchedKeywords: string[];
@@ -39,6 +44,7 @@ export interface ProposalConfig {
   recencyWeight: number;
   recencyWindow: number;
   minJaccard: number;
+  minSimilarity?: number;  // Embedding similarity threshold (default: 0.5)
   maxProposals: number;
   updatedAt: number;
 }
@@ -145,6 +151,7 @@ const DEFAULT_CONFIG: ProposalConfig = {
   recencyWeight: 0.3,
   recencyWindow: 30 * 24 * 60 * 60 * 1000, // 30 days
   minJaccard: 0.1, // 10% match - lowered from 0.2 to catch more proposals with short input
+  minSimilarity: 0.5, // Embedding similarity threshold (0.5 = moderate similarity)
   maxProposals: 10,
   updatedAt: Date.now(),
 };
@@ -166,13 +173,15 @@ export class ProposalsPlan {
   private proposalRanker: any;
   private proposalCache: any;
   private dismissedProposals: Set<string>;
+  private semanticEngine?: SemanticProposalEngine;
 
   constructor(
     nodeOneCore: any,
     topicAnalysisModel: any,
     proposalEngine: any,
     proposalRanker: any,
-    proposalCache: any
+    proposalCache: any,
+    semanticEngine?: SemanticProposalEngine
   ) {
     this.nodeOneCore = nodeOneCore;
     this.topicAnalysisModel = topicAnalysisModel;
@@ -180,6 +189,7 @@ export class ProposalsPlan {
     this.proposalRanker = proposalRanker;
     this.proposalCache = proposalCache;
     this.dismissedProposals = new Set();
+    this.semanticEngine = semanticEngine;
   }
 
   /**
@@ -221,9 +231,9 @@ export class ProposalsPlan {
           subjectIdHashes = await Promise.all(
             subjects.map((subject: any) => calculateIdHashOfObj(subject as any))
           );
-          console.log('[ProposalsPlan] Calculated ID hashes for', subjectIdHashes.length, 'subjects');
+          MessageBus.send('debug', '[ProposalsPlan] Calculated ID hashes for', subjectIdHashes.length, 'subjects');
         } catch (error: any) {
-          console.error('[ProposalsPlan] Error querying subjects:', error);
+          MessageBus.send('error', '[ProposalsPlan] Error querying subjects:', error);
           return {
             proposals: [],
             count: 0,
@@ -232,7 +242,7 @@ export class ProposalsPlan {
           };
         }
       } else {
-        console.log('[ProposalsPlan] Using provided subjects:', subjectIdHashes.length);
+        MessageBus.send('debug', '[ProposalsPlan] Using provided subjects:', subjectIdHashes.length);
       }
 
       // Check cache first (unless forceRefresh)
@@ -254,25 +264,35 @@ export class ProposalsPlan {
 
       // Get current user config
       const config = await this.getCurrentConfig();
-      console.log('[ProposalsPlan] Using config:', {
+      MessageBus.send('debug', '[ProposalsPlan] Using config:', {
         minJaccard: config.minJaccard,
         matchWeight: config.matchWeight,
         maxProposals: config.maxProposals
       });
 
-      // Generate proposals using engine
-      console.log('[ProposalsPlan] Calling getProposalsForTopic...');
-      const proposals = await this.proposalEngine.getProposalsForTopic(
-        request.topicId,
-        subjectIdHashes,
-        config
-      );
-      console.log('[ProposalsPlan] ProposalEngine returned', proposals.length, 'proposals');
+      // Generate proposals using semantic engine if available, otherwise use Jaccard engine
+      let proposals: any[];
+      if (this.semanticEngine) {
+        MessageBus.send('debug', '[ProposalsPlan] Using SemanticProposalEngine');
+        proposals = await this.semanticEngine.getProposalsForTopic(
+          request.topicId,
+          subjectIdHashes,
+          { ...config, jaccardBoost: 0.1, minSimilarity: config.minSimilarity ?? 0.5 }
+        );
+      } else {
+        MessageBus.send('debug', '[ProposalsPlan] Using Jaccard-only ProposalEngine');
+        proposals = await this.proposalEngine.getProposalsForTopic(
+          request.topicId,
+          subjectIdHashes,
+          config
+        );
+      }
+      MessageBus.send('debug', '[ProposalsPlan] ProposalEngine returned', proposals.length, 'proposals');
 
       // Rank proposals
-      console.log('[ProposalsPlan] Ranking proposals...');
+      MessageBus.send('debug', '[ProposalsPlan] Ranking proposals...');
       const rankedProposals = this.proposalRanker.rankProposals(proposals, config);
-      console.log('[ProposalsPlan] Ranked proposals:', rankedProposals.length);
+      MessageBus.send('debug', '[ProposalsPlan] Ranked proposals:', rankedProposals.length);
 
       // Filter against dismissed proposals (both in-memory and stored in ONE.core)
       const userEmail = this.nodeOneCore.email || 'user@example.com';
@@ -292,15 +312,19 @@ export class ProposalsPlan {
           continue;
         }
 
-        filtered.push(proposal);
+        // Add id field - pastSubject (SHA256IdHash) IS the unique identity
+        filtered.push({
+          ...proposal,
+          id: proposal.pastSubject as string
+        });
       }
 
-      console.log('[ProposalsPlan] Filtered proposals (after dismissals):', filtered.length);
+      MessageBus.send('debug', '[ProposalsPlan] Filtered proposals (after dismissals):', filtered.length);
 
       // Cache results
       this.proposalCache.set(request.topicId, subjectIdHashes, filtered);
 
-      console.log('[ProposalsPlan] ✅ Returning', filtered.length, 'proposals in', Date.now() - startTime, 'ms');
+      MessageBus.send('debug', '[ProposalsPlan] ✅ Returning', filtered.length, 'proposals in', Date.now() - startTime, 'ms');
       return {
         proposals: filtered,
         count: filtered.length,
@@ -308,8 +332,8 @@ export class ProposalsPlan {
         computeTimeMs: Date.now() - startTime,
       };
     } catch (error: any) {
-      console.error('[ProposalsPlan] ❌ Error in getForTopic:', error);
-      console.error('[ProposalsPlan] Error stack:', error.stack);
+      MessageBus.send('error', '[ProposalsPlan] ❌ Error in getForTopic:', error);
+      MessageBus.send('error', '[ProposalsPlan] Error stack:', error.stack);
       throw new Error(`COMPUTATION_ERROR: ${error.message}`);
     }
   }
@@ -355,6 +379,12 @@ export class ProposalsPlan {
         }
       }
 
+      if ('minSimilarity' in config && config.minSimilarity !== undefined) {
+        if (typeof config.minSimilarity !== 'number' || config.minSimilarity < 0 || config.minSimilarity > 1) {
+          throw new Error('INVALID_CONFIG: minSimilarity must be a number between 0.0 and 1.0');
+        }
+      }
+
       // Get current config or use defaults
       const currentConfig = await this.getCurrentConfig();
 
@@ -365,7 +395,7 @@ export class ProposalsPlan {
         updatedAt: Date.now(),
       };
 
-      console.log('[ProposalsPlan] Storing updated config for user:', updatedConfig.userEmail);
+      MessageBus.send('debug', '[ProposalsPlan] Storing updated config for user:', updatedConfig.userEmail);
 
       // Store as versioned object with ALL fields
       // ONE.core will use only ID fields (from isId: true) to calculate ID hash
@@ -375,7 +405,7 @@ export class ProposalsPlan {
       };
 
       const result = await storeVersionedObject(configObject);
-      console.log('[ProposalsPlan] Config stored with hash:', result.hash);
+      MessageBus.send('debug', '[ProposalsPlan] Config stored with hash:', result.hash);
 
       // Invalidate proposal cache (config changes affect matching)
       this.proposalCache.clear();
@@ -386,7 +416,7 @@ export class ProposalsPlan {
         versionHash: String(result.hash),
       };
     } catch (error: any) {
-      console.error('[ProposalsPlan] Error in updateConfig:', error);
+      MessageBus.send('error', '[ProposalsPlan] Error in updateConfig:', error);
       if (error.message.startsWith('INVALID_CONFIG')) {
         throw error;
       }
@@ -407,7 +437,7 @@ export class ProposalsPlan {
         isDefault,
       };
     } catch (error: any) {
-      console.error('[ProposalsPlan] Error in getConfig:', error);
+      MessageBus.send('error', '[ProposalsPlan] Error in getConfig:', error);
       throw new Error(`USER_NOT_AUTHENTICATED: ${error.message}`);
     }
   }
@@ -438,7 +468,7 @@ export class ProposalsPlan {
       // Create ProposalInteractionResponse
       await createProposalInteractionResponse(planIdHash, true);
 
-      console.log('[ProposalsPlan] ✅ Dismissed proposal:', request.pastSubjectIdHash);
+      MessageBus.send('debug', '[ProposalsPlan] ✅ Dismissed proposal:', request.pastSubjectIdHash);
 
       // Also add to in-memory set for immediate filtering (performance optimization)
       const dismissKey = `${request.topicId}:${request.pastSubjectIdHash}`;
@@ -453,7 +483,7 @@ export class ProposalsPlan {
         remainingCount,
       };
     } catch (error: any) {
-      console.error('[ProposalsPlan] Error in dismiss:', error);
+      MessageBus.send('error', '[ProposalsPlan] Error in dismiss:', error);
       throw error;
     }
   }
@@ -489,10 +519,7 @@ export class ProposalsPlan {
             }
           }
         } catch (error) {
-          console.error(
-            `[ProposalsPlan] Error fetching keyword ${keywordIdHash}:`,
-            error
-          );
+          MessageBus.send('error', `[ProposalsPlan] Error fetching keyword ${keywordIdHash}: ${error}`);
         }
       }
 
@@ -519,7 +546,7 @@ export class ProposalsPlan {
         sharedToTopicId: request.topicId,
       });
 
-      console.log('[ProposalsPlan] ✅ Shared proposal:', request.pastSubjectIdHash, 'to topic:', request.topicId);
+      MessageBus.send('debug', '[ProposalsPlan] ✅ Shared proposal:', request.pastSubjectIdHash, 'to topic:', request.topicId);
 
       // Also add to in-memory set for immediate filtering (shared proposals are also dismissed)
       const dismissKey = `${request.topicId}:${request.pastSubjectIdHash}`;
@@ -535,7 +562,7 @@ export class ProposalsPlan {
         },
       };
     } catch (error: any) {
-      console.error('[ProposalsPlan] Error in share:', error);
+      MessageBus.send('error', '[ProposalsPlan] Error in share:', error);
       if (error.message.startsWith('SUBJECT_NOT_FOUND')) {
         throw error;
       }
@@ -575,8 +602,8 @@ export class ProposalsPlan {
       const description = pastSubject.description;
 
       // Log subject metadata for debugging
-      console.log(`[ProposalsPlan] getDetails: Subject has timestamps - lastSeenAt: ${pastSubject.lastSeenAt}, createdAt: ${pastSubject.createdAt}`);
-      console.log(`[ProposalsPlan] getDetails: Subject topics: ${pastSubject.topics?.join(', ') || 'none'}`);
+      MessageBus.send('debug', `[ProposalsPlan] getDetails: Subject has timestamps - lastSeenAt: ${pastSubject.lastSeenAt}, createdAt: ${pastSubject.createdAt}`);
+      MessageBus.send('debug', `[ProposalsPlan] getDetails: Subject topics: ${pastSubject.topics?.join(', ') || 'none'}`);
 
       // Retrieve keywords with hashes
       const keywords: Array<{ hash: string; value: string }> = [];
@@ -593,7 +620,7 @@ export class ProposalsPlan {
             }
           }
         } catch (error) {
-          console.error(`[ProposalsPlan] Error fetching keyword ${keywordIdHash}:`, error);
+          MessageBus.send('error', `[ProposalsPlan] Error fetching keyword ${keywordIdHash}:`, error);
         }
       }
 
@@ -611,7 +638,7 @@ export class ProposalsPlan {
       const sourceTopics = pastSubject.topics || [];
       const timeRanges = pastSubject.timeRanges || [];
 
-      console.log(`[ProposalsPlan] getDetails: Querying messages from ${sourceTopics.length} topics, ${timeRanges.length} time ranges`);
+      MessageBus.send('debug', `[ProposalsPlan] getDetails: Querying messages from ${sourceTopics.length} topics, ${timeRanges.length} time ranges`);
 
       if (sourceTopics.length > 0 && this.nodeOneCore?.channelManager && timeRanges.length > 0) {
         // Get overall time bounds from timeRanges
@@ -653,7 +680,7 @@ export class ProposalsPlan {
               }
             }
           } catch (error) {
-            console.error(`[ProposalsPlan] Error fetching messages from topic ${sourceTopicId}:`, error);
+            MessageBus.send('error', `[ProposalsPlan] Error fetching messages from topic ${sourceTopicId}:`, error);
           }
         }
 
@@ -666,8 +693,8 @@ export class ProposalsPlan {
         }
       }
 
-      console.log(`[ProposalsPlan] getDetails: Found ${messages.length} messages in time ranges`);
-      console.log(`[ProposalsPlan] getDetails: Subject memories: ${pastSubject.memories?.length || 0}`);
+      MessageBus.send('debug', `[ProposalsPlan] getDetails: Found ${messages.length} messages in time ranges`);
+      MessageBus.send('debug', `[ProposalsPlan] getDetails: Subject memories: ${pastSubject.memories?.length || 0}`);
 
       // Retrieve linked memories if available
       const memories: Array<{
@@ -689,7 +716,7 @@ export class ProposalsPlan {
               });
             }
           } catch (error) {
-            console.error(`[ProposalsPlan] Error fetching memory:`, error);
+            MessageBus.send('error', `[ProposalsPlan] Error fetching memory:`, error);
           }
         }
       }
@@ -713,15 +740,15 @@ export class ProposalsPlan {
               hash: String(summaryIdHash),
               text: sum.prose || sum.text || sum.content || '',
             };
-            console.log(`[ProposalsPlan] Found summary for subject: ${summary.text.slice(0, 50)}...`);
+            MessageBus.send('debug', `[ProposalsPlan] Found summary for subject: ${summary.text.slice(0, 50)}...`);
           }
         } catch (error) {
           // Summary not found is normal - not all subjects have summaries
-          console.log(`[ProposalsPlan] No summary found for subject in topic ${request.topicId}`);
+          MessageBus.send('debug', `[ProposalsPlan] No summary found for subject in topic ${request.topicId}`);
         }
       }
 
-      console.log(`[ProposalsPlan] getDetails: ${keywords.length} keywords, ${messages.length} messages, ${memories.length} memories`);
+      MessageBus.send('debug', `[ProposalsPlan] getDetails: ${keywords.length} keywords, ${messages.length} messages, ${memories.length} memories`);
 
       return {
         success: true,
@@ -742,7 +769,7 @@ export class ProposalsPlan {
         },
       };
     } catch (error: any) {
-      console.error('[ProposalsPlan] Error in getDetails:', error);
+      MessageBus.send('error', '[ProposalsPlan] Error in getDetails:', error);
       throw new Error(`GET_DETAILS_FAILED: ${error.message}`);
     }
   }
@@ -767,23 +794,23 @@ export class ProposalsPlan {
       };
       const configIdHash = await calculateIdHashOfObj(configIdObj as any);
 
-      console.log('[ProposalsPlan] Looking up config for user:', userEmail, 'idHash:', configIdHash);
+      MessageBus.send('debug', '[ProposalsPlan] Looking up config for user:', userEmail, 'idHash:', configIdHash);
 
       // Retrieve from ONE.core by ID hash
       const result = await getObjectByIdHash(configIdHash);
       if (result && result.obj) {
-        console.log('[ProposalsPlan] Found stored config:', result.obj);
+        MessageBus.send('debug', '[ProposalsPlan] Found stored config:', result.obj);
         return result.obj as any as ProposalConfig;
       }
 
-      console.log('[ProposalsPlan] No stored config found, using defaults');
+      MessageBus.send('debug', '[ProposalsPlan] No stored config found, using defaults');
       // Return defaults if not found
       return {
         ...DEFAULT_CONFIG,
         userEmail,
       };
     } catch (error) {
-      console.error('[ProposalsPlan] Error retrieving config, using defaults:', error);
+      MessageBus.send('error', '[ProposalsPlan] Error retrieving config, using defaults:', error);
       // Return defaults on error
       return {
         ...DEFAULT_CONFIG,

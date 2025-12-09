@@ -68,6 +68,11 @@ export const AISettingsRecipe = {
         {
             itemprop: 'enableMCP',
             itemtype: { type: 'boolean' }
+        },
+        {
+            itemprop: 'embeddingModel',
+            itemtype: { type: 'string' },
+            optional: true
         }
     ]
 };

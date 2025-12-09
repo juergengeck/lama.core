@@ -4,6 +4,10 @@
  * Works in both Node.js and browser environments using native fetch
  */
 
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
+
+const MessageBus = createMessageBus('Ollama');
+
 // Use native fetch (Node.js 18+ and all browsers)
 // No imports needed - fetch and AbortController are global
 
@@ -24,13 +28,13 @@ function getRequestId(): any {
  * Cancel all active Ollama requests
  */
 export function cancelAllOllamaRequests(): any {
-  console.log(`[Ollama] Cancelling ${activeRequests.size} active requests`)
+  MessageBus.send('debug', `Cancelling ${activeRequests.size} active requests`)
   for (const [id, data] of activeRequests) {
     try {
       data.controller.abort()
-      console.log(`[Ollama] Cancelled request ${id}`)
+      MessageBus.send('debug', `Cancelled request ${id}`)
     } catch (error) {
-      console.error(`[Ollama] Error cancelling request ${id}:`, error)
+      MessageBus.send('error', `Error cancelling request ${id}:`, error)
     }
   }
   activeRequests.clear()
@@ -41,11 +45,11 @@ export function cancelAllOllamaRequests(): any {
  * Cancel streaming for a specific topic
  */
 export function cancelStreamingForTopic(topicId: string): boolean {
-  console.log(`[Ollama] Cancelling streaming for topic: ${topicId}`)
+  MessageBus.send('debug', `Cancelling streaming for topic: ${topicId}`)
   const requestIds = topicToRequests.get(topicId)
 
   if (!requestIds || requestIds.size === 0) {
-    console.log(`[Ollama] No active requests found for topic: ${topicId}`)
+    MessageBus.send('debug', `No active requests found for topic: ${topicId}`)
     return false
   }
 
@@ -55,11 +59,11 @@ export function cancelStreamingForTopic(topicId: string): boolean {
     if (data) {
       try {
         data.controller.abort()
-        console.log(`[Ollama] Cancelled request ${requestId} for topic ${topicId}`)
+        MessageBus.send('debug', `Cancelled request ${requestId} for topic ${topicId}`)
         activeRequests.delete(requestId)
         cancelled = true
       } catch (error) {
-        console.error(`[Ollama] Error cancelling request ${requestId}:`, error)
+        MessageBus.send('error', `Error cancelling request ${requestId}:`, error)
       }
     }
   }
@@ -77,7 +81,7 @@ async function isOllamaRunning(baseUrl: string = 'http://localhost:11434', authH
     const response: any = await fetch(`${baseUrl}/api/tags`, { headers })
     return response.ok
   } catch (error) {
-    console.log(`[Ollama] Service not running on ${baseUrl}`)
+    MessageBus.send('debug', `Service not running on ${baseUrl}`)
     return false
   }
 }
@@ -107,7 +111,7 @@ async function testOllamaModel(modelName: any, baseUrl: string = 'http://localho
 
     return response.ok
   } catch (error) {
-    console.error(`[Ollama] Model ${modelName} test failed:`, error)
+    MessageBus.send('error', `Model ${modelName} test failed:`, error)
     return false
   }
 }
@@ -139,18 +143,18 @@ async function chatWithOllama(
     topicToRequests.get(topicId).add(requestId)
   }
 
-  console.log(`[Ollama] Starting request ${requestId} to ${baseUrl}${topicId ? ` (topic: ${topicId})` : ''}`)
+  MessageBus.send('debug', `Starting request ${requestId} to ${baseUrl}${topicId ? ` (topic: ${topicId})` : ''}`)
 
   try {
     const t0 = Date.now()
-    console.log(`[Ollama-${requestId}] ⏱️  T+0ms: Request started`)
+    MessageBus.send('debug', `[${requestId}] T+0ms: Request started`)
 
     // Trust the caller (AIPromptBuilder) to provide properly formatted messages
     // No need to reorganize - messages are already in the correct order
     const formattedMessages = messages
 
     const startTime = Date.now()
-    console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Using ${formattedMessages.length} messages from prompt builder`)
+    MessageBus.send('debug', `[${requestId}] T+${Date.now() - t0}ms: Using ${formattedMessages.length} messages from prompt builder`)
 
     // Prepare headers with auth if provided
     const headers = {
@@ -179,26 +183,22 @@ async function chatWithOllama(
     // Add context for conversation continuation (KV cache reuse)
     if (options.context && Array.isArray(options.context)) {
       requestBody.context = options.context;
-      console.log(`[Ollama-${requestId}] 🔄 Reusing cached context (${options.context.length} tokens) - skipping reprocessing`);
+      MessageBus.send('debug', `[${requestId}] Reusing cached context (${options.context.length} tokens) - skipping reprocessing`);
     }
 
     // DEBUG: Log the actual num_predict value being sent
-    console.log(`[Ollama-${requestId}] 🔧 Request config: model=${modelName}, num_predict=${requestBody.options.num_predict}, max_tokens=${options.max_tokens}, messages=${formattedMessages.length}`);
+    MessageBus.send('debug', `[${requestId}] Request config: model=${modelName}, num_predict=${requestBody.options.num_predict}, max_tokens=${options.max_tokens}, messages=${formattedMessages.length}`);
 
     // Add format parameter for structured outputs (Ollama native)
     if (options.format) {
       requestBody.format = options.format;
-      console.log('[Ollama] ========== OLLAMA STRUCTURED OUTPUT ==========');
-      console.log('[Ollama] Using structured output format (JSON schema)');
-      console.log('[Ollama] Stream disabled for structured output');
-      console.log('[Ollama] Format schema:', JSON.stringify(options.format, null, 2));
-      console.log('[Ollama] ==============================================');
+      MessageBus.send('debug', 'STRUCTURED OUTPUT: Using JSON schema, stream disabled');
+      MessageBus.send('debug', 'Format schema:', JSON.stringify(options.format, null, 2));
     }
 
     const requestBodyStr = JSON.stringify(requestBody);
-    console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Sending fetch to ${baseUrl}/api/chat`)
-    console.log(`[Ollama-${requestId}] 📦 Request size: ${requestBodyStr.length} bytes, ${formattedMessages.length} messages`)
-    console.log(`[Ollama-${requestId}] 📝 Request preview: ${requestBodyStr.substring(0, 500)}...`)
+    MessageBus.send('debug', `[${requestId}] T+${Date.now() - t0}ms: Sending fetch to ${baseUrl}/api/chat`)
+    MessageBus.send('debug', `[${requestId}] Request size: ${requestBodyStr.length} bytes, ${formattedMessages.length} messages`)
 
     const response: any = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',
@@ -207,7 +207,7 @@ async function chatWithOllama(
       body: requestBodyStr
     })
 
-    console.log(`[Ollama-${requestId}] ⏱️  T+${Date.now() - t0}ms: Response received (status: ${response.status})`)
+    MessageBus.send('debug', `[${requestId}] T+${Date.now() - t0}ms: Response received (status: ${response.status})`)
 
     if (!response.ok) {
       throw new Error(`Ollama API error: ${response.statusText}`)
@@ -217,19 +217,12 @@ async function chatWithOllama(
     if (!useStreaming) {
       const json = await response.json()
 
-      // Debug: Log the full response structure
-      console.log('[Ollama] ========== NON-STREAMING RESPONSE STRUCTURE ==========');
-      console.log('[Ollama] Response keys:', Object.keys(json));
-      console.log('[Ollama] Full response:', JSON.stringify(json, null, 2).substring(0, 1000));
-      console.log('[Ollama] =======================================================');
-
       // Handle different response formats
       let content = json.message?.content || json.response || json.thinking || ''
-      console.log(`[Ollama] Extracted content length: ${content.length}`)
-      console.log(`[Ollama] Non-streaming response preview: ${content.substring(0, 200)}...`)
+      MessageBus.send('debug', `Non-streaming response: ${content.length} chars`)
 
       if (!content) {
-        console.error('[Ollama] No content found! Response structure:', JSON.stringify(json, null, 2));
+        MessageBus.send('error', 'No content found! Response structure:', JSON.stringify(json, null, 2));
         throw new Error('Ollama generated no response - check response structure above')
       }
       return content
@@ -253,7 +246,7 @@ async function chatWithOllama(
 
         if (!firstChunkTime) {
           firstChunkTime = Date.now()
-          console.log(`[Ollama-${requestId}] ⏱️  T+${firstChunkTime - t0}ms: 🎉 FIRST CHUNK RECEIVED (time to first token)`)
+          MessageBus.send('debug', `[${requestId}] T+${firstChunkTime - t0}ms: FIRST CHUNK RECEIVED (time to first token)`)
         }
 
         buffer += decoder.decode(value, { stream: true })
@@ -325,13 +318,10 @@ async function chatWithOllama(
             if (!content && !thinking && !json.done) {
               // Log details for debugging but don't crash
               // (Skip final completion messages with done: true)
-              console.warn('[Ollama] No content/thinking extracted from JSON. Keys:', Object.keys(json))
-              if (json.message) {
-                console.warn('[Ollama] message type:', typeof json.message, 'message keys:', Object.keys(json.message || {}))
-              }
+              MessageBus.send('alert', 'No content/thinking extracted from JSON. Keys:', Object.keys(json))
             }
           } catch (e: any) {
-            console.error('[Ollama] Error parsing JSON line:', e.message, 'Line:', line)
+            MessageBus.send('error', 'Error parsing JSON line:', e.message, 'Line:', line)
           }
         }
       }
@@ -382,12 +372,12 @@ async function chatWithOllama(
           }
         }
       } catch (e: any) {
-        console.error('[Ollama] Error parsing final JSON:', e.message)
+        MessageBus.send('error', 'Error parsing final JSON:', e.message)
       }
     }
-    
+
     const responseTime = Date.now() - startTime
-    console.log(`[Ollama] ⏱️ Full response completed in ${responseTime}ms`)
+    MessageBus.send('debug', `Full response completed in ${responseTime}ms`)
 
     // Check if we got EITHER response OR thinking
     const hasResponse = fullResponse && fullResponse !== '';
@@ -398,20 +388,11 @@ async function chatWithOllama(
       throw new Error('Ollama generated no response - model may not support structured output or failed to generate')
     }
 
-    {
-      console.log('[Ollama] ========== OLLAMA RESPONSE TRACE ==========')
-      if (hasResponse) {
-        console.log('[Ollama] Full response length:', fullResponse.length)
-        console.log('[Ollama] Full response (first 500 chars):', fullResponse.substring(0, 500))
-        console.log('[Ollama] Full response (last 200 chars):', fullResponse.substring(Math.max(0, fullResponse.length - 200)))
-      } else {
-        console.log('[Ollama] No response content (thinking-only model)')
-      }
-      if (hasThinking) {
-        console.log('[Ollama] Thinking captured (length):', fullThinking.length)
-        console.log('[Ollama] Thinking (first 200 chars):', fullThinking.substring(0, 200))
-      }
-      console.log('[Ollama] ===========================================')
+    if (hasResponse) {
+      MessageBus.send('debug', `Response: ${fullResponse.length} chars`)
+    }
+    if (hasThinking) {
+      MessageBus.send('debug', `Thinking captured: ${fullThinking.length} chars`)
     }
 
     // Clean up request tracking
@@ -425,7 +406,7 @@ async function chatWithOllama(
         }
       }
     }
-    console.log(`[Ollama] Completed request ${requestId}`)
+    MessageBus.send('debug', `Completed request ${requestId}`)
 
     // Return structured response with thinking and context as metadata
     // If there's thinking or context, return object; otherwise return string for backwards compat
@@ -440,7 +421,7 @@ async function chatWithOllama(
     }
     return fullResponse
   } catch (error) {
-    console.error(`[Ollama] Chat error for request ${requestId}:`, error)
+    MessageBus.send('error', `Chat error for request ${requestId}:`, error)
     
     // Clean up on error
     activeRequests.delete(requestId)
@@ -456,7 +437,7 @@ async function chatWithOllama(
 
     // Handle abort
     if (error.name === 'AbortError') {
-      console.log(`[Ollama] Request ${requestId} was aborted`)
+      MessageBus.send('debug', `Request ${requestId} was aborted`)
       throw new Error('Request was cancelled')
     }
     
@@ -523,7 +504,7 @@ export async function getLocalOllamaModels(baseUrl: string = 'http://localhost:1
     const data = await response.json() as { models?: OllamaModel[] }
     return data.models || []
   } catch (error) {
-    console.error('[Ollama] Failed to fetch local models:', error)
+    MessageBus.send('error', 'Failed to fetch local models:', error)
     return []
   }
 }
@@ -600,6 +581,74 @@ export function parseOllamaModel(model: OllamaModel): OllamaModelInfo {
     contextLength,
     parameterSize
   }
+}
+
+/**
+ * Generate embedding using Ollama's /api/embeddings endpoint
+ *
+ * @param modelName - Embedding model (e.g., 'nomic-embed-text')
+ * @param text - Text to embed
+ * @param baseUrl - Ollama base URL (default: http://localhost:11434)
+ * @param authHeaders - Optional auth headers
+ * @returns Embedding vector (number[])
+ */
+export async function embedWithOllama(
+  modelName: string,
+  text: string,
+  baseUrl: string = 'http://localhost:11434',
+  authHeaders?: Record<string, string>
+): Promise<number[]> {
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(authHeaders || {})
+    };
+
+    const response = await fetch(`${baseUrl}/api/embeddings`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: modelName,
+        prompt: text
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama embeddings API error: ${response.statusText}`);
+    }
+
+    const json = await response.json();
+
+    if (!json.embedding || !Array.isArray(json.embedding)) {
+      throw new Error('Ollama returned invalid embedding format');
+    }
+
+    return json.embedding;
+  } catch (error) {
+    MessageBus.send('error', 'Embedding error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Generate embeddings for multiple texts (batch)
+ *
+ * @param modelName - Embedding model (e.g., 'nomic-embed-text')
+ * @param texts - Array of texts to embed
+ * @param baseUrl - Ollama base URL
+ * @param authHeaders - Optional auth headers
+ * @returns Array of embedding vectors
+ */
+export async function embedBatchWithOllama(
+  modelName: string,
+  texts: string[],
+  baseUrl: string = 'http://localhost:11434',
+  authHeaders?: Record<string, string>
+): Promise<number[][]> {
+  // Ollama doesn't have native batch endpoint, so we parallelize single requests
+  return Promise.all(
+    texts.map(text => embedWithOllama(modelName, text, baseUrl, authHeaders))
+  );
 }
 
 export {

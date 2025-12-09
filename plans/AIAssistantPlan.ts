@@ -17,6 +17,9 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
+
+const MessageBus = createMessageBus('AIAssistantPlan');
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -114,11 +117,10 @@ export class AIAssistantPlan {
   private initialized = false;
 
   constructor(deps: AIAssistantPlanDependencies) {
-    console.log('[AIAssistantPlan.constructor] 🔵 START - Creating AIAssistantPlan instance');
+    MessageBus.send('debug', 'Creating AIAssistantPlan instance');
     this.deps = deps;
 
     // Phase 1: Construct components with non-circular dependencies
-    console.log('[AIAssistantPlan.constructor] Creating AIManager...');
     this.aiManager = new AIManager(deps.leuteModel, deps.storageDeps);
 
     this.topicManager = new AITopicManager(
@@ -161,8 +163,7 @@ export class AIAssistantPlan {
     // CRITICAL: Inject self into messageProcessor so it calls through us, not llmManager directly
     this.messageProcessor.setAIAssistant(this);
 
-    console.log('[AIAssistantPlan.constructor] 🔵 END - AIAssistantPlan construction complete');
-    console.log('[AIAssistantPlan.constructor] initialized flag:', this.initialized);
+    MessageBus.send('debug', 'AIAssistantPlan construction complete');
   }
 
   /**
@@ -236,14 +237,11 @@ export class AIAssistantPlan {
    * Performs two-phase initialization to resolve circular dependencies
    */
   async init(): Promise<void> {
-    console.log('[AIAssistantPlan.init] 🟢 START - Initialization called');
-    console.log('[AIAssistantPlan.init] initialized flag before check:', this.initialized);
     if (this.initialized) {
-      console.log('[AIAssistantPlan.init] ⚠️ Already initialized - returning early');
       return;
     }
 
-    console.log('[AIAssistantPlan.init] Proceeding with initialization...');
+    MessageBus.send('log', 'Initializing...');
 
     try {
       // Phase 2: Resolve circular dependencies via setters
@@ -258,15 +256,14 @@ export class AIAssistantPlan {
 
       // Get available models from LLM manager
       const models: LLMModelInfo[] = await this.deps.llmManager?.getAvailableModels() || [];
-      console.log(`[AIAssistantPlan] Found ${models.length} available models`);
+      MessageBus.send('debug', `Found ${models.length} available models`);
 
       // Load existing AI and LLM Persons from storage
       const { aiCount, llmCount } = await this.aiManager.loadExisting();
-      console.log(`[AIAssistantPlan] Loaded ${aiCount} AI Persons, ${llmCount} LLM Persons`);
+      MessageBus.send('debug', `Loaded ${aiCount} AI Persons, ${llmCount} LLM Persons`);
 
       // Set available models in message processor
       this.messageProcessor.setAvailableLLMModels(models);
-      console.log(`[AIAssistantPlan] Updated message processor with ${models.length} models`);
 
       // Load saved default model from persistence FIRST (don't gate on models.length)
       // FIX: The default model ID is stored in AISettings, independent of model availability.
@@ -275,48 +272,37 @@ export class AIAssistantPlan {
       const savedDefaultModel = await this._loadDefaultModelFromPersistence(models);
 
       if (savedDefaultModel) {
-        console.log(`[AIAssistantPlan] Found persisted default model: ${savedDefaultModel}`);
+        MessageBus.send('debug', `Found persisted default model: ${savedDefaultModel}`);
 
         // Set as default immediately - trust the persistence
         this.topicManager.setDefaultModel(savedDefaultModel);
-        console.log(`[AIAssistantPlan] Restored saved default model: ${savedDefaultModel}`);
 
         // Ensure AI/LLM Persons exist (single source of truth - don't duplicate createLLM/createAI logic)
         await this.ensureAIForModel(savedDefaultModel);
 
         // Ensure topics exist and AI participants are in groups
         await this.createDefaultChats();
-        console.log(`[AIAssistantPlan] Ensured default chats have AI participants and are registered`);
       }
 
       // Auto-select first available model on first run (when no saved default exists)
-      console.log('[AIAssistantPlan.init] 🔍 Checking for auto-select...');
-      console.log('[AIAssistantPlan.init] Current default model:', this.topicManager.getDefaultModel() || 'NONE');
-      console.log('[AIAssistantPlan.init] Available models count:', models.length);
       if (!this.topicManager.getDefaultModel() && models.length > 0) {
         const firstModel = models[0];
-        console.log(`[AIAssistantPlan.init] 🚀 Auto-selecting first available model: ${firstModel.id}`);
+        MessageBus.send('debug', `Auto-selecting first available model: ${firstModel.id}`);
         await this.setDefaultModel(firstModel.id);
-        console.log(`[AIAssistantPlan.init] ✅ Auto-select completed`);
-      } else {
-        console.log('[AIAssistantPlan.init] ⏭️ Skipping auto-select (default exists or no models)');
       }
 
       const finalDefaultModel = this.topicManager.getDefaultModel();
       if (finalDefaultModel) {
-        console.log(`[AIAssistantPlan.init] Default model configured: ${finalDefaultModel}`);
-      } else {
-        console.log(`[AIAssistantPlan.init] No default model set - user will be prompted to select one`);
+        MessageBus.send('debug', `Default model configured: ${finalDefaultModel}`);
       }
 
       // Note: Scan is NOT called here because ChannelManager hasn't loaded channels yet
       // The scan will be called by AIModule AFTER ChannelManager.init() via ModuleRegistry
 
       this.initialized = true;
-      console.log('[AIAssistantPlan.init] 🟢 END - Initialization complete');
-      console.log('[AIAssistantPlan.init] initialized flag after:', this.initialized);
+      MessageBus.send('log', 'Initialized successfully');
     } catch (error) {
-      console.error('[AIAssistantPlan] Initialization failed:', error);
+      MessageBus.send('error', 'Initialization failed:', error);
       throw error;
     }
   }
@@ -326,16 +312,12 @@ export class AIAssistantPlan {
    * Called when user selects a default model
    */
   private async createDefaultChats(): Promise<void> {
-    console.log('[AIAssistantPlan.createDefaultChats] 🟢 START - Creating default AI chats');
-
     const defaultModel = this.topicManager.getDefaultModel();
-    console.log(`[AIAssistantPlan.createDefaultChats] Default model check:`, defaultModel || 'NONE');
     if (!defaultModel) {
-      console.error('[AIAssistantPlan.createDefaultChats] ❌ No default model set - cannot create chats');
       throw new Error('Cannot create default chats - no default model set');
     }
 
-    console.log(`[AIAssistantPlan.createDefaultChats] Using default model: ${defaultModel}`);
+    MessageBus.send('debug', `Creating default chats with model: ${defaultModel}`);
 
     await this.topicManager.ensureDefaultChats(
       this.aiManager,
@@ -348,14 +330,13 @@ export class AIAssistantPlan {
     // Refresh message processor's model list after chat creation
     const updatedModels: LLMModelInfo[] = await this.deps.llmManager?.getAvailableModels() || [];
     this.messageProcessor.setAvailableLLMModels(updatedModels);
-    console.log(`[AIAssistantPlan.createDefaultChats] 🟢 END - Default chats created with ${updatedModels.length} models`);
   }
 
   /**
    * Scan existing conversations for AI participants and register them
    */
   async scanExistingConversations(): Promise<number> {
-    console.log('[AIAssistantPlan] Scanning existing conversations...');
+    MessageBus.send('debug', 'Scanning existing conversations...');
     const count = await this.topicManager.scanExistingConversations(this.aiManager);
     return count;
   }
@@ -403,7 +384,7 @@ export class AIAssistantPlan {
 
       return llmId.replace(/^llm:/, ''); // Strip llm: prefix
     } catch (error) {
-      console.error(`[AIAssistantPlan] Failed to resolve model ID for topic ${topicId}:`, error);
+      MessageBus.send('error', `Failed to resolve model ID for topic ${topicId}:`, error);
       return null;
     }
   }
@@ -421,9 +402,7 @@ export class AIAssistantPlan {
    * The AITopicManager registry is the source of truth - if the topic isn't registered, it doesn't have AI.
    */
   async topicHasLLMParticipant(topicId: string): Promise<boolean> {
-    const isRegistered = this.topicManager.isAITopic(topicId);
-    console.log(`[AIAssistantPlan.topicHasLLMParticipant] Topic ${topicId} registered: ${isRegistered}`);
-    return isRegistered;
+    return this.topicManager.isAITopic(topicId);
   }
 
   /**
@@ -448,37 +427,41 @@ export class AIAssistantPlan {
   /**
    * Ensure an AI Person exists for a specific model
    * Creates both LLM Person and AI Person with delegation
+   * @param modelId - The model ID (e.g., 'gpt-oss:20b')
+   * @param customName - Optional custom display name for the AI (e.g., 'frieda')
+   * @param customEmail - Optional custom email for the AI (e.g., 'frieda@ai.local')
    */
-  async ensureAIForModel(modelId: string): Promise<SHA256IdHash<Person>> {
+  async ensureAIForModel(modelId: string, customName?: string, customEmail?: string): Promise<SHA256IdHash<Person>> {
     // Try to find model info from storage
     const models = await this.deps.llmManager?.getAvailableModels() || [];
     const model = models.find((m: any) => m.id === modelId);
 
-    // Use model info if found, otherwise derive from modelId
+    // Use custom name if provided, otherwise use model info or derive from modelId
     // Models may not be in storage yet (e.g., fresh install with Ollama models)
-    const displayName = model?.displayName || model?.name || modelId;
+    const displayName = customName || model?.displayName || model?.name || modelId;
     const provider = model?.provider || (modelId.includes('claude') ? 'claude' : 'ollama');
 
     // Create LLM Profile if doesn't exist (keep detailed name for LLM)
     // createLLM returns the Profile idHash directly
-    console.log(`[AIAssistantPlan] Calling createLLM with: modelId="${modelId}", name="${displayName}", provider="${provider}"`);
-    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
-    console.log(`[AIAssistantPlan] createLLM returned: ${llmProfileId ? llmProfileId.toString().substring(0, 16) + '...' : 'UNDEFINED'}`);
+    // Pass customEmail to allow multiple Persons using the same model
+    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider, undefined, undefined, customEmail);
 
     if (!llmProfileId) {
       throw new Error(`[AIAssistantPlan] createLLM returned undefined for model: ${modelId}`);
     }
 
     // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
-    const familyName = this._extractModelFamily(modelId);
+    // Use custom name if provided
+    const familyName = customName || this._extractModelFamily(modelId);
 
     // Create AI Person if doesn't exist (use family name, not full model name)
-    const aiId = `started-as-${modelId}`;
+    // Use custom email in the ID to make it unique when user specifies custom name
+    const aiId = customEmail ? `ai-${customEmail.replace('@', '-at-')}` : `started-as-${modelId}`;
     let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
     if (!aiPersonId) {
       // AIManager.createAI() returns Person idHash directly
       aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
-      console.log(`[AIAssistantPlan] Created AI Person: ${aiId} (display name: ${familyName})`);
+      MessageBus.send('debug', `Created AI Person: ${aiId} (${familyName})`);
     }
 
     return aiPersonId;
@@ -487,9 +470,12 @@ export class AIAssistantPlan {
   /**
    * Set the default AI model and create default chats
    * Called when user selects a model in ModelOnboarding
+   * @param modelId - The model ID
+   * @param displayName - Optional custom display name for the AI contact
+   * @param email - Optional custom email for the AI contact
    */
-  async setDefaultModel(modelId: string): Promise<void> {
-    console.log(`[AIAssistantPlan.setDefaultModel] 🟢 START - Setting default model: ${modelId}`);
+  async setDefaultModel(modelId: string, displayName?: string, email?: string): Promise<void> {
+    MessageBus.send('debug', `Setting default model: ${modelId}`);
 
     // Set as default immediately - topicManager uses modelId directly
     this.topicManager.setDefaultModel(modelId);
@@ -501,20 +487,17 @@ export class AIAssistantPlan {
 
     // CRITICAL: Ensure AI and LLM Persons exist before creating chats
     // This sets up the delegation chain needed for welcome message generation
-    console.log(`[AIAssistantPlan] Ensuring AI Person exists for model: ${modelId}`);
-    await this.ensureAIForModel(modelId);
+    await this.ensureAIForModel(modelId, displayName, email);
 
     // Wait for topics to be created so they appear in conversation list immediately
     // (Welcome messages still generate in background via callbacks)
     try {
-      console.log(`[AIAssistantPlan.setDefaultModel] 🚀 Calling createDefaultChats()...`);
       await this.createDefaultChats();
-      console.log(`[AIAssistantPlan.setDefaultModel] ✅ createDefaultChats() completed`);
     } catch (err) {
-      console.error('[AIAssistantPlan.setDefaultModel] ❌ createDefaultChats() failed:', err);
+      MessageBus.send('error', 'createDefaultChats failed:', err);
     }
 
-    console.log(`[AIAssistantPlan.setDefaultModel] 🟢 END - Default model set: ${modelId}`);
+    MessageBus.send('log', `Default model set: ${modelId}`);
   }
 
   /**
@@ -522,7 +505,7 @@ export class AIAssistantPlan {
    * Keeps the same AI Person (conversation identity) but changes which LLM it delegates to
    */
   async switchTopicModel(topicId: string, modelId: string): Promise<void> {
-    console.log(`[AIAssistantPlan] Switching topic ${topicId} to LLM model ${modelId}`);
+    MessageBus.send('debug', `Switching topic ${topicId} to LLM model ${modelId}`);
 
     // Verify topic is an AI topic
     if (!this.topicManager.isAITopic(topicId)) {
@@ -558,7 +541,7 @@ export class AIAssistantPlan {
     // Update the AI's delegation to point to the new LLM Profile
     await this.aiManager.setAIDelegation(aiId.replace('ai:', ''), llmProfileId);
 
-    console.log(`[AIAssistantPlan] ✅ Topic ${topicId} AI ${aiId} now delegates to LLM Profile ${modelId}`);
+    MessageBus.send('debug', `Topic ${topicId} now delegates to ${modelId}`);
   }
 
   /**
@@ -589,7 +572,7 @@ export class AIAssistantPlan {
    * @param newName - New display name
    */
   async renameAIChat(topicId: string, newName: string): Promise<void> {
-    console.log(`[AIAssistantPlan] Renaming AI chat: ${topicId} → ${newName}`);
+    MessageBus.send('debug', `Renaming AI chat: ${topicId} → ${newName}`);
 
     // Get the AI Person for this topic
     const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
@@ -606,8 +589,6 @@ export class AIAssistantPlan {
     // Rename the AI (creates new Person/Profile, preserves old as past identity)
     const aiIdWithoutPrefix = aiId.replace(/^ai:/, '');
     await this.aiManager.renameAI(aiIdWithoutPrefix, newName);
-
-    console.log(`[AIAssistantPlan] ✅ AI chat renamed: ${topicId}`);
   }
 
   /**
@@ -730,7 +711,7 @@ export class AIAssistantPlan {
 
     const startTime = Date.now();
     const topicId = options?.topicId;
-    console.log(`[AIAssistantPlan] chatWithAnalysis (THREE-PHASE NON-BLOCKING) starting for model: ${modelId}, topicId: ${topicId || 'none'}`);
+    MessageBus.send('debug', `chatWithAnalysis starting for model: ${modelId}, topicId: ${topicId || 'none'}`);
 
     // Read maxTokens from user settings
     const maxTokens = await this.getResponseLength();
@@ -752,7 +733,6 @@ export class AIAssistantPlan {
     // ═══════════════════════════════════════════════════════════════════
 
     // ✅ PHASE 0: Tool evaluation and context gathering
-    console.log('[AIAssistantPlan] 🔧 PHASE 0: Evaluating MCP tools...');
     options?.onProgress?.('Analyzing context...');
 
     let toolResults: string | null = null;
@@ -764,7 +744,6 @@ export class AIAssistantPlan {
     if (hasMCPTools && topicId) {
       try {
         options?.onProgress?.('Checking recent subjects...');
-        console.log('[AIAssistantPlan] Phase 0: Calling LLM to determine tool usage...');
 
         // Call LLM to determine if tools should be used and which ones
         // This uses the normal chat flow which includes tool processing
@@ -780,10 +759,6 @@ export class AIAssistantPlan {
           if ('_toolResults' in toolEvalResponse) {
             toolResults = (toolEvalResponse as any)._toolResults;
             options?.onProgress?.('Context gathered successfully');
-            console.log('[AIAssistantPlan] Phase 0: Tool results collected');
-          } else if ('content' in toolEvalResponse) {
-            // Response has content but no tool results - that's fine
-            console.log('[AIAssistantPlan] Phase 0: No tools needed for this request');
           }
         }
 
@@ -799,18 +774,15 @@ export class AIAssistantPlan {
         }
 
         const phase0Time = Date.now() - startTime;
-        console.log(`[AIAssistantPlan] ✅ PHASE 0 complete (${phase0Time}ms)${toolResults ? ' - context gathered' : ' - no tools needed'}`);
+        MessageBus.send('debug', `Phase 0 complete (${phase0Time}ms)${toolResults ? ' - context gathered' : ''}`);
       } catch (error) {
-        console.error('[AIAssistantPlan] ⚠️  PHASE 0 tool evaluation failed:', error);
+        MessageBus.send('alert', 'Phase 0 tool evaluation failed:', error);
         options?.onProgress?.('Continuing without additional context...');
         // Continue to Phase 1 anyway - don't block on tool failures
       }
-    } else {
-      console.log('[AIAssistantPlan] Phase 0: Skipping (no MCP tools available or no topicId)');
     }
 
     // ✅ PHASE 1: Start streaming (DON'T AWAIT - non-blocking)
-    console.log('[AIAssistantPlan] 📡 PHASE 1: Starting non-blocking stream...');
     options?.onProgress?.('Generating response...');
 
     const responsePromise = this.deps.llmManager.chat(enhancedHistory, modelId, {
@@ -825,7 +797,7 @@ export class AIAssistantPlan {
     // ✅ Background: Chain Phase 2 after Phase 1 completes
     responsePromise.then(async (response) => {
       const phase1Time = Date.now() - startTime;
-      console.log(`[AIAssistantPlan] ✅ PHASE 1 complete (${phase1Time}ms) - context cached`);
+      MessageBus.send('debug', `Phase 1 complete (${phase1Time}ms)`);
 
       // Extract actual response content and thinking
       let actualResponse = '';
@@ -841,7 +813,6 @@ export class AIAssistantPlan {
 
       // ✅ PHASE 2: Run analytics with cached context (if topicId provided)
       if (topicId && options?.onAnalysis) {
-        console.log('[AIAssistantPlan] 🔍 PHASE 2: Running analytics with cached context...');
 
         try {
           // Import Phase 2 analytics prompt (JSON structured output)
@@ -872,8 +843,6 @@ export class AIAssistantPlan {
               : JSON.stringify(analyticsResponse);
 
           const parsedAnalysis = JSON.parse(jsonResponse);
-          console.log('[AIAssistantPlan] PHASE 2 raw response:', jsonResponse);
-          console.log('[AIAssistantPlan] PHASE 2 parsed:', parsedAnalysis);
 
           analysis = {
             keywords: parsedAnalysis.keywords || [],
@@ -881,28 +850,23 @@ export class AIAssistantPlan {
           };
 
           const totalTime = Date.now() - startTime;
-          console.log(`[AIAssistantPlan] ✅ PHASE 2 complete (${totalTime}ms total) - keywords: ${analysis.keywords.length}`);
+          MessageBus.send('debug', `Phase 2 complete (${totalTime}ms) - keywords: ${analysis.keywords.length}`);
 
           // ✅ Deliver analysis to UI via callback
           options.onAnalysis(analysis);
 
         } catch (error) {
-          console.error('[AIAssistantPlan] ⚠️  PHASE 2 analytics failed:', error);
+          MessageBus.send('alert', 'Phase 2 analytics failed:', error);
           // Deliver empty analysis on error
           analysis = { keywords: [] };
           if (options.onAnalysis) {
             options.onAnalysis(analysis);
           }
         }
-      } else if (!topicId) {
-        console.log('[AIAssistantPlan] ⚠️  No topicId - skipping Phase 2 analytics');
-      } else if (!options?.onAnalysis) {
-        console.log('[AIAssistantPlan] ⚠️  No onAnalysis callback - skipping Phase 2 analytics');
       }
 
       // ✅ COMPLETION: Call onComplete with consolidated state (response + thinking + analysis)
       if (options?.onComplete) {
-        console.log('[AIAssistantPlan] 🎯 Calling onComplete with consolidated state');
         options.onComplete({
           response: actualResponse,
           thinking,
@@ -910,12 +874,11 @@ export class AIAssistantPlan {
         });
       }
     }).catch(error => {
-      console.error('[AIAssistantPlan] ❌ PHASE 1 failed:', error);
+      MessageBus.send('error', 'Phase 1 failed:', error);
       // Phase 1 failed - can't run Phase 2
     });
 
     // ✅ Return immediately - streaming already started
-    console.log(`[AIAssistantPlan] ⚡ Returning immediately (non-blocking) - streaming in progress`);
     return {
       streaming: true,
       topicId
@@ -928,7 +891,7 @@ export class AIAssistantPlan {
    */
   async setResponseLength(maxTokens: number): Promise<void> {
     await this.deps.aiSettingsManager.updateSettings({ maxTokens });
-    console.log(`[AIAssistantPlan] Response length set to ${maxTokens} tokens`);
+    MessageBus.send('debug', `Response length set to ${maxTokens} tokens`);
   }
 
   /**
@@ -944,7 +907,7 @@ export class AIAssistantPlan {
    * Shutdown the AI plan and clean up resources
    */
   async shutdown(): Promise<void> {
-    console.log('[AIAssistantPlan] Shutting down...');
+    MessageBus.send('log', 'Shutting down...');
     this.initialized = false;
   }
 

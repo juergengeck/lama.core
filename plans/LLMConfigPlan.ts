@@ -8,7 +8,10 @@
 
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 import { generateSystemPromptForModel } from '../constants/system-prompts.js';
+
+const MessageBus = createMessageBus('LLMConfigPlan');
 import { getModelProvider, modelRequiresApiKey } from '../constants/model-registry.js';
 
 // Re-export types for convenience
@@ -138,7 +141,7 @@ export class LLMConfigPlan {
         errorCode: result.errorCode,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Test connection error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Test connection error:', error);
       return {
         success: false,
         error: error.message || 'Connection test failed',
@@ -162,7 +165,7 @@ export class LLMConfigPlan {
       const connectionResult = await this.testOllamaConnection(server, request.authToken, request.serviceName);
 
       if (!connectionResult.success) {
-        console.warn('[LLMConfigPlan] Connection test failed:', connectionResult.error);
+        MessageBus.send('alert', '[LLMConfigPlan] Connection test failed:', connectionResult.error);
         return {
           success: false,
           error: connectionResult.error || 'Connection failed',
@@ -171,10 +174,10 @@ export class LLMConfigPlan {
       }
 
       // Fetch models directly from the tested server
-      console.log('[LLMConfigPlan] Connection successful, fetching models from:', server);
+      MessageBus.send('debug', '[LLMConfigPlan] Connection successful, fetching models from:', server);
       const models = await this.fetchOllamaModels(server, request.authToken);
 
-      console.log(`[LLMConfigPlan] Fetched ${models.length} models from ${request.server}`);
+      MessageBus.send('debug', `[LLMConfigPlan] Fetched ${models.length} models from ${request.server}`);
 
       return {
         success: true,
@@ -190,7 +193,7 @@ export class LLMConfigPlan {
         })),
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Test connection and discover models failed:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Test connection and discover models failed:', error);
       return {
         success: false,
         error: error.message || 'Failed to discover models',
@@ -203,8 +206,8 @@ export class LLMConfigPlan {
    * Save Ollama configuration to ONE.core storage
    */
   async setConfig(request: SetOllamaConfigRequest): Promise<SetOllamaConfigResponse> {
-    console.log('[LLMConfigPlan.setConfig] 🟢 START - Saving config');
-    console.log('[LLMConfigPlan.setConfig] Request:', {
+    MessageBus.send('debug', '[LLMConfigPlan.setConfig] 🟢 START - Saving config');
+    MessageBus.send('debug', '[LLMConfigPlan.setConfig] Request:', {
       modelType: request.modelType,
       server: request.server,
       modelName: request.modelName,
@@ -212,8 +215,8 @@ export class LLMConfigPlan {
       hasApiKey: !!request.apiKey,
       hasAuthToken: !!request.authToken
     });
-    console.log('[LLMConfigPlan.setConfig] setAsActive =', request.setAsActive);
-    console.log('[LLMConfigPlan.setConfig] aiAssistantModel exists?', this.nodeOneCore.aiAssistantModel ? 'YES' : 'NO');
+    MessageBus.send('debug', '[LLMConfigPlan.setConfig] setAsActive =', request.setAsActive);
+    MessageBus.send('debug', '[LLMConfigPlan.setConfig] aiAssistantModel exists?', this.nodeOneCore.aiAssistantModel ? 'YES' : 'NO');
 
     try {
       // Check if model requires API key (cloud provider)
@@ -254,7 +257,7 @@ export class LLMConfigPlan {
         try {
           const settingsKey = `llm.${request.modelName}.authToken`;
           await this.settings.setValue(settingsKey, request.authToken);
-          console.log(`[LLMConfigPlan] Stored auth token in settings (encrypted by ONE.core): ${settingsKey}`);
+          MessageBus.send('debug', `[LLMConfigPlan] Stored auth token in settings (encrypted by ONE.core): ${settingsKey}`);
         } catch (error: any) {
           return {
             success: false,
@@ -269,14 +272,14 @@ export class LLMConfigPlan {
         try {
           const settingsKey = `llm.${request.modelName}.apiKey`;
           await this.settings.setValue(settingsKey, request.apiKey);
-          console.log(`[LLMConfigPlan] Stored API key in settings (encrypted by ONE.core): ${settingsKey}`);
+          MessageBus.send('debug', `[LLMConfigPlan] Stored API key in settings (encrypted by ONE.core): ${settingsKey}`);
 
           // Initialize LLMManager now that we have an API key
           // This will discover models from the provider (Claude, OpenAI, etc.)
           // Use force=true to re-discover models even if already initialized
-          console.log('[LLMConfigPlan] API key stored, re-initializing LLMManager to discover cloud models...');
+          MessageBus.send('debug', '[LLMConfigPlan] API key stored, re-initializing LLMManager to discover cloud models...');
           await this.llmManager.init(true);
-          console.log('[LLMConfigPlan] ✅ LLMManager re-initialized with cloud models');
+          MessageBus.send('debug', '[LLMConfigPlan] ✅ LLMManager re-initialized with cloud models');
         } catch (error: any) {
           return {
             success: false,
@@ -299,9 +302,9 @@ export class LLMConfigPlan {
         const personId = aiManager.getPersonId(`llm:${request.modelName}`);
         if (personId) {
           llmPersonId = String(personId);
-          console.log(`[LLMConfigPlan] LLM Person ID for ${request.modelName}:`, llmPersonId.substring(0, 8));
+          MessageBus.send('debug', `[LLMConfigPlan] LLM Person ID for ${request.modelName}:`, llmPersonId.substring(0, 8));
         } else {
-          console.error(`[LLMConfigPlan] Failed to get Person ID after createLLM for ${request.modelName}`);
+          MessageBus.send('error', `[LLMConfigPlan] Failed to get Person ID after createLLM for ${request.modelName}`);
         }
       }
 
@@ -343,33 +346,33 @@ export class LLMConfigPlan {
 
       const result = await storeVersionedObject(llmObject);
       const hash = typeof result === 'string' ? result : result.idHash;
-      console.log('[LLMConfigPlan] Stored LLM config with hash:', hash);
+      MessageBus.send('debug', '[LLMConfigPlan] Stored LLM config with hash:', hash);
 
       // Post to channel so it can be retrieved later
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
-      console.log('[LLMConfigPlan] Posted LLM config to lama channel');
+      MessageBus.send('debug', '[LLMConfigPlan] Posted LLM config to lama channel');
 
       // If setting as active, set it as the default model in AIAssistantPlan
       // Access aiAssistantModel dynamically from nodeOneCore to avoid initialization order issues
-      console.log('[LLMConfigPlan.setConfig] 🔍 Checking if should set as default...');
-      console.log('[LLMConfigPlan.setConfig] Condition check: setAsActive=', request.setAsActive, 'aiAssistantModel exists=', !!this.nodeOneCore.aiAssistantModel);
+      MessageBus.send('debug', '[LLMConfigPlan.setConfig] 🔍 Checking if should set as default...');
+      MessageBus.send('debug', '[LLMConfigPlan.setConfig] Condition check: setAsActive=', request.setAsActive, 'aiAssistantModel exists=', !!this.nodeOneCore.aiAssistantModel);
       if (request.setAsActive && this.nodeOneCore.aiAssistantModel) {
-        console.log(`[LLMConfigPlan.setConfig] 🚀 Calling aiAssistantModel.setDefaultModel(${request.modelName})...`);
+        MessageBus.send('debug', `[LLMConfigPlan.setConfig] 🚀 Calling aiAssistantModel.setDefaultModel(${request.modelName})...`);
         await this.nodeOneCore.aiAssistantModel.setDefaultModel(request.modelName);
-        console.log(`[LLMConfigPlan.setConfig] ✅ setDefaultModel() completed`);
+        MessageBus.send('debug', `[LLMConfigPlan.setConfig] ✅ setDefaultModel() completed`);
       } else if (request.setAsActive) {
-        console.error('[LLMConfigPlan.setConfig] ❌ Cannot set default model - aiAssistantModel not yet initialized');
+        MessageBus.send('error', '[LLMConfigPlan.setConfig] ❌ Cannot set default model - aiAssistantModel not yet initialized');
       } else {
-        console.log('[LLMConfigPlan.setConfig] ⏭️ Skipping setDefaultModel (setAsActive=false)');
+        MessageBus.send('debug', '[LLMConfigPlan.setConfig] ⏭️ Skipping setDefaultModel (setAsActive=false)');
       }
 
-      console.log('[LLMConfigPlan.setConfig] 🟢 END - Config saved successfully');
+      MessageBus.send('debug', '[LLMConfigPlan.setConfig] 🟢 END - Config saved successfully');
       return {
         success: true,
         configHash: hash,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan.setConfig] ❌ ERROR - Failed to save config:', error);
+      MessageBus.send('error', '[LLMConfigPlan.setConfig] ❌ ERROR - Failed to save config:', error);
       return {
         success: false,
         error: error.message || 'Failed to save configuration',
@@ -382,7 +385,7 @@ export class LLMConfigPlan {
    * Retrieve current active Ollama configuration
    */
   async getConfig(request: GetOllamaConfigRequest): Promise<GetOllamaConfigResponse> {
-    console.log('[LLMConfigPlan] Retrieving config, includeInactive:', request.includeInactive);
+    MessageBus.send('debug', '[LLMConfigPlan] Retrieving config, includeInactive:', request.includeInactive);
 
     try {
       if (!this.nodeOneCore || !this.nodeOneCore.channelManager) {
@@ -406,7 +409,7 @@ export class LLMConfigPlan {
           }
         }
       } catch (iterError: any) {
-        console.log('[LLMConfigPlan] No LLM objects found:', iterError.message);
+        MessageBus.send('debug', '[LLMConfigPlan] No LLM objects found:', iterError.message);
       }
 
       // Filter for active config (or all if includeInactive)
@@ -439,7 +442,7 @@ export class LLMConfigPlan {
         },
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Get config error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Get config error:', error);
       return {
         success: false,
         error: error.message || 'Failed to retrieve configuration',
@@ -454,7 +457,7 @@ export class LLMConfigPlan {
   async getAvailableModels(request?: GetAvailableModelsRequest): Promise<GetAvailableModelsResponse> {
     // Handle undefined request - use empty object to fetch from active config
     const req = request || {};
-    console.log('[LLMConfigPlan] Get available models:', req);
+    MessageBus.send('debug', '[LLMConfigPlan] Get available models:', req);
 
     try {
       let server: string;
@@ -494,7 +497,7 @@ export class LLMConfigPlan {
         source,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Get available models error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Get available models error:', error);
 
       // Determine error code based on error message
       let errorCode: any = 'NETWORK_ERROR';
@@ -516,7 +519,7 @@ export class LLMConfigPlan {
    * Soft-delete an Ollama configuration
    */
   async deleteConfig(request: DeleteOllamaConfigRequest): Promise<DeleteOllamaConfigResponse> {
-    console.log('[LLMConfigPlan] Deleting config:', request.configHash);
+    MessageBus.send('debug', '[LLMConfigPlan] Deleting config:', request.configHash);
 
     try {
       if (!this.nodeOneCore) {
@@ -566,14 +569,14 @@ export class LLMConfigPlan {
       // Update in storage
       await storeVersionedObject(llmObject);
 
-      console.log('[LLMConfigPlan] Deleted config:', request.configHash);
+      MessageBus.send('debug', '[LLMConfigPlan] Deleted config:', request.configHash);
 
       return {
         success: true,
         deletedHash: request.configHash,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Delete config error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Delete config error:', error);
       return {
         success: false,
         error: error.message || 'Failed to delete configuration',
@@ -586,11 +589,11 @@ export class LLMConfigPlan {
    * Get all LLM configurations
    */
   async getAllConfigs(): Promise<any[]> {
-    console.log('[LLMConfigPlan] Getting all LLM configs');
+    MessageBus.send('debug', '[LLMConfigPlan] Getting all LLM configs');
 
     try {
       if (!this.nodeOneCore) {
-        console.warn('[LLMConfigPlan] ONE.core not initialized');
+        MessageBus.send('alert', '[LLMConfigPlan] ONE.core not initialized');
         return [];
       }
 
@@ -605,10 +608,10 @@ export class LLMConfigPlan {
         }
       }
 
-      console.log(`[LLMConfigPlan] Found ${llmObjects.length} LLM configurations`);
+      MessageBus.send('debug', `[LLMConfigPlan] Found ${llmObjects.length} LLM configurations`);
       return llmObjects;
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Get all configs error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Get all configs error:', error);
       return [];
     }
   }
@@ -624,7 +627,7 @@ export class LLMConfigPlan {
     error?: string;
     errorCode?: string;
   }> {
-    console.log('[LLMConfigPlan] Updating system prompt for LLM:', request.llmId);
+    MessageBus.send('debug', '[LLMConfigPlan] Updating system prompt for LLM:', request.llmId);
 
     try {
       if (!this.nodeOneCore) {
@@ -666,13 +669,13 @@ export class LLMConfigPlan {
       await storeVersionedObject(llmObject);
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
 
-      console.log('[LLMConfigPlan] System prompt updated successfully');
+      MessageBus.send('debug', '[LLMConfigPlan] System prompt updated successfully');
 
       return {
         success: true,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Update system prompt error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Update system prompt error:', error);
       return {
         success: false,
         error: error.message || 'Failed to update system prompt',
@@ -690,7 +693,7 @@ export class LLMConfigPlan {
     error?: string;
     errorCode?: string;
   }> {
-    console.log('[LLMConfigPlan] Regenerating system prompt for LLM:', request.llmId);
+    MessageBus.send('debug', '[LLMConfigPlan] Regenerating system prompt for LLM:', request.llmId);
 
     try {
       if (!this.nodeOneCore) {
@@ -738,14 +741,14 @@ export class LLMConfigPlan {
       await storeVersionedObject(llmObject);
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
 
-      console.log('[LLMConfigPlan] System prompt regenerated successfully');
+      MessageBus.send('debug', '[LLMConfigPlan] System prompt regenerated successfully');
 
       return {
         success: true,
         systemPrompt: newSystemPrompt,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Regenerate system prompt error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Regenerate system prompt error:', error);
       return {
         success: false,
         error: error.message || 'Failed to regenerate system prompt',
@@ -765,7 +768,7 @@ export class LLMConfigPlan {
     error?: string;
     errorCode?: string;
   }> {
-    console.log('[LLMConfigPlan] Updating API key for LLM:', request.llmId);
+    MessageBus.send('debug', '[LLMConfigPlan] Updating API key for LLM:', request.llmId);
 
     try {
       if (!this.nodeOneCore) {
@@ -799,7 +802,7 @@ export class LLMConfigPlan {
       }
 
       if (!llmObject) {
-        console.error('[LLMConfigPlan] LLM not found with hash:', request.llmId);
+        MessageBus.send('error', '[LLMConfigPlan] LLM not found with hash:', request.llmId);
         return {
           success: false,
           error: 'LLM configuration not found',
@@ -811,7 +814,7 @@ export class LLMConfigPlan {
       const settingsKey = `llm.${llmObject.modelName}.apiKey`;
       try {
         await this.settings.setValue(settingsKey, request.apiKey);
-        console.log(`[LLMConfigPlan] Updated API key in settings: ${settingsKey}`);
+        MessageBus.send('debug', `[LLMConfigPlan] Updated API key in settings: ${settingsKey}`);
       } catch (error: any) {
         return {
           success: false,
@@ -827,13 +830,13 @@ export class LLMConfigPlan {
       await storeVersionedObject(llmObject);
       await this.nodeOneCore.channelManager.postToChannel('lama', llmObject);
 
-      console.log('[LLMConfigPlan] API key updated successfully');
+      MessageBus.send('debug', '[LLMConfigPlan] API key updated successfully');
 
       return {
         success: true,
       };
     } catch (error: any) {
-      console.error('[LLMConfigPlan] Update API key error:', error);
+      MessageBus.send('error', '[LLMConfigPlan] Update API key error:', error);
       return {
         success: false,
         error: error.message || 'Failed to update API key',
