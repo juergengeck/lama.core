@@ -40,6 +40,18 @@ export const LLMRecipe = {
             },
             optional: true  // Can be inferred from provider
         },
+        // Inference locality: where the model actually runs
+        // - 'ondevice': transformers.js, runs directly in app (no server)
+        // - 'server': Ollama/LM Studio/vLLM (local or remote server)
+        // - 'cloud': Claude/OpenAI/etc (remote API)
+        {
+            itemprop: 'inferenceType',
+            itemtype: {
+                type: 'string',
+                regexp: /^(ondevice|server|cloud)$/
+            },
+            optional: true  // Defaults to 'server' for backwards compatibility
+        },
         {
             itemprop: 'active',
             itemtype: { type: 'boolean' },

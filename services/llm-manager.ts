@@ -44,6 +44,7 @@ import { SystemPromptBuilder } from './system-prompt-builder.js';
 import type { SystemPromptContext } from './system-prompt-builder.js';
 import { formatForAnthropicWithCaching, formatForStandardAPI, type PromptParts } from './context-budget-manager.js';
 import { LLMConcurrencyManager } from './llm-concurrency-manager.js';
+import { getAdapterRegistry, registerDefaultAdapters, type LLMAdapterRegistry, type LLMAdapter, type ChatResult } from './llm-adapters/index.js';
 
 /**
  * LLM connection health status
@@ -104,6 +105,9 @@ class LLMManager {
   // Ollama context cache for conversation continuation and analytics
   private ollamaContextCache: Map<string, number[]>; // topicId → context array
 
+  // Adapter registry for demand/supply pattern
+  private adapterRegistry: LLMAdapterRegistry;
+
   constructor(
     platform?: LLMPlatform,
     mcpManager?: any,
@@ -132,6 +136,10 @@ class LLMManager {
 
     // Initialize Ollama context cache
     this.ollamaContextCache = new Map()
+
+    // Initialize adapter registry and register default adapters
+    this.adapterRegistry = getAdapterRegistry()
+    registerDefaultAdapters()
 
     // Initialize system prompt builder
     this.systemPromptBuilder = new SystemPromptBuilder(
@@ -569,16 +577,38 @@ class LLMManager {
     let response
 
     try {
-      if ((model as any).provider === 'ollama') {
-        response = await this.chatWithOllama(model as any, enhancedMessages, { ...options, promptParts })
-      } else if ((model as any).provider === 'lmstudio') {
-        response = await this.chatWithLMStudio(model as any, enhancedMessages, options)
-      } else if ((model as any).provider === 'anthropic') {
-        response = await this.chatWithClaude(model as any, enhancedMessages, { ...options, promptParts })
-      } else if ((model as any).provider === 'openai') {
-        response = await this.chatWithOpenAI(model as any, enhancedMessages, { ...options, promptParts })
+      // Demand/Supply pattern: LLM object describes what it needs, adapter provides it
+      // The adapter registry selects the right adapter based on llmObject properties
+      const adapter = this.adapterRegistry.getAdapter(llmObject);
+
+      if (adapter) {
+        // Use adapter-based routing
+        const chatResult = await adapter.chat(llmObject, enhancedMessages, {
+          ...options,
+          promptParts,
+          platform: this.platform,
+          ollamaContextCache: this.ollamaContextCache
+        });
+        response = chatResult.content;
       } else {
-        throw new Error(`Unsupported provider: ${(model as any).provider}`)
+        // Fallback to legacy routing (will be removed once all adapters are registered)
+        const inferenceType = llmObject.inferenceType;
+
+        if (inferenceType === 'ondevice') {
+          response = await this.chatWithLocal(model as any, enhancedMessages, options)
+        } else if ((model as any).provider === 'ollama') {
+          response = await this.chatWithOllama(model as any, enhancedMessages, { ...options, promptParts })
+        } else if ((model as any).provider === 'lmstudio') {
+          response = await this.chatWithLMStudio(model as any, enhancedMessages, options)
+        } else if ((model as any).provider === 'anthropic') {
+          response = await this.chatWithClaude(model as any, enhancedMessages, { ...options, promptParts })
+        } else if ((model as any).provider === 'openai') {
+          response = await this.chatWithOpenAI(model as any, enhancedMessages, { ...options, promptParts })
+        } else if ((model as any).provider === 'local') {
+          response = await this.chatWithLocal(model as any, enhancedMessages, options)
+        } else {
+          throw new Error(`Unsupported provider: ${(model as any).provider}`)
+        }
       }
 
       // Mark model as healthy after successful call
@@ -1105,6 +1135,43 @@ class LLMManager {
     });
   }
 
+  /**
+   * Chat with local on-device model via platform adapter
+   * Uses transformers.js on Electron (main process) or Browser (Web Worker)
+   */
+  async chatWithLocal(model: any, messages: any, options: any = {}): Promise<any> {
+    MessageBus.send('debug', `Local chat: ${model.parameters?.modelName || model.id}, ${messages?.length || 0} msgs`);
+
+    // Platform must implement chatWithLocal
+    if (!this.platform?.chatWithLocal) {
+      throw new Error('Local model inference not supported on this platform');
+    }
+
+    // Convert messages to standard format
+    const chatMessages = messages.map((m: any) => ({
+      role: m.role as 'system' | 'user' | 'assistant',
+      content: m.content
+    }));
+
+    // Extract model ID (remove 'local:' prefix if present)
+    const modelId = model.id.replace(/^local:/, '');
+
+    try {
+      const response = await this.platform.chatWithLocal(modelId, chatMessages, {
+        onStream: options.onStream,
+        temperature: model.parameters?.temperature ?? 0.7,
+        maxTokens: model.parameters?.maxTokens ?? 2048,
+        format: options.format,
+        topicId: options.topicId
+      });
+
+      return response;
+    } catch (error: any) {
+      MessageBus.send('error', `Local chat failed: ${error.message}`);
+      throw error;
+    }
+  }
+
   async loadSettings(): Promise<any> {
     // Runtime settings only - no default model concept here
   }
@@ -1164,8 +1231,10 @@ class LLMManager {
       contextLength: llm.contextLength || 4096,
       maxTokens: llm.maxTokens || 2048,
       capabilities: llm.capabilities || [],
-      // Determine modelType: local for Ollama, remote for API-based services
-      modelType: llm.provider === 'ollama' ? 'local' : 'remote',
+      // Inference type from storage (ondevice/server/cloud)
+      inferenceType: llm.inferenceType || (llm.provider === 'ollama' ? 'server' : 'cloud'),
+      // Determine modelType for backward compat
+      modelType: llm.inferenceType === 'ondevice' ? 'ondevice' : (llm.provider === 'ollama' ? 'local' : 'remote'),
       size: llm.size, // Include size if available
       isLoaded: llm.isLoaded || false, // Include load status
       isDefault: llm.isDefault || false // Include default status
@@ -1430,6 +1499,70 @@ class LLMManager {
       MessageBus.send('error', 'Claude model discovery failed:', error);
       throw error;
     }
+  }
+
+  /**
+   * Discover and register local ONNX models (on-device inference)
+   * Called by platform layer with list of installed text-generation models
+   */
+  async discoverLocalModels(installedModels: Array<{
+    id: string;
+    name: string;
+    sizeBytes: number;
+    contextLength?: number;
+    familyName?: string;
+  }>): Promise<void> {
+    MessageBus.send('debug', `Discovering ${installedModels.length} local on-device models...`);
+
+    if (!this.channelManager) {
+      MessageBus.send('alert', 'channelManager not available - cannot store local models');
+      return;
+    }
+
+    for (const model of installedModels) {
+      try {
+        const modelId = `local:${model.id}`;
+
+        // Check if model already exists
+        const existing = await this.getLLMFromStorage(modelId);
+        if (existing) {
+          MessageBus.send('debug', `Local model already registered: ${modelId}`);
+          continue;
+        }
+
+        // Create LLM object in storage
+        const now = Date.now();
+        const nowStr = new Date().toISOString();
+        const llmObject = {
+          $type$: 'LLM',
+          modelId: modelId,
+          name: model.familyName || model.name,
+          filename: model.id,
+          provider: 'transformers',
+          description: `On-device ${model.name}`,
+          contextLength: model.contextLength || 4096,
+          maxTokens: 2048,
+          capabilities: ['chat'],
+          server: 'local', // Required isId field - 'local' for on-device
+          modelType: 'local' as const,
+          inferenceType: 'ondevice' as const,
+          size: model.sizeBytes,
+          active: true,
+          deleted: false,
+          created: now,
+          modified: now,
+          createdAt: nowStr,
+          lastUsed: nowStr
+        };
+
+        await this.channelManager.postToChannel('lama', llmObject);
+        MessageBus.send('debug', `Registered local model: ${model.name} (${modelId})`);
+      } catch (error) {
+        MessageBus.send('error', `Failed to register local model ${model.id}:`, error);
+      }
+    }
+
+    MessageBus.send('log', 'Local model discovery complete');
   }
 
   /**

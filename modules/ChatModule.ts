@@ -20,10 +20,6 @@ import type { ExportPlan } from '@chat/core/plans/ExportPlan.js';
 // Chat core models
 import TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 
-// Plan system for assembly tracking
-import { StoryFactory } from '@refinio/api/plan-system';
-import { AssemblyPlan } from '@assembly/core';
-
 /**
  * ChatModule - Chat functionality
  *
@@ -105,33 +101,16 @@ export class ChatModule implements Module {
     // ExportPlan is required - injected by platform via setDependency
     this.exportPlan = this.deps.exportPlan!;
 
-    // Initialize GroupPlan with StoryFactory for assembly tracking
-    // This enables assembly creation through the proper abstraction layers
-    console.log('[ChatModule] Initializing GroupPlan with StoryFactory and AssemblyPlan');
-
-    // Create AssemblyPlan (connects to ONE.core)
-    const assemblyPlan = new AssemblyPlan({
-      oneCore,
-      storeVersionedObject: storeVersionedObjectAdapter,
-      getObjectByIdHash,
-      getObject
-    });
-
-    // Create StoryFactory with storage function (NOT AssemblyPlan object)
-    // StoryFactory expects a function, not an object
-    const storyFactory = new StoryFactory(storeVersionedObject);
-    console.log('[ChatModule] StoryFactory created with storeVersionedObject function');
-
-    // Create GroupPlan with TopicGroupManager and StoryFactory
+    // Initialize GroupPlan (simplified - no longer needs StoryFactory)
+    // Story/Assembly tracking should be done at higher level via @refinio/api if needed
     this.groupPlan = new GroupPlan(
       this.topicGroupManager,
-      oneCore,  // oneCore
-      storyFactory as any  // Type bridge between refinio.api and chat.core StoryFactory interfaces
+      oneCore
     );
 
-    // Inject GroupPlan into ChatPlan for assembly creation
+    // Inject GroupPlan into ChatPlan
     this.chatPlan.setGroupPlan(this.groupPlan);
-    console.log('[ChatModule] GroupPlan initialized and injected into ChatPlan');
+    console.log('[ChatModule] GroupPlan initialized');
 
     console.log('[ChatModule] Initialized');
   }

@@ -122,6 +122,7 @@ declare module '@OneObjectInterfaces' {
         modelId?: string;
         filename: string;
         modelType: 'local' | 'remote';
+        inferenceType?: 'ondevice' | 'server' | 'cloud'; // Where model runs: ondevice=transformers.js, server=Ollama/LMStudio, cloud=Claude/OpenAI
         active: boolean;
         deleted: boolean;
         creator?: string;
