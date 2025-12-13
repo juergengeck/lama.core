@@ -39,8 +39,6 @@ export interface AIManagerDeps {
   trustPlan?: any;
   /** Instance idHash from ONE.core - used for Story tracking */
   instanceIdHash?: SHA256IdHash<Instance>;
-  /** Generator function to query all AI objects from storage */
-  queryAllAIObjects?: () => AsyncGenerator<AI, void, unknown>;
 }
 
 // Response type for AI creation (includes Assembly tracking)
@@ -52,6 +50,14 @@ export interface CreateAIResponse {
   storyIdHash?: string;
   assemblyIdHash?: string;
 }
+
+// AIList - tracks all AI objects for easy enumeration
+export type AIList = {
+  $type$: 'AIList';
+  id: string;  // Fixed: 'ai-list'
+  aiIds: Set<SHA256IdHash<AI>>;
+  modified: number;
+};
 
 // AI object - persistent identity with optional LLM override
 export type AI = {
@@ -66,6 +72,8 @@ export type AI = {
   modified: number;
   active: boolean;
   deleted: boolean;
+  /** AI personality configuration */
+  personality?: AIPersonality;
 };
 
 // LLM object - standalone configuration (no Person/Profile/Someone)
@@ -84,6 +92,26 @@ export type LLM = {
   createdAt: string;
   lastUsed: string;
 };
+
+/**
+ * AI personality configuration
+ * Combines birth context (auto-generated) with user customization
+ */
+export interface AIPersonality {
+  /** Context from AI birth experience */
+  birthContext?: {
+    device: string;
+    locale: string;
+    time: number;
+    app: string;
+  };
+
+  /** Personality traits (e.g., ["curious", "concise"]) */
+  traits?: string[];
+
+  /** User-defined prompt addition */
+  systemPromptAddition?: string;
+}
 
 export class AIManager {
   // Plan constants for Assembly tracking
@@ -108,6 +136,68 @@ export class AIManager {
     this.aiByPerson = new Map();
     this.llmByModelId = new Map();
   }
+
+  // ==================== AIList Management ====================
+
+  private static readonly AI_LIST_ID = 'ai-list';
+
+  /**
+   * Get or create the AIList singleton
+   */
+  private async getOrCreateAIList(): Promise<AIList> {
+    try {
+      // Calculate proper idHash from ID properties
+      // CRITICAL: getObjectByIdHash expects SHA256IdHash, not a string literal
+      const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+      const aiListIdHash = await calculateIdHashOfObj({ $type$: 'AIList', id: AIManager.AI_LIST_ID } as any);
+
+      // Try to get existing AIList
+      const result = await this.deps.getObjectByIdHash(aiListIdHash);
+      if (result?.obj && result.obj.$type$ === 'AIList') {
+        console.log(`[AIManager] Found existing AIList with ${result.obj.aiIds?.size || 0} AIs`);
+        return result.obj as AIList;
+      }
+    } catch (error) {
+      // AIList doesn't exist yet, create it
+      console.log('[AIManager] AIList not found, creating new one');
+    }
+
+    // Create new AIList
+    const aiList: AIList = {
+      $type$: 'AIList',
+      id: AIManager.AI_LIST_ID,
+      aiIds: new Set(),
+      modified: Date.now()
+    };
+
+    await this.deps.storeVersionedObject(aiList);
+    console.log('[AIManager] Created new AIList');
+    return aiList;
+  }
+
+  /**
+   * Add an AI to the AIList
+   */
+  private async addToAIList(aiIdHash: SHA256IdHash<AI>): Promise<void> {
+    const aiList = await this.getOrCreateAIList();
+    aiList.aiIds.add(aiIdHash);
+    aiList.modified = Date.now();
+    await this.deps.storeVersionedObject(aiList);
+    console.log(`[AIManager] Added AI ${aiIdHash.toString().substring(0, 8)}... to AIList (total: ${aiList.aiIds.size})`);
+  }
+
+  /**
+   * Remove an AI from the AIList
+   */
+  private async removeFromAIList(aiIdHash: SHA256IdHash<AI>): Promise<void> {
+    const aiList = await this.getOrCreateAIList();
+    aiList.aiIds.delete(aiIdHash);
+    aiList.modified = Date.now();
+    await this.deps.storeVersionedObject(aiList);
+    console.log(`[AIManager] Removed AI ${aiIdHash.toString().substring(0, 8)}... from AIList`);
+  }
+
+  // ==================== Plan Registration ====================
 
   /**
    * Register the Plan ONE object with StoryFactory.
@@ -235,7 +325,11 @@ export class AIManager {
         deleted: false
       };
 
-      await this.deps.storeVersionedObject(aiObject);
+      const aiResult: any = await this.deps.storeVersionedObject(aiObject);
+      const aiIdHash = ensureIdHash(typeof aiResult === 'object' && aiResult?.idHash ? aiResult.idHash : aiResult);
+
+      // Add to AIList for easy enumeration on reload
+      await this.addToAIList(aiIdHash as SHA256IdHash<AI>);
 
       // Store in lookup table
       this.aiByPerson.set(personIdHash, aiObject);
@@ -468,6 +562,16 @@ export class AIManager {
   getLLMIdForAI(aiPersonId: SHA256IdHash<Person>): SHA256IdHash<LLM> | null {
     const ai = this.aiByPerson.get(aiPersonId);
     return ai?.llmId || null;
+  }
+
+  /**
+   * Alias for getLLMIdForAI - used by AIPromptBuilder
+   */
+  async getLLMId(aiPersonId: SHA256IdHash<Person>): Promise<string | null> {
+    // Return modelId (the string identifier) rather than llmId (the hash)
+    // This is what AIPromptBuilder needs to resolve the model
+    const ai = this.aiByPerson.get(aiPersonId);
+    return ai?.modelId || null;
   }
 
   /**
@@ -773,7 +877,7 @@ export class AIManager {
    * Load existing AI and LLM objects from storage
    *
    * AI objects are stored in ONE.core and linked to Person/Profile/Someone.
-   * The aiByPerson map is populated from AI objects directly, not from contact prefixes.
+   * The aiByPerson map is populated from AI objects via the AIList.
    */
   async loadExisting(): Promise<{aiCount: number, llmCount: number}> {
     console.log('[AIManager.loadExisting] Starting to load existing AI and LLM objects...');
@@ -783,29 +887,32 @@ export class AIManager {
     let llmCount = 0;
 
     try {
-      // Load AI objects from storage using the injected generator
-      // AI objects are versioned objects stored with storeVersionedObject, not channel objects
-      console.log('[AIManager.loadExisting] queryAllAIObjects provided?', !!this.deps.queryAllAIObjects);
-      if (this.deps.queryAllAIObjects) {
-        try {
-          console.log('[AIManager.loadExisting] Calling queryAllAIObjects generator...');
-          for await (const ai of this.deps.queryAllAIObjects()) {
-            console.log('[AIManager.loadExisting] Got AI from generator:', ai?.displayName, 'personId:', ai?.personId?.substring(0, 8));
-            if (ai && ai.personId && ai.active !== false) {
-              this.aiByPerson.set(ai.personId, ai);
-              aiCount++;
-              console.log(`[AIManager.loadExisting] ✅ Loaded AI: ${ai.aiId} (${ai.displayName})`);
-              MessageBus.send('debug', `Loaded AI: ${ai.aiId} (${ai.displayName})`);
+      // Load AI objects from AIList - simple enumeration
+      try {
+        const aiList = await this.getOrCreateAIList();
+        console.log(`[AIManager.loadExisting] Found AIList with ${aiList.aiIds.size} AI IDs`);
+
+        for (const aiIdHash of aiList.aiIds) {
+          try {
+            const result = await this.deps.getObjectByIdHash(aiIdHash);
+            if (result?.obj && result.obj.$type$ === 'AI') {
+              const ai = result.obj as AI;
+              if (ai.personId && ai.active !== false) {
+                this.aiByPerson.set(ai.personId, ai);
+                aiCount++;
+                console.log(`[AIManager.loadExisting] ✅ Loaded AI: ${ai.aiId} (${ai.displayName})`);
+                MessageBus.send('debug', `Loaded AI: ${ai.aiId} (${ai.displayName})`);
+              }
             }
+          } catch (error) {
+            console.warn(`[AIManager.loadExisting] Failed to load AI ${aiIdHash.substring(0, 8)}:`, error);
+            // Remove stale reference from AIList
+            await this.removeFromAIList(aiIdHash as SHA256IdHash<AI>);
           }
-          console.log('[AIManager.loadExisting] Generator iteration complete');
-        } catch (error) {
-          console.error('[AIManager.loadExisting] ❌ Failed to load AI objects:', error);
-          MessageBus.send('alert', 'Failed to load AI objects:', error);
         }
-      } else {
-        console.warn('[AIManager.loadExisting] ⚠️ queryAllAIObjects not provided - AI detection may not work');
-        MessageBus.send('alert', 'queryAllAIObjects not provided - AI detection may not work');
+      } catch (error) {
+        console.error('[AIManager.loadExisting] ❌ Failed to load AI objects:', error);
+        MessageBus.send('alert', 'Failed to load AI objects:', error);
       }
 
       // Load LLM objects from storage (these ARE channel objects in lama channel)
