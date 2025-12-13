@@ -96,6 +96,29 @@ export interface LLMModelInfo {
 }
 
 /**
+ * LLM capability information for prompt adaptation
+ */
+export interface LLMCapabilities {
+  /** Context window size in tokens */
+  contextWindow: number;
+
+  /** Can process images */
+  supportsVision?: boolean;
+
+  /** Supports extended thinking/reasoning (Claude 3.5+, o1) */
+  supportsThinking?: boolean;
+
+  /** Supports function/tool calling */
+  supportsTools?: boolean;
+
+  /** Supports streaming responses */
+  supportsStreaming?: boolean;
+
+  /** Suggested response style based on model characteristics */
+  responseStyle?: 'concise' | 'detailed' | 'balanced';
+}
+
+/**
  * Result of prompt building with context
  */
 export interface PromptResult {
