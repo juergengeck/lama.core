@@ -1,19 +1,17 @@
 /**
  * AIManager
  *
- * Manages AI and LLM Person identities with Profile-based delegation.
- * Replaces AIContactManager with a Person-centric architecture.
+ * Manages AI Person identities with LLM as interchangeable substrate.
  *
  * Key concepts:
- * - AI Person: Assistant identity (e.g., "Claude", "Research Assistant")
- * - LLM Person: Model identity (e.g., "claude-sonnet-4-5", "gpt-4")
- * - Delegation: AI Person → LLM Person (or AI → AI → LLM chains)
- * - Profile.delegatesTo: Stores the delegation relationship
+ * - AI Person: Persistent assistant identity with Person/Profile/Someone
+ * - LLM: Standalone configuration (modelId, server, provider) - no Person
+ * - AI object points to LLM via llmId (or uses app default)
  *
  * Benefits:
- * - Switch models without losing AI identity
- * - Support AI chaining (AI delegates to another AI)
- * - Clean separation of identity vs configuration
+ * - AI is persistent identity that accumulates memories
+ * - LLMs are interchangeable substrates
+ * - Switch models without losing AI identity or memories
  */
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
@@ -39,10 +37,10 @@ export interface AIManagerDeps {
   hasDefaultKeys?: (owner: SHA256IdHash<Person | Instance>) => Promise<boolean>;
   channelManager: any;  // Required: for querying LLM objects
   trustPlan?: any;
-  aiObjectManager?: any;  // Optional: for creating AI storage objects
-  llmObjectManager?: any;  // Optional: for creating LLM storage objects
   /** Instance idHash from ONE.core - used for Story tracking */
   instanceIdHash?: SHA256IdHash<Instance>;
+  /** Generator function to query all AI objects from storage */
+  queryAllAIObjects?: () => AsyncGenerator<AI, void, unknown>;
 }
 
 // Response type for AI creation (includes Assembly tracking)
@@ -55,14 +53,14 @@ export interface CreateAIResponse {
   assemblyIdHash?: string;
 }
 
-// Import AI and LLM types
-type AI = {
+// AI object - persistent identity with optional LLM override
+export type AI = {
   $type$: 'AI';
   aiId: string;
   displayName: string;
-  personId: SHA256IdHash<Person>;
-  llmProfileId: SHA256IdHash<Profile>;  // Delegates to LLM Profile, not Person
-  modelId: string;
+  personId: SHA256IdHash<Person>;       // AI Person (with Profile, Someone)
+  llmId?: SHA256IdHash<LLM>;            // Optional LLM override; undefined = use app default
+  modelId: string;                       // Convenience/display (current model)
   owner: SHA256IdHash<Person> | SHA256IdHash<Instance>;
   created: number;
   modified: number;
@@ -70,11 +68,14 @@ type AI = {
   deleted: boolean;
 };
 
-type LLM = {
+// LLM object - standalone configuration (no Person/Profile/Someone)
+export type LLM = {
   $type$: 'LLM';
-  name: string;
-  server: string;  // Mandatory (isId: true in LLMRecipe)
-  filename: string;
+  modelId: string;                       // Primary identifier (e.g., "claude-sonnet-4-5")
+  name: string;                          // Display name
+  server: string;                        // Server URL
+  provider: string;                      // Provider name (e.g., "anthropic", "ollama")
+  filename: string;                      // Model filename for local models
   modelType: 'local' | 'remote';
   active: boolean;
   deleted: boolean;
@@ -82,9 +83,6 @@ type LLM = {
   modified: number;
   createdAt: string;
   lastUsed: string;
-  modelId?: string;
-  personId?: SHA256IdHash<Person>;
-  provider?: string;
 };
 
 export class AIManager {
@@ -94,18 +92,11 @@ export class AIManager {
   static readonly PLAN_DESCRIPTION = 'Manages AI Person/Profile/Someone with Story/Assembly tracking';
   static readonly PLAN_DOMAIN = 'ai-contacts';
 
-  // Lookup tables: Person ID → AI/LLM metadata objects
+  // Lookup: AI Person ID → AI object
   private aiByPerson: Map<SHA256IdHash<Person>, AI>;
-  private llmByPerson: Map<SHA256IdHash<Person>, LLM>;
 
-  // Cache: AI/LLM ID → Person ID
-  private entities: Map<string, SHA256IdHash<Person>>;
-
-  // Reverse lookup: Person ID → entity ID
-  private personToEntity: Map<SHA256IdHash<Person>, string>;
-
-  // Profile ID cache: Person ID → Profile ID (for LLMs)
-  private llmProfileIdByPerson: Map<SHA256IdHash<Person>, SHA256IdHash<Profile>>;
+  // Lookup: modelId → LLM object
+  private llmByModelId: Map<string, LLM>;
 
   /** Cached Plan idHash - populated when setStoryFactory is called */
   private planIdHash: SHA256IdHash<Plan> | null = null;
@@ -115,10 +106,7 @@ export class AIManager {
     private deps: AIManagerDeps
   ) {
     this.aiByPerson = new Map();
-    this.llmByPerson = new Map();
-    this.entities = new Map();
-    this.personToEntity = new Map();
-    this.llmProfileIdByPerson = new Map();
+    this.llmByModelId = new Map();
   }
 
   /**
@@ -156,48 +144,39 @@ export class AIManager {
   }
 
   /**
-   * Create an AI Person that delegates to an LLM Profile (or another AI Profile)
-   * Wraps creation with StoryFactory for Assembly tracking (journal visibility)
+   * Create an AI Person with Person/Profile/Someone
+   * Creates a persistent identity that can use different LLMs
    *
    * @param aiId - Unique identifier for the AI (e.g., "claude", "research-assistant")
    * @param name - Display name (e.g., "Claude", "Research Assistant")
-   * @param delegatesTo - Profile ID to delegate to (LLM Profile or another AI Profile)
-   * @returns Person ID of the created AI
+   * @param llmId - Optional LLM ID hash to use; undefined = use app default
+   * @param modelId - Optional explicit model ID (e.g., "granite:3b"); if not provided, derived from aiId
+   * @returns CreateAIResponse with personIdHash, profileIdHash, someoneIdHash
    */
   async createAI(
     aiId: string,
     name: string,
-    delegatesTo: SHA256IdHash<Profile>
-  ): Promise<SHA256IdHash<Person>> {
+    llmId?: SHA256IdHash<LLM>,
+    modelId?: string
+  ): Promise<CreateAIResponse> {
     MessageBus.send('debug', `Creating AI Person: ${name} (${aiId})`);
 
-    // Check cache first - return with _cached flag so proxy skips Story creation
-    const cached = this.entities.get(`ai:${aiId}`);
-    if (cached) {
-      // Update delegation if changed
-      await this.setAIDelegation(aiId, delegatesTo);
-      // Return with _cached flag so proxy knows to skip Story creation
-      return { idHash: cached, _cached: true } as any;
+    // Check if already exists by aiId
+    for (const [personId, ai] of this.aiByPerson.entries()) {
+      if (ai.aiId === aiId) {
+        MessageBus.send('debug', `AI ${aiId} already exists, returning cached`);
+        // Get profile ID
+        const profileIdHash = await this._getMainProfileForPerson(personId);
+        const someone = await this.leuteModel.getSomeone(personId);
+        return {
+          success: true,
+          personIdHash: personId,
+          profileIdHash,
+          someoneIdHash: someone?.idHash || ('' as any)
+        };
+      }
     }
 
-    // Create the AI contact - the proxy wrapper (from registerPlanInstance)
-    // handles Story/Assembly creation automatically
-    const result = await this.createAIInternal(aiId, name, delegatesTo);
-
-    // Return object with idHash for proxy to extract (consistent with storeVersionedObject)
-    // The proxy will create Story and return just the idHash
-    return { idHash: result.personIdHash } as any;
-  }
-
-  /**
-   * Internal implementation of AI Person creation
-   * @private
-   */
-  private async createAIInternal(
-    aiId: string,
-    name: string,
-    delegatesTo: SHA256IdHash<Profile>
-  ): Promise<CreateAIResponse> {
     try {
       // 1. Create Person object
       const email = `${aiId.replace(/[^a-zA-Z0-9]/g, '_')}@ai.local`;
@@ -235,15 +214,19 @@ export class AIManager {
       const profileIdHash = ensureIdHash(typeof profileResult === 'object' && profileResult?.idHash ? profileResult.idHash : profileResult);
       MessageBus.send('debug', `Created standard Profile: ${profileIdHash.toString().substring(0, 8)}...`);
 
-      // 3a. Create AI metadata object (SEPARATE from Person/Profile)
+      // 4. Create AI metadata object
       const now = Date.now();
-      const modelId = aiId.startsWith('started-as-') ? aiId.substring('started-as-'.length) : aiId;
+      // modelId is required - AI identity is independent of model per design
+      // aiId is now derived from birth experience (email prefix), not from modelId
+      if (!modelId) {
+        throw new Error('[AIManager] modelId is required - AI identity and model must be specified separately');
+      }
       const aiObject: AI = {
         $type$: 'AI',
         aiId,
         displayName: name,
         personId: personIdHash,
-        llmProfileId: delegatesTo,  // Delegates to LLM Profile
+        llmId,  // Optional - undefined means use app default
         modelId,
         owner: myId,
         created: now,
@@ -252,13 +235,12 @@ export class AIManager {
         deleted: false
       };
 
-      const aiResult: any = await this.deps.storeVersionedObject(aiObject);
-      const aiIdHash = ensureIdHash(typeof aiResult === 'object' && aiResult?.idHash ? aiResult.idHash : aiResult);
+      await this.deps.storeVersionedObject(aiObject);
 
       // Store in lookup table
       this.aiByPerson.set(personIdHash, aiObject);
 
-      // 4. Create Someone
+      // 5. Create Someone
       const someoneObj: any = {
         $type$: 'Someone' as const,
         someoneId: `ai:${aiId}`,
@@ -269,10 +251,10 @@ export class AIManager {
       const someoneResult: any = await this.deps.storeVersionedObject(someoneObj);
       const someoneIdHash = ensureIdHash(typeof someoneResult === 'object' && someoneResult?.idHash ? someoneResult.idHash : someoneResult);
 
-      // 5. Register with LeuteModel
+      // 6. Register with LeuteModel
       await this.leuteModel.addSomeoneElse(someoneIdHash);
 
-      // 6. Generate keys for the AI Person
+      // 7. Generate keys for the AI Person
       if (this.deps.createDefaultKeys && this.deps.hasDefaultKeys) {
         try {
           const hasKeys = await this.deps.hasDefaultKeys(personIdHash);
@@ -286,55 +268,16 @@ export class AIManager {
         MessageBus.send('alert', 'createDefaultKeys not available - AI Person will not have keys');
       }
 
-      // 7. Cache the entity
-      this.entities.set(`ai:${aiId}`, personIdHash);
-      this.personToEntity.set(personIdHash, `ai:${aiId}`);
-
-      // 8. Assign trust level
+      // 8. Assign trust level (fire and forget - not critical for immediate use)
       if (this.deps.trustPlan) {
-        try {
-          await this.deps.trustPlan.setTrustLevel({
-            personId: personIdHash,
-            trustLevel: 'high',
-            establishedBy: myId,
-            reason: `AI assistant: ${name}`
-          });
-        } catch (error) {
+        this.deps.trustPlan.setTrustLevel({
+          personId: personIdHash,
+          trustLevel: 'high',
+          establishedBy: myId,
+          reason: `AI assistant: ${name}`
+        }).catch((error: any) => {
           MessageBus.send('alert', 'Failed to assign trust level:', error);
-        }
-      }
-
-      // 9. Create AI storage object (CRITICAL: Must happen for all AI creations)
-      if (this.deps.aiObjectManager) {
-        try {
-          await this.deps.aiObjectManager.create({
-            aiId,
-            displayName: name,
-            aiPersonId: personIdHash,
-            llmProfileId: delegatesTo,
-            modelId
-          });
-        } catch (error) {
-          MessageBus.send('error', 'Failed to create AI storage object:', error);
-        }
-      } else {
-        MessageBus.send('alert', 'aiObjectManager not available - AI storage object NOT created');
-      }
-
-      // 10. Create LLM storage object (CRITICAL: Links modelId → aiPersonId)
-      if (this.deps.llmObjectManager) {
-        try {
-          await this.deps.llmObjectManager.create({
-            modelId,
-            name,
-            server: 'http://localhost:11434', // Default Ollama server
-            aiPersonId: personIdHash
-          });
-        } catch (error) {
-          MessageBus.send('error', 'Failed to create LLM storage object:', error);
-        }
-      } else {
-        MessageBus.send('alert', 'llmObjectManager not available - LLM storage object NOT created');
+        });
       }
 
       MessageBus.send('debug', `AI Person created: ${name}`);
@@ -351,355 +294,267 @@ export class AIManager {
   }
 
   /**
-   * Create an LLM Person representing a model
+   * Create an LLM configuration object
+   * LLM is standalone config - NO Person/Profile/Someone
    *
    * @param modelId - Model identifier (e.g., "claude-sonnet-4-5", "gpt-4")
    * @param name - Display name (e.g., "Claude Sonnet 4.5")
    * @param provider - Provider name (e.g., "anthropic", "openai", "ollama")
-   * @param llmConfigId - Optional reference to LLM config object
    * @param server - Optional server URL (defaults to localhost:11434 for ollama)
-   * @returns Profile ID of the created LLM
+   * @returns SHA256IdHash<LLM> of the created LLM config
    */
   async createLLM(
     modelId: string,
     name: string,
     provider: string,
-    llmConfigId?: string,
-    server?: string,
-    email?: string
-  ): Promise<SHA256IdHash<Profile>> {
-    // Generate email from name if not provided (Person identity is based on email)
-    const personEmail = email || `${name.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_')}@ai.local`;
-    const entityKey = `llm:${personEmail}`;  // Cache by email, not modelId
+    server?: string
+  ): Promise<SHA256IdHash<LLM>> {
+    MessageBus.send('debug', `Creating LLM config: ${name} (${modelId})`);
 
-    MessageBus.send('debug', `Creating LLM Person: ${name} (${modelId})`);
-
-    // Check cache by email (Person identity) - allows same model for multiple Persons
-    const cachedPersonId = this.entities.get(entityKey);
-    if (cachedPersonId) {
-      // Return cached Profile ID with _cached flag so proxy skips Story creation
-      const cachedProfileId = this.llmProfileIdByPerson.get(cachedPersonId);
-      if (cachedProfileId) {
-        return { idHash: cachedProfileId, _cached: true } as any;
-      }
-      // If Profile ID not cached, query for it
-      try {
-        const profileIdHash = await this._getMainProfileForPerson(cachedPersonId);
-        // Cache it for next time
-        this.llmProfileIdByPerson.set(cachedPersonId, profileIdHash);
-        return { idHash: profileIdHash, _cached: true } as any;
-      } catch (error) {
-        MessageBus.send('error', 'Failed to get Profile for existing LLM:', error);
-        throw error;
-      }
+    // Check cache first
+    const cached = this.llmByModelId.get(modelId);
+    if (cached) {
+      MessageBus.send('debug', `LLM ${modelId} already cached`);
+      // Calculate and return ID hash
+      const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+      return await calculateIdHashOfObj({ $type$: 'LLM', name, server: server || '' } as any);
     }
 
     try {
-      // 1. Create Person object with email-based identity
-      const personData = {
-        $type$: 'Person' as const,
-        email: personEmail,
-        name,
-      };
-
-      const personResult: any = await this.deps.storeVersionedObject(personData);
-      const personIdHash = ensureIdHash(typeof personResult === 'object' && personResult?.idHash ? personResult.idHash : personResult);
-
-      // 2. Create PersonName
-      const personNameResult = await this.deps.storeUnversionedObject({
-        $type$: 'PersonName' as const,
-        name
-      });
-      const personNameHash = typeof personNameResult === 'object' && 'hash' in personNameResult
-        ? personNameResult.hash
-        : personNameResult;
-
-      // 3. Create standard Profile (profileId based on email for uniqueness)
-      const myId = await this.leuteModel.myMainIdentity();
-      const profileObj: any = {
-        $type$: 'Profile' as const,
-        profileId: entityKey,  // Use email-based key for Profile ID too
-        personId: personIdHash,
-        owner: myId,
-        nickname: name,
-        personDescription: [personNameHash],
-        communicationEndpoint: []
-      };
-
-      const profileResult: any = await this.deps.storeVersionedObject(profileObj);
-      const profileIdHash = ensureIdHash(typeof profileResult === 'object' && profileResult?.idHash ? profileResult.idHash : profileResult);
-      MessageBus.send('debug', `Created standard Profile: ${profileIdHash.toString().substring(0, 8)}...`);
-
-      // 3a. Create LLM metadata object (SEPARATE from Person/Profile)
+      // Create LLM metadata object only - NO Person/Profile/Someone
       const now = Date.now();
       const llmObject: LLM = {
         $type$: 'LLM',
+        modelId,
         name,
-        server: server || (provider === 'ollama' ? 'http://localhost:11434' : ''), // Mandatory - use provided or default
+        server: server || (provider === 'ollama' ? 'http://localhost:11434' : ''),
         filename: modelId,
         modelType: provider === 'ollama' ? 'local' : 'remote',
+        provider,
         active: true,
         deleted: false,
         created: now,
         modified: now,
         createdAt: new Date(now).toISOString(),
-        lastUsed: new Date(now).toISOString(),
-        modelId,
-        personId: personIdHash,
-        provider
+        lastUsed: new Date(now).toISOString()
       };
 
       const llmResult: any = await this.deps.storeVersionedObject(llmObject);
       const llmIdHash = ensureIdHash(typeof llmResult === 'object' && llmResult?.idHash ? llmResult.idHash : llmResult);
 
       // Store in lookup table
-      this.llmByPerson.set(personIdHash, llmObject);
+      this.llmByModelId.set(modelId, llmObject);
 
-      // 4. Create Someone (use email-based key)
-      const someoneObj: any = {
-        $type$: 'Someone' as const,
-        someoneId: entityKey,
-        mainProfile: profileIdHash,
-        identities: new Map([[personIdHash, new Set([profileIdHash])]])
-      };
-
-      const someoneResult: any = await this.deps.storeVersionedObject(someoneObj);
-      const someoneIdHash = ensureIdHash(typeof someoneResult === 'object' && someoneResult?.idHash ? someoneResult.idHash : someoneResult);
-
-      // 5. Register with LeuteModel
-      await this.leuteModel.addSomeoneElse(someoneIdHash);
-
-      // 6. Cache the entity by email (Person identity)
-      this.entities.set(entityKey, personIdHash);
-      this.personToEntity.set(personIdHash, entityKey);
-      this.llmProfileIdByPerson.set(personIdHash, profileIdHash);  // Cache Profile ID
-
-      MessageBus.send('debug', `LLM Person created: ${name}`);
-      // Return full storage result - proxy extracts idHash as entity
-      return profileResult;
+      MessageBus.send('debug', `LLM config created: ${name}`);
+      return llmIdHash;
     } catch (error) {
-      MessageBus.send('error', 'Failed to create LLM Person:', error);
+      MessageBus.send('error', 'Failed to create LLM config:', error);
       throw error;
     }
   }
 
   /**
-   * Update which Profile an AI delegates to
-   * Allows switching models or chaining AIs
-   * Updates the AI object (not Profile)
+   * Set which LLM an AI uses
+   * Updates the AI object's llmId field
+   *
+   * @param aiPersonId - AI Person ID
+   * @param llmId - LLM ID hash (or undefined to use app default)
    */
-  async setAIDelegation(aiId: string, delegatesTo: SHA256IdHash<Profile>): Promise<void> {
-    MessageBus.send('debug', `Updating AI delegation: ${aiId}`);
+  async setAIModel(aiPersonId: SHA256IdHash<Person>, llmId?: SHA256IdHash<LLM>): Promise<void> {
+    MessageBus.send('debug', `Setting AI model for ${aiPersonId.toString().substring(0, 8)}...`);
 
-    const aiPersonId = this.entities.get(`ai:${aiId}`);
-    if (!aiPersonId) {
-      throw new Error(`[AIManager] AI not found: ${aiId}`);
+    const aiObject = this.aiByPerson.get(aiPersonId);
+    if (!aiObject) {
+      throw new Error(`[AIManager] AI not found for Person ${aiPersonId.toString().substring(0, 8)}...`);
     }
 
-    try {
-      // Get current AI object
-      const aiObject = this.aiByPerson.get(aiPersonId);
-      if (!aiObject) {
-        throw new Error(`[AIManager] AI object not found for ${aiId}`);
+    // Get modelId from LLM if provided
+    let modelId = aiObject.modelId;
+    if (llmId) {
+      try {
+        const llmResult = await this.deps.getObjectByIdHash(llmId);
+        const llm = llmResult.obj as LLM;
+        modelId = llm.modelId;
+      } catch (error) {
+        MessageBus.send('alert', 'Failed to get LLM for modelId update:', error);
       }
-
-      // Update AI object
-      const updatedAI: AI = {
-        ...aiObject,
-        llmProfileId: delegatesTo,
-        modified: Date.now()
-      };
-
-      await this.deps.storeVersionedObject(updatedAI);
-      this.aiByPerson.set(aiPersonId, updatedAI);
-    } catch (error) {
-      MessageBus.send('error', 'Failed to update AI delegation:', error);
-      throw error;
     }
+
+    // Update AI object
+    const updatedAI: AI = {
+      ...aiObject,
+      llmId,
+      modelId,
+      modified: Date.now()
+    };
+
+    await this.deps.storeVersionedObject(updatedAI);
+    this.aiByPerson.set(aiPersonId, updatedAI);
+
+    MessageBus.send('debug', `AI model set to ${modelId}`);
   }
 
   /**
-   * Get which Profile an AI delegates to
-   * Reads from AI object (not Profile)
+   * Update AI's modelId directly (without LLM object)
+   * Simpler approach - just updates the modelId field on the AI object
+   *
+   * @param aiPersonId - AI Person ID
+   * @param newModelId - New model ID (e.g., "claude-sonnet-4", "gpt-4")
    */
-  async getAIDelegation(aiId: string): Promise<SHA256IdHash<Profile> | null> {
-    const aiPersonId = this.entities.get(`ai:${aiId}`);
-    if (!aiPersonId) {
+  async updateModelId(aiPersonId: SHA256IdHash<Person>, newModelId: string): Promise<void> {
+    MessageBus.send('debug', `Updating AI modelId for ${aiPersonId.toString().substring(0, 8)}... to ${newModelId}`);
+
+    const aiObject = this.aiByPerson.get(aiPersonId);
+    if (!aiObject) {
+      throw new Error(`[AIManager] AI not found for Person ${aiPersonId.toString().substring(0, 8)}...`);
+    }
+
+    // Update AI object with new modelId (leave llmId unchanged)
+    const updatedAI: AI = {
+      ...aiObject,
+      modelId: newModelId,
+      modified: Date.now()
+    };
+
+    await this.deps.storeVersionedObject(updatedAI);
+    this.aiByPerson.set(aiPersonId, updatedAI);
+
+    MessageBus.send('debug', `AI modelId updated to ${newModelId}`);
+  }
+
+  /**
+   * Get AI object by Person ID
+   */
+  getAI(personId: SHA256IdHash<Person>): AI | null {
+    return this.aiByPerson.get(personId) || null;
+  }
+
+  /**
+   * Get AI object by aiId
+   */
+  getAIByAiId(aiId: string): AI | null {
+    for (const ai of this.aiByPerson.values()) {
+      if (ai.aiId === aiId) {
+        return ai;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get LLM object by modelId
+   */
+  getLLM(modelId: string): LLM | null {
+    return this.llmByModelId.get(modelId) || null;
+  }
+
+  /**
+   * Get LLM object by LLM ID hash
+   */
+  async getLLMById(llmId: SHA256IdHash<LLM>): Promise<LLM | null> {
+    try {
+      const result = await this.deps.getObjectByIdHash(llmId);
+      return result.obj as LLM;
+    } catch (error) {
+      MessageBus.send('alert', 'Failed to get LLM by ID:', error);
       return null;
     }
-
-    // Get from AI object
-    const aiObject = this.aiByPerson.get(aiPersonId);
-    return aiObject ? aiObject.llmProfileId : null;
   }
 
   /**
-   * Resolve the final LLM Person by following the delegation chain
-   * Handles: AI → LLM, AI → AI → LLM, AI → AI → AI → LLM, etc.
-   * Uses AI objects (not Profile) for delegation tracking
-   *
-   * @param personId - Starting Person ID (AI or LLM)
-   * @returns Final LLM Person ID (throws if chain is circular or too deep)
+   * Get the LLM ID for an AI Person
+   * Returns the explicit llmId or null if using app default
    */
-  async resolveLLMPerson(personId: SHA256IdHash<Person>): Promise<SHA256IdHash<Person>> {
-    const visited = new Set<string>();
-    let current = personId;
-    const maxDepth = 10;  // Prevent infinite loops
-
-    while (visited.size < maxDepth) {
-      const currentStr = current.toString();
-
-      if (visited.has(currentStr)) {
-        throw new Error(`[AIManager] Circular delegation detected in chain starting from ${personId.toString().substring(0, 8)}...`);
-      }
-
-      visited.add(currentStr);
-
-      // Check if it's an LLM Person
-      if (this.isLLM(current)) {
-        return current;
-      }
-
-      // Check if it's an AI Person
-      const aiObject = this.aiByPerson.get(current);
-      if (aiObject) {
-        // Follow delegation to Profile, then extract Person ID
-        const profileResult = await this.deps.getObjectByIdHash(aiObject.llmProfileId);
-        const profile = profileResult.obj as Profile;
-        current = profile.personId;
-        continue;
-      }
-
-      // Not found in lookup tables - not an AI or LLM Person
-      throw new Error(`[AIManager] Person ${currentStr.substring(0, 8)}... is neither AI nor LLM`);
-    }
-
-    throw new Error(`[AIManager] Delegation chain too deep (max ${maxDepth})`);
+  getLLMIdForAI(aiPersonId: SHA256IdHash<Person>): SHA256IdHash<LLM> | null {
+    const ai = this.aiByPerson.get(aiPersonId);
+    return ai?.llmId || null;
   }
 
   /**
-   * Get Person ID for an entity ID
+   * Get modelId for an AI Person
+   * This is the modelId stored on the AI object (convenience field)
    */
-  getPersonId(entityId: string): SHA256IdHash<Person> | null {
-    return this.entities.get(entityId) || null;
-  }
-
-  /**
-   * Get entity ID for a Person ID
-   */
-  getEntityId(personId: SHA256IdHash<Person>): string | null {
-    return this.personToEntity.get(personId) || null;
+  getModelIdForAI(aiPersonId: SHA256IdHash<Person>): string | null {
+    const ai = this.aiByPerson.get(aiPersonId);
+    return ai?.modelId || null;
   }
 
   /**
    * Check if a Person is an AI
-   * Uses lookup table instead of Profile pollution
    */
   isAI(personId: SHA256IdHash<Person>): boolean {
     return this.aiByPerson.has(personId);
   }
 
   /**
-   * Check if a Person is an LLM
-   * Uses lookup table instead of Profile pollution
+   * Get AI ID from AI Person ID
    */
-  isLLM(personId: SHA256IdHash<Person>): boolean {
-    return this.llmByPerson.has(personId);
+  getAIId(personId: SHA256IdHash<Person>): string | null {
+    const ai = this.aiByPerson.get(personId);
+    return ai?.aiId || null;
   }
 
   /**
-   * Get model ID for a Person ID (reverse lookup)
-   * Extracts the model ID from the entity ID naming convention
+   * Get Person ID by entity ID (prefixed string like "ai:dreizehn" or "llm:claude-sonnet")
+   * This is the inverse of what getAIByAiId does internally
    *
-   * @param personId - Person ID hash to look up
-   * @returns Model ID (e.g., "gpt-oss:20b") or null if not found
+   * Per design: aiId is derived from birth experience email prefix (e.g., "dreizehn" from "dreizehn@device.local")
+   * NOT from modelId patterns like "started-as-X" or "ai-X"
+   *
+   * @param entityId - Entity ID with prefix (e.g., "ai:dreizehn", "llm:claude-sonnet")
+   * @returns Person ID hash or null if not found
    */
-  getModelIdForPersonId(personId: SHA256IdHash<Person>): string | null {
-    const entityId = this.personToEntity.get(personId);
-    if (!entityId) {
-      return null;
+  getPersonId(entityId: string): SHA256IdHash<Person> | null {
+    // Parse prefix and id
+    if (entityId.startsWith('ai:')) {
+      const aiId = entityId.substring('ai:'.length);
+      const ai = this.getAIByAiId(aiId);
+      return ai?.personId || null;
     }
 
-    // AI entities: "ai:started-as-{modelId}" → extract {modelId}
-    if (entityId.startsWith('ai:started-as-')) {
-      return entityId.substring('ai:started-as-'.length);
-    }
-
-    // LLM entities: "llm:{modelId}" → extract {modelId}
+    // LLMs don't have Person IDs in the new architecture
+    // They're just configuration objects
     if (entityId.startsWith('llm:')) {
-      return entityId.substring('llm:'.length);
-    }
-
-    return null;
-  }
-
-  /**
-   * Get the LLM Profile ID that an AI Person delegates to
-   * Synchronous lookup from the AI object
-   *
-   * @param aiPersonId - AI Person ID to look up
-   * @returns LLM Profile ID or null if no delegation exists
-   */
-  getLLMProfileId(aiPersonId: SHA256IdHash<Person>): SHA256IdHash<Profile> | null {
-    const aiObject = this.aiByPerson.get(aiPersonId);
-    return aiObject ? aiObject.llmProfileId : null;
-  }
-
-  /**
-   * Get AI ID from AI Person ID using AI object lookup
-   *
-   * @param personId - Person ID to look up
-   * @returns AI ID (e.g., "started-as-gpt-oss-20b") or null if not an AI Person
-   */
-  async getAIId(personId: SHA256IdHash<Person> | string): Promise<string | null> {
-    const aiObject = this.aiByPerson.get(personId as SHA256IdHash<Person>);
-    return aiObject ? aiObject.aiId : null;
-  }
-
-  /**
-   * Get LLM ID from AI or LLM Person ID by following delegation chain
-   * Uses AI/LLM objects (not Profile) for lookups
-   *
-   * @param personId - Person ID to look up (can be AI Person or LLM Person)
-   * @returns LLM ID/model ID (e.g., "gpt-oss:20b") or null if not found
-   */
-  async getLLMId(personId: SHA256IdHash<Person> | string): Promise<string | null> {
-    try {
-      // Check if it's an AI Person - return modelId directly
-      const aiObject = this.aiByPerson.get(personId as SHA256IdHash<Person>);
-      if (aiObject) {
-        return aiObject.modelId || null;
-      }
-
-      // Check if it's an LLM Person
-      const llmObject = this.llmByPerson.get(personId as SHA256IdHash<Person>);
-      if (llmObject) {
-        return llmObject.modelId || null;
-      }
-
-      // Not AI or LLM - return null silently (this is normal for user messages)
-      return null;
-    } catch (error) {
-      MessageBus.send('error', 'getLLMId failed:', error);
+      MessageBus.send('debug', `getPersonId called for LLM ${entityId} - LLMs don't have Person IDs`);
       return null;
     }
+
+    // Unknown prefix - try direct aiId lookup
+    const ai = this.getAIByAiId(entityId);
+    return ai?.personId || null;
+  }
+
+  /**
+   * Get all AI objects
+   */
+  getAllAIs(): AI[] {
+    return Array.from(this.aiByPerson.values());
+  }
+
+  /**
+   * Get all LLM objects
+   */
+  getAllLLMs(): LLM[] {
+    return Array.from(this.llmByModelId.values());
   }
 
   /**
    * Rename an AI Person by creating a new identity while preserving the old one
    * Creates a new Person/Profile and adds it to the Someone, keeping the old Person as past identity
    *
-   * @param aiId - Current AI ID (e.g., "started-as-gpt-oss-20b")
+   * @param aiId - Current AI ID (e.g., "dreizehn" - derived from birth experience email prefix)
    * @param newName - New display name (e.g., "Research Assistant")
    * @returns Person ID of the new identity
    */
   async renameAI(aiId: string, newName: string): Promise<SHA256IdHash<Person>> {
     MessageBus.send('debug', `Renaming AI: ${aiId} → ${newName}`);
 
-    const currentPersonId = this.entities.get(`ai:${aiId}`);
-    if (!currentPersonId) {
+    const aiObject = this.getAIByAiId(aiId);
+    if (!aiObject) {
       throw new Error(`[AIManager] AI not found: ${aiId}`);
     }
+
+    const currentPersonId = aiObject.personId;
 
     try {
       // 1. Get the Someone for this AI
@@ -708,14 +563,7 @@ export class AIManager {
         throw new Error(`[AIManager] No Someone found for AI ${aiId}`);
       }
 
-      // 2. Get current delegation target (to preserve it in new identity)
-      const aiObject = this.aiByPerson.get(currentPersonId);
-      if (!aiObject) {
-        throw new Error(`[AIManager] AI ${aiId} has no AI object`);
-      }
-      const delegatesTo = aiObject.llmProfileId;
-
-      // 3. Create new Person with new name
+      // 2. Create new Person with new name
       const newPersonData = {
         $type$: 'Person' as const,
         email: `${newName.toLowerCase().replace(/[^a-z0-9]/g, '_')}@ai.local`,
@@ -725,7 +573,7 @@ export class AIManager {
       const newPersonResult: any = await this.deps.storeVersionedObject(newPersonData);
       const newPersonId = ensureIdHash(typeof newPersonResult === 'object' && newPersonResult?.idHash ? newPersonResult.idHash : newPersonResult);
 
-      // 4. Create PersonName for new Person
+      // 3. Create PersonName for new Person
       const personNameResult = await this.deps.storeUnversionedObject({
         $type$: 'PersonName' as const,
         name: newName
@@ -734,7 +582,7 @@ export class AIManager {
         ? personNameResult.hash
         : personNameResult;
 
-      // 5. Create new Profile (standard Profile properties only)
+      // 4. Create new Profile
       const myId = await this.leuteModel.myMainIdentity();
       const newProfileId = `ai:${newName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       const newProfileObj: any = {
@@ -745,17 +593,16 @@ export class AIManager {
         nickname: newName,
         personDescription: [personNameHash],
         communicationEndpoint: []
-        // Note: Delegation preserved in cache, not stored in Profile
       };
 
       const newProfileResult: any = await this.deps.storeVersionedObject(newProfileObj);
       const newProfileIdHash = ensureIdHash(typeof newProfileResult === 'object' && newProfileResult?.idHash ? newProfileResult.idHash : newProfileResult);
 
-      // 6. Add new Person to Someone's identities and set as mainProfile
+      // 5. Add new Person to Someone's identities and set as mainProfile
       await someone.addProfile(newProfileIdHash);
       await someone.setMainProfile(newProfileIdHash);
 
-      // 7. Generate keys for the new Person identity
+      // 6. Generate keys for the new Person identity
       if (this.deps.createDefaultKeys && this.deps.hasDefaultKeys) {
         try {
           const hasKeys = await this.deps.hasDefaultKeys(newPersonId);
@@ -765,31 +612,20 @@ export class AIManager {
         } catch (error) {
           MessageBus.send('alert', 'Failed to generate keys for renamed Person:', error);
         }
-      } else {
-        MessageBus.send('alert', 'createDefaultKeys not available - renamed Person will not have keys');
       }
 
-      // 8. Update AI object with new Person ID
+      // 7. Update AI object with new Person ID
       const updatedAI: AI = {
         ...aiObject,
         personId: newPersonId,
+        displayName: newName,
         modified: Date.now()
       };
       await this.deps.storeVersionedObject(updatedAI);
 
-      // 9. Update caches
-      // Note: We keep the old entity mapping for backward compatibility
-      // The aiId stays the same, but now points to the new Person
-      this.entities.set(`ai:${aiId}`, newPersonId);
-      this.personToEntity.set(newPersonId, `ai:${aiId}`);
-      this.aiByPerson.set(newPersonId, updatedAI);
-
-      // Remove old Person from lookup table
+      // 8. Update caches
       this.aiByPerson.delete(currentPersonId);
-
-      // Also cache the new Person under its new profileId for lookups
-      this.entities.set(newProfileId, newPersonId);
-      this.personToEntity.set(newPersonId, newProfileId);
+      this.aiByPerson.set(newPersonId, updatedAI);
 
       MessageBus.send('debug', `AI renamed: ${aiId} → ${newName}`);
       return newPersonId;
@@ -801,19 +637,15 @@ export class AIManager {
 
   /**
    * Get all past identities for an AI Person
-   * Returns all Persons in the Someone except the current mainIdentity
-   *
-   * @param aiId - AI ID
-   * @returns Array of {personId, name} for past identities
    */
   async getPastIdentities(aiId: string): Promise<Array<{personId: SHA256IdHash<Person>, name: string}>> {
-    const currentPersonId = this.entities.get(`ai:${aiId}`);
-    if (!currentPersonId) {
+    const aiObject = this.getAIByAiId(aiId);
+    if (!aiObject) {
       return [];
     }
 
     try {
-      const someone = await this.leuteModel.getSomeone(currentPersonId);
+      const someone = await this.leuteModel.getSomeone(aiObject.personId);
       if (!someone) {
         return [];
       }
@@ -825,7 +657,7 @@ export class AIManager {
 
       for (const profileInfo of allProfiles) {
         const profileResult = await this.deps.getObjectByIdHash(profileInfo.idHash);
-        const profile = profileResult.obj as any; // Standard Profile
+        const profile = profileResult.obj as any;
 
         // Skip if this is the main identity
         if (profile.personId === mainIdentity) {
@@ -846,89 +678,6 @@ export class AIManager {
     } catch (error) {
       MessageBus.send('error', 'Failed to get past identities:', error);
       return [];
-    }
-  }
-
-  /**
-   * Load AI object from storage by aiId
-   * Uses calculateIdHashOfObj with just ID properties (following TopicAnalysisModel pattern)
-   * @private
-   */
-  private async _loadAIObjectByAiId(aiId: string, personId: SHA256IdHash<Person>): Promise<AI | null> {
-    try {
-      const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
-
-      // Calculate ID hash from just the ID properties
-      const aiIdHash = await calculateIdHashOfObj({ $type$: 'AI', aiId } as any);
-
-      // Fetch by ID hash
-      const aiResult = await this.deps.getObjectByIdHash(aiIdHash);
-      const aiObject = aiResult.obj as AI;
-
-      // Store in lookup table
-      this.aiByPerson.set(personId, aiObject);
-
-      return aiObject;
-    } catch (error) {
-      MessageBus.send('alert', `Failed to load AI object for aiId ${aiId}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Load LLM object from storage by modelId and server
-   * Uses calculateIdHashOfObj with just ID properties (name + server)
-   * @private
-   */
-  private async _loadLLMObjectByModelId(modelId: string, server: string, personId: SHA256IdHash<Person>): Promise<LLM | null> {
-    try {
-      const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
-
-      // Calculate ID hash from just the ID properties (name + server)
-      const llmIdHash = await calculateIdHashOfObj({ $type$: 'LLM', name: modelId, server } as any);
-
-      // Fetch by ID hash
-      const llmResult = await this.deps.getObjectByIdHash(llmIdHash);
-      const llmObject = llmResult.obj as LLM;
-
-      // Store in lookup table
-      this.llmByPerson.set(personId, llmObject);
-
-      return llmObject;
-    } catch (error) {
-      MessageBus.send('alert', `Failed to load LLM object for modelId ${modelId}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * Load LLM object from storage by personId
-   * Queries all LLM objects and finds one with matching personId
-   * @private
-   */
-  private async _loadLLMObjectByPersonId(modelId: string, personId: SHA256IdHash<Person>): Promise<LLM | null> {
-    try {
-      // Query all LLM objects from storage
-      const iterator = this.deps.channelManager.objectIteratorWithType('LLM', {
-        channelId: 'lama',
-      });
-
-      for await (const llmObj of iterator) {
-        if (llmObj && llmObj.data) {
-          const llm = llmObj.data as LLM;
-          // Match by personId
-          if (llm.personId === personId && llm.name === modelId) {
-            // Store in lookup table
-            this.llmByPerson.set(personId, llm);
-            return llm;
-          }
-        }
-      }
-
-      return null;
-    } catch (error) {
-      MessageBus.send('alert', 'Failed to load LLM object:', error);
-      return null;
     }
   }
 
@@ -967,91 +716,117 @@ export class AIManager {
   }
 
   /**
-   * Load existing AI and LLM Persons from storage
-   * Loads AI and LLM metadata objects (not Profile pollution)
+   * Load AI object from storage by aiId
+   * @private
+   */
+  private async _loadAIObjectByAiId(aiId: string): Promise<AI | null> {
+    try {
+      const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+
+      // Calculate ID hash from just the ID properties
+      const aiIdHash = await calculateIdHashOfObj({ $type$: 'AI', aiId } as any);
+
+      // Fetch by ID hash
+      const aiResult = await this.deps.getObjectByIdHash(aiIdHash);
+      const aiObject = aiResult.obj as AI;
+
+      // Store in lookup table
+      this.aiByPerson.set(aiObject.personId, aiObject);
+
+      return aiObject;
+    } catch (error) {
+      MessageBus.send('alert', `Failed to load AI object for aiId ${aiId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Load LLM object from storage by modelId
+   * @private
+   */
+  private async _loadLLMObjectByModelId(modelId: string): Promise<LLM | null> {
+    try {
+      // Query all LLM objects from storage
+      const iterator = this.deps.channelManager.objectIteratorWithType('LLM', {
+        channelId: 'lama',
+      });
+
+      for await (const llmObj of iterator) {
+        if (llmObj && llmObj.data) {
+          const llm = llmObj.data as LLM;
+          if (llm.modelId === modelId) {
+            // Store in lookup table
+            this.llmByModelId.set(modelId, llm);
+            return llm;
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      MessageBus.send('alert', `Failed to load LLM object for modelId ${modelId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Load existing AI and LLM objects from storage
+   *
+   * AI objects are stored in ONE.core and linked to Person/Profile/Someone.
+   * The aiByPerson map is populated from AI objects directly, not from contact prefixes.
    */
   async loadExisting(): Promise<{aiCount: number, llmCount: number}> {
+    console.log('[AIManager.loadExisting] Starting to load existing AI and LLM objects...');
     MessageBus.send('debug', 'Loading existing AI and LLM objects...');
 
     let aiCount = 0;
     let llmCount = 0;
 
     try {
-      // TODO: Query storage for all AI objects
-      // For now, we'll iterate through contacts and check entity IDs
-      const others = await this.leuteModel.others();
-
-      for (const someone of others) {
+      // Load AI objects from storage using the injected generator
+      // AI objects are versioned objects stored with storeVersionedObject, not channel objects
+      console.log('[AIManager.loadExisting] queryAllAIObjects provided?', !!this.deps.queryAllAIObjects);
+      if (this.deps.queryAllAIObjects) {
         try {
-          // Load the raw Someone object to access someoneId
-          const someoneResult = await this.deps.getObjectByIdHash(someone.idHash);
-          const someoneId = someoneResult.obj.someoneId;
-          const personId = await someone.mainIdentity();
-
-          if (!someoneId) {
-            continue;
-          }
-
-          // Check if this is an AI or LLM by entity ID prefix
-          if (someoneId.startsWith('ai:')) {
-            // Load AI object for this Person
-            try {
-              const aiId = someoneId.substring('ai:'.length);
-              const aiObject = await this._loadAIObjectByAiId(aiId, personId);
-
-              // Cache entity mapping
-              this.entities.set(someoneId, personId);
-              this.personToEntity.set(personId, someoneId);
-
-              if (aiObject) {
-                aiCount++;
-              }
-            } catch (error) {
-              MessageBus.send('alert', `Failed to load AI for ${someoneId}:`, error);
-              // Still cache the entity mapping
-              this.entities.set(someoneId, personId);
-              this.personToEntity.set(personId, someoneId);
-            }
-          } else if (someoneId.startsWith('llm:')) {
-            // Load LLM object for this Person
-            try {
-              const modelId = someoneId.substring('llm:'.length);
-
-              // Query ALL LLM objects to find one matching this modelId (name field)
-              // We can't query by modelId alone since LLM ID = (name + server)
-              const llmObject = await this._loadLLMObjectByPersonId(modelId, personId);
-
-              // Cache entity mapping
-              this.entities.set(someoneId, personId);
-              this.personToEntity.set(personId, someoneId);
-
-              // Cache Profile ID
-              try {
-                const profileIdHash = await this._getMainProfileForPerson(personId);
-                this.llmProfileIdByPerson.set(personId, profileIdHash);
-              } catch (error) {
-                MessageBus.send('alert', `Failed to cache Profile ID for ${someoneId}:`, error);
-              }
-
-              if (llmObject) {
-                llmCount++;
-                MessageBus.send('debug', `Loaded LLM: ${someoneId} from server ${llmObject.server || 'remote'}`);
-              } else {
-                MessageBus.send('alert', `Could not load LLM object for ${someoneId}`);
-              }
-            } catch (error) {
-              MessageBus.send('alert', `Failed to load LLM object for ${someoneId}:`, error);
-              // Still cache the entity mapping
-              this.entities.set(someoneId, personId);
-              this.personToEntity.set(personId, someoneId);
+          console.log('[AIManager.loadExisting] Calling queryAllAIObjects generator...');
+          for await (const ai of this.deps.queryAllAIObjects()) {
+            console.log('[AIManager.loadExisting] Got AI from generator:', ai?.displayName, 'personId:', ai?.personId?.substring(0, 8));
+            if (ai && ai.personId && ai.active !== false) {
+              this.aiByPerson.set(ai.personId, ai);
+              aiCount++;
+              console.log(`[AIManager.loadExisting] ✅ Loaded AI: ${ai.aiId} (${ai.displayName})`);
+              MessageBus.send('debug', `Loaded AI: ${ai.aiId} (${ai.displayName})`);
             }
           }
+          console.log('[AIManager.loadExisting] Generator iteration complete');
         } catch (error) {
-          MessageBus.send('alert', 'Failed to load Someone:', error);
+          console.error('[AIManager.loadExisting] ❌ Failed to load AI objects:', error);
+          MessageBus.send('alert', 'Failed to load AI objects:', error);
         }
+      } else {
+        console.warn('[AIManager.loadExisting] ⚠️ queryAllAIObjects not provided - AI detection may not work');
+        MessageBus.send('alert', 'queryAllAIObjects not provided - AI detection may not work');
       }
 
-      MessageBus.send('debug', `Loaded ${aiCount} AI Persons, ${llmCount} LLM Persons`);
+      // Load LLM objects from storage (these ARE channel objects in lama channel)
+      try {
+        const iterator = this.deps.channelManager.objectIteratorWithType('LLM', {
+          channelId: 'lama',
+        });
+
+        for await (const llmObj of iterator) {
+          if (llmObj && llmObj.data) {
+            const llm = llmObj.data as LLM;
+            this.llmByModelId.set(llm.modelId, llm);
+            llmCount++;
+            MessageBus.send('debug', `Loaded LLM: ${llm.modelId}`);
+          }
+        }
+      } catch (error) {
+        MessageBus.send('alert', 'Failed to load LLM objects:', error);
+      }
+
+      MessageBus.send('debug', `Loaded ${aiCount} AI Persons, ${llmCount} LLM configs`);
       return { aiCount, llmCount };
     } catch (error) {
       MessageBus.send('error', 'Failed to load existing entities:', error);

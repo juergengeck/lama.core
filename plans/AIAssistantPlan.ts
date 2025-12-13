@@ -34,13 +34,6 @@ import type { LLMModelInfo } from '../models/ai/types.js';
 import { LLMAnalysisService } from '../services/analysis-service.js';
 import type { AnalysisContent, AnalysisContext } from '../services/analysis-service.js';
 
-/**
- * Platform-agnostic settings persistence interface
- */
-export interface AISettingsPersistence {
-  setDefaultModelId(modelId: string | null): Promise<boolean>;
-  getDefaultModelId(): Promise<string | null>;
-}
 
 /**
  * Dependencies required by AIAssistantPlan
@@ -82,17 +75,14 @@ export interface AIAssistantPlanDependencies {
   /** Optional: Assembly manager for knowledge assembly creation */
   assemblyManager?: any;
 
-  /** Optional: Settings persistence for default model and other preferences */
-  settingsPersistence?: AISettingsPersistence;
-
-  /** Optional: LLM config plan for browser platform */
-  llmConfigPlan?: any;
-
   /** Optional: MCP manager for memory context (Node.js only) */
   mcpManager?: any;
 
-  /** Optional: AI settings manager for user preferences (response length, etc.) */
-  aiSettingsManager?: any;
+  /** AI settings manager for user preferences (required) */
+  aiSettingsManager: any;
+
+  /** Optional: Local model lookup for on-device models (platform-specific) */
+  localModelLookup?: (modelId: string) => Promise<{ displayName: string; provider: string } | null>;
 
   /** Storage functions for AIManager (to avoid module duplication in Vite worker) */
   storageDeps: AIManagerDeps;
@@ -115,6 +105,10 @@ export class AIAssistantPlan {
 
   // Initialization state
   private initialized = false;
+
+  // Default AI Person ID (set when birth experience creates the AI)
+  // This is stored separately from model because AI identity is independent of model per design
+  private _defaultAIPersonId: SHA256IdHash<Person> | null = null;
 
   constructor(deps: AIAssistantPlanDependencies) {
     MessageBus.send('debug', 'Creating AIAssistantPlan instance');
@@ -209,27 +203,14 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Load default model from platform-specific persistence
+   * Load default model from AISettingsManager (ONE.core storage)
    * @private
    */
   private async _loadDefaultModelFromPersistence(_models: LLMModelInfo[]): Promise<string | null> {
-    // Try browser-specific llmConfigPlan first (if available)
-    if (this.deps.llmConfigPlan) {
-      const config = await this.deps.llmConfigPlan.getConfig({});
-      if (config?.success && config.config?.modelName) {
-        return config.config.modelName;
-      }
+    if (!this.deps.aiSettingsManager) {
+      throw new Error('AISettingsManager is required');
     }
-
-    // Try Electron-specific settingsPersistence (if available)
-    if (this.deps.settingsPersistence) {
-      const savedModelId = await this.deps.settingsPersistence.getDefaultModelId();
-      if (savedModelId) {
-        return savedModelId;
-      }
-    }
-
-    return null;
+    return await this.deps.aiSettingsManager.getDefaultModelId();
   }
 
   /**
@@ -277,18 +258,31 @@ export class AIAssistantPlan {
         // Set as default immediately - trust the persistence
         this.topicManager.setDefaultModel(savedDefaultModel);
 
-        // Ensure AI/LLM Persons exist (single source of truth - don't duplicate createLLM/createAI logic)
-        await this.ensureAIForModel(savedDefaultModel);
+        // Check if AI already exists for this model (loaded via loadExisting above)
+        // If so, skip ensureAIForModel since we don't have the birth experience email
+        const existingAIs = this.aiManager.getAllAIs();
+        const aiForModel = existingAIs.find(ai => ai.modelId === savedDefaultModel && ai.active);
 
-        // Ensure topics exist and AI participants are in groups
-        await this.createDefaultChats();
+        if (aiForModel) {
+          MessageBus.send('debug', `Found existing AI for model ${savedDefaultModel}: ${aiForModel.aiId}`);
+          // CRITICAL: Set the default AI Person ID from loaded data
+          // This must be set before createDefaultChats() which requires it
+          this._defaultAIPersonId = aiForModel.personId;
+          // Ensure topics exist and AI participants are in groups
+          await this.createDefaultChats();
+        } else {
+          // No AI exists for this model - birth experience was incomplete
+          // Clear the saved model so UI shows onboarding again
+          MessageBus.send('debug', `No AI found for saved model ${savedDefaultModel} - birth incomplete, clearing default`);
+          this.topicManager.setDefaultModel(null);
+          await this.deps.aiSettingsManager.setDefaultModelId(null);
+        }
       }
 
-      // Auto-select first available model on first run (when no saved default exists)
+      // DO NOT auto-select first available model - let UI show onboarding
+      // The UI checks for default model and shows ModelOnboarding when none exists
       if (!this.topicManager.getDefaultModel() && models.length > 0) {
-        const firstModel = models[0];
-        MessageBus.send('debug', `Auto-selecting first available model: ${firstModel.id}`);
-        await this.setDefaultModel(firstModel.id);
+        MessageBus.send('debug', `No default model - UI will show onboarding (${models.length} models available)`);
       }
 
       const finalDefaultModel = this.topicManager.getDefaultModel();
@@ -319,11 +313,17 @@ export class AIAssistantPlan {
 
     MessageBus.send('debug', `Creating default chats with model: ${defaultModel}`);
 
+    // Get the default AI Person ID - must exist (set by setDefaultModel after birth experience)
+    const aiPersonId = this._defaultAIPersonId;
+    if (!aiPersonId) {
+      throw new Error('[AIAssistantPlan] No default AI Person ID - setDefaultModel must be called with birth experience data first');
+    }
+
     await this.topicManager.ensureDefaultChats(
-      this.aiManager,
-      async (topicId: string, aiPersonId: SHA256IdHash<Person>) => {
+      aiPersonId,
+      async (topicId: string, personId: SHA256IdHash<Person>) => {
         // Callback when topic is created - generate welcome message
-        await this.messageProcessor.handleNewTopic(topicId, aiPersonId);
+        await this.messageProcessor.handleNewTopic(topicId, personId);
       }
     );
 
@@ -364,7 +364,7 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Get the model ID for a topic by resolving AI Person → LLM Person → Model ID
+   * Get the model ID for a topic by resolving AI Person → modelId
    */
   async getModelIdForTopic(topicId: string): Promise<string | null> {
     const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
@@ -372,21 +372,8 @@ export class AIAssistantPlan {
       return null;
     }
 
-    try {
-      // Resolve AI Person → LLM Person (follows delegation chain)
-      const llmPersonId = await this.aiManager.resolveLLMPerson(aiPersonId);
-
-      // Get LLM entity ID (llm:modelId)
-      const llmId = this.aiManager.getEntityId(llmPersonId);
-      if (!llmId || !llmId.startsWith('llm:')) {
-        return null;
-      }
-
-      return llmId.replace(/^llm:/, ''); // Strip llm: prefix
-    } catch (error) {
-      MessageBus.send('error', `Failed to resolve model ID for topic ${topicId}:`, error);
-      return null;
-    }
+    // Get modelId directly from AI object
+    return this.aiManager.getModelIdForAI(aiPersonId);
   }
 
   /**
@@ -406,88 +393,106 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Get entity ID for a person ID (reverse lookup)
-   * Returns "ai:{aiId}" or "llm:{modelId}"
+   * Get AI ID for a person ID (reverse lookup)
+   * Returns AI ID (e.g., "dreizehn") or null
    */
-  getEntityIdForPersonId(personId: SHA256IdHash<Person>): string | null {
-    return this.aiManager.getEntityId(personId);
+  getAIIdForPersonId(personId: SHA256IdHash<Person>): string | null {
+    return this.aiManager.getAIId(personId);
   }
 
   /**
    * Get model ID for a person ID (reverse lookup)
-   * Extracts the model ID from the entity ID naming convention
    *
    * @param personId - Person ID hash to look up
    * @returns Model ID (e.g., "gpt-oss:20b") or null if not found
    */
   getModelIdForPersonId(personId: SHA256IdHash<Person>): string | null {
-    return this.aiManager.getModelIdForPersonId(personId);
+    return this.aiManager.getModelIdForAI(personId);
   }
 
   /**
    * Ensure an AI Person exists for a specific model
-   * Creates both LLM Person and AI Person with delegation
+   * Creates AI Person with modelId directly (no LLM object needed)
    * @param modelId - The model ID (e.g., 'gpt-oss:20b')
-   * @param customName - Optional custom display name for the AI (e.g., 'frieda')
-   * @param customEmail - Optional custom email for the AI (e.g., 'frieda@ai.local')
+   * @param customName - Display name for the AI (from birth experience)
+   * @param customEmail - Email for the AI (from birth experience) - REQUIRED
    */
   async ensureAIForModel(modelId: string, customName?: string, customEmail?: string): Promise<SHA256IdHash<Person>> {
-    // Try to find model info from storage
-    const models = await this.deps.llmManager?.getAvailableModels() || [];
-    const model = models.find((m: any) => m.id === modelId);
-
-    // Use custom name if provided, otherwise use model info or derive from modelId
-    // Models may not be in storage yet (e.g., fresh install with Ollama models)
-    const displayName = customName || model?.displayName || model?.name || modelId;
-    const provider = model?.provider || (modelId.includes('claude') ? 'claude' : 'ollama');
-
-    // Create LLM Profile if doesn't exist (keep detailed name for LLM)
-    // createLLM returns the Profile idHash directly
-    // Pass customEmail to allow multiple Persons using the same model
-    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider, undefined, undefined, customEmail);
-
-    if (!llmProfileId) {
-      throw new Error(`[AIAssistantPlan] createLLM returned undefined for model: ${modelId}`);
+    if (!customEmail) {
+      throw new Error(`[AIAssistantPlan] ensureAIForModel requires customEmail - birth experience must generate email before AI creation`);
     }
 
-    // Extract model family for AI Person name (e.g., "GPT", "Claude", "Llama")
-    // Use custom name if provided
-    const familyName = customName || this._extractModelFamily(modelId);
+    // AI identity: email prefix (e.g., "dreizehn" from "dreizehn@gecko-macbook.local")
+    const aiId = customEmail.split('@')[0];
 
-    // Create AI Person if doesn't exist (use family name, not full model name)
-    // Use custom email in the ID to make it unique when user specifies custom name
-    const aiId = customEmail ? `ai-${customEmail.replace('@', '-at-')}` : `started-as-${modelId}`;
-    let aiPersonId = this.aiManager.getPersonId(`ai:${aiId}`);
-    if (!aiPersonId) {
-      // AIManager.createAI() returns Person idHash directly
-      aiPersonId = await this.aiManager.createAI(aiId, familyName, llmProfileId);
-      MessageBus.send('debug', `Created AI Person: ${aiId} (${familyName})`);
+    // Display name: use provided name or derive from modelId
+    const displayName = customName || this._extractModelFamily(modelId);
+
+    // Check if AI already exists
+    const existingAI = this.aiManager.getAIByAiId(aiId);
+    if (existingAI) {
+      // Update modelId if different
+      if (existingAI.modelId !== modelId) {
+        MessageBus.send('debug', `Updating AI ${aiId} modelId: ${existingAI.modelId} → ${modelId}`);
+        await this.aiManager.updateModelId(existingAI.personId, modelId);
+      }
+      return existingAI.personId;
     }
 
-    return aiPersonId;
+    // Create AI Person with modelId (no LLM object needed)
+    const result = await this.aiManager.createAI(aiId, displayName, undefined, modelId);
+    MessageBus.send('debug', `Created AI Person: ${aiId} (${displayName}) with modelId: ${modelId}`);
+
+    // Create Assembly for AI contact creation (journal entry) - fire and forget
+    if (this.deps.assemblyManager?.createAIContactAssembly) {
+      this.deps.assemblyManager.createAIContactAssembly(
+        result.personIdHash,
+        displayName,
+        modelId
+      ).then(() => {
+        MessageBus.send('debug', `Created Assembly for AI creation: ${displayName}`);
+      }).catch((error: any) => {
+        // Don't fail AI creation if assembly creation fails
+        MessageBus.send('warn', `Failed to create Assembly for AI creation:`, error);
+      });
+    }
+
+    return result.personIdHash;
   }
 
   /**
    * Set the default AI model and create default chats
    * Called when user selects a model in ModelOnboarding
+   *
+   * REQUIRES birth experience to have completed first - email is mandatory.
+   * Per design: AI identity is {name}@{device}.local, aiId = email prefix (no ai- prefix, no started-as- patterns)
+   *
    * @param modelId - The model ID
-   * @param displayName - Optional custom display name for the AI contact
-   * @param email - Optional custom email for the AI contact
+   * @param displayName - Display name for the AI contact (from birth experience)
+   * @param email - Email for the AI contact (from birth experience) - REQUIRED
    */
-  async setDefaultModel(modelId: string, displayName?: string, email?: string): Promise<void> {
-    MessageBus.send('debug', `Setting default model: ${modelId}`);
+  async setDefaultModel(modelId: string, displayName: string, email: string): Promise<void> {
+    if (!email) {
+      throw new Error('[AIAssistantPlan] setDefaultModel requires email - birth experience must complete first');
+    }
+    if (!displayName) {
+      throw new Error('[AIAssistantPlan] setDefaultModel requires displayName - birth experience must complete first');
+    }
+    MessageBus.send('debug', `Setting default model: ${modelId} for AI: ${displayName} (${email})`);
 
     // Set as default immediately - topicManager uses modelId directly
     this.topicManager.setDefaultModel(modelId);
 
-    // Persist the model
-    if (this.deps.settingsPersistence) {
-      await this.deps.settingsPersistence.setDefaultModelId(modelId);
-    }
+    // Persist the model to ONE.core storage
+    await this.deps.aiSettingsManager.setDefaultModelId(modelId);
 
     // CRITICAL: Ensure AI and LLM Persons exist before creating chats
     // This sets up the delegation chain needed for welcome message generation
-    await this.ensureAIForModel(modelId, displayName, email);
+    const aiPersonId = await this.ensureAIForModel(modelId, displayName, email);
+
+    // Store the default AI Person ID - this is separate from the model
+    // because AI identity is independent of model per design
+    this._defaultAIPersonId = aiPersonId;
 
     // Wait for topics to be created so they appear in conversation list immediately
     // (Welcome messages still generate in background via callbacks)
@@ -497,51 +502,23 @@ export class AIAssistantPlan {
       MessageBus.send('error', 'createDefaultChats failed:', err);
     }
 
-    MessageBus.send('log', `Default model set: ${modelId}`);
+    MessageBus.send('log', `Default model set: ${modelId}, default AI: ${aiPersonId}`);
   }
 
   /**
-   * Switch a topic to use a different LLM model
-   * Keeps the same AI Person (conversation identity) but changes which LLM it delegates to
+   * Switch an AI Person to use a different model
+   * AI identity persists, only the model changes
+   *
+   * @param aiPersonId - The AI Person ID (participant in conversation)
+   * @param modelId - New model ID (e.g., "claude-sonnet-4", "granite:3b")
    */
-  async switchTopicModel(topicId: string, modelId: string): Promise<void> {
-    MessageBus.send('debug', `Switching topic ${topicId} to LLM model ${modelId}`);
+  async switchAIModel(aiPersonId: SHA256IdHash<Person>, modelId: string): Promise<void> {
+    // Strip local: prefix if present (legacy)
+    const effectiveModelId = modelId.startsWith('local:') ? modelId.slice(6) : modelId;
 
-    // Verify topic is an AI topic
-    if (!this.topicManager.isAITopic(topicId)) {
-      throw new Error(`Cannot switch model - topic ${topicId} is not an AI topic`);
-    }
+    MessageBus.send('debug', `Switching AI ${aiPersonId.toString().substring(0, 8)}... to model ${effectiveModelId}`);
 
-    // Get the AI Person for this topic
-    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
-    if (!aiPersonId) {
-      throw new Error(`No AI Person found for topic ${topicId}`);
-    }
-
-    // Get the AI ID from the Person
-    const aiId = this.aiManager.getEntityId(aiPersonId);
-    if (!aiId || !aiId.startsWith('ai:')) {
-      throw new Error(`Invalid AI Person for topic ${topicId}`);
-    }
-
-    // Get or create LLM Profile for the new model
-    const models = await this.deps.llmManager?.getAvailableModels() || [];
-    const model = models.find((m: any) => m.id === modelId);
-    if (!model) {
-      throw new Error(`Model ${modelId} not found in available models`);
-    }
-
-    const displayName = model.displayName || model.name || modelId;
-    const provider = model.provider || 'unknown';
-
-    // Get or create LLM Profile
-    // createLLM returns the Profile idHash directly
-    const llmProfileId = await this.aiManager.createLLM(modelId, displayName, provider);
-
-    // Update the AI's delegation to point to the new LLM Profile
-    await this.aiManager.setAIDelegation(aiId.replace('ai:', ''), llmProfileId);
-
-    MessageBus.send('debug', `Topic ${topicId} now delegates to ${modelId}`);
+    await this.aiManager.updateModelId(aiPersonId, effectiveModelId);
   }
 
   /**
@@ -555,6 +532,17 @@ export class AIAssistantPlan {
 
     const models = await this.deps.llmManager?.getAvailableModels() || [];
     return models.find((m: any) => m.id === modelId) || null;
+  }
+
+  /**
+   * Get the default AI Person ID (used when creating new AI chats)
+   * Returns the stored default AI Person ID, set by setDefaultModel()
+   *
+   * Per design: AI identity is independent of model - we store the AI Person ID directly
+   * rather than deriving it from the model ID.
+   */
+  getDefaultAIPersonId(): SHA256IdHash<Person> | null {
+    return this._defaultAIPersonId;
   }
 
   /**
@@ -580,15 +568,14 @@ export class AIAssistantPlan {
       throw new Error(`[AIAssistantPlan] Topic ${topicId} is not an AI topic`);
     }
 
-    // Get the AI entity ID
-    const aiId = this.aiManager.getEntityId(aiPersonId);
-    if (!aiId || !aiId.startsWith('ai:')) {
-      throw new Error(`[AIAssistantPlan] Invalid AI entity ID: ${aiId}`);
+    // Get the AI ID from the aiByPerson lookup
+    const aiId = this.aiManager.getAIId(aiPersonId);
+    if (!aiId) {
+      throw new Error(`[AIAssistantPlan] No AI found for Person ${aiPersonId.toString().substring(0, 8)}...`);
     }
 
     // Rename the AI (creates new Person/Profile, preserves old as past identity)
-    const aiIdWithoutPrefix = aiId.replace(/^ai:/, '');
-    await this.aiManager.renameAI(aiIdWithoutPrefix, newName);
+    await this.aiManager.renameAI(aiId, newName);
   }
 
   /**
@@ -604,15 +591,14 @@ export class AIAssistantPlan {
       return [];
     }
 
-    // Get the AI entity ID
-    const aiId = this.aiManager.getEntityId(aiPersonId);
-    if (!aiId || !aiId.startsWith('ai:')) {
+    // Get the AI ID from the aiByPerson lookup
+    const aiId = this.aiManager.getAIId(aiPersonId);
+    if (!aiId) {
       return [];
     }
 
     // Get past identities
-    const aiIdWithoutPrefix = aiId.replace(/^ai:/, '');
-    return await this.aiManager.getPastIdentities(aiIdWithoutPrefix);
+    return await this.aiManager.getPastIdentities(aiId);
   }
 
   /**
@@ -747,10 +733,13 @@ export class AIAssistantPlan {
 
         // Call LLM to determine if tools should be used and which ones
         // This uses the normal chat flow which includes tool processing
+        // CRITICAL: No streaming - Phase 0 is context gathering only
         const toolEvalResponse = await this.deps.llmManager.chat(history, modelId, {
           topicId,
           maxTokens,
           temperature: 0.3, // Lower temp for more deterministic tool selection
+          onStream: undefined, // No streaming - context gathering only
+          onThinkingStream: undefined // No thinking display - context gathering only
           // Don't disable tools here - we WANT tool calls in Phase 0
         });
 
@@ -825,6 +814,7 @@ export class AIAssistantPlan {
           ];
 
           // Use cached context for analytics (3-12x faster!)
+          // CRITICAL: No streaming callbacks - this is background processing
           const analyticsResponse = await this.deps.llmManager.chat(
             analyticsHistory,
             modelId,
@@ -832,7 +822,9 @@ export class AIAssistantPlan {
               topicId, // Reuses cached context from Phase 1
               maxTokens,
               temperature: 0.3, // Lower temp for deterministic extraction
-              disableTools: true // No tool calls needed for analytics
+              disableTools: true, // No tool calls needed for analytics
+              onStream: undefined, // No streaming - background only
+              onThinkingStream: undefined // No thinking display - background only
             }
           );
 
