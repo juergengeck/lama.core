@@ -25,6 +25,7 @@ import type { KeyPair } from '@refinio/one.core/lib/crypto/encryption.js';
 import type { SignKeyPair } from '@refinio/one.core/lib/crypto/sign.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type { StoryFactory, Plan } from '@refinio/api/plan-system';
+import type { LLMCapabilities } from './types.js';
 
 // Storage dependencies (injected to avoid module duplication)
 export interface AIManagerDeps {
@@ -91,6 +92,8 @@ export type LLM = {
   modified: number;
   createdAt: string;
   lastUsed: string;
+  /** Model capabilities for prompt adaptation */
+  capabilities?: LLMCapabilities;
 };
 
 /**
