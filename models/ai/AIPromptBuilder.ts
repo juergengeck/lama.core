@@ -140,10 +140,56 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
   /**
    * Build system prompt (Part 1)
-   * Uses Phase 1 prompt (natural language) - Phase 2 analytics happens separately
+   * Uses SystemPromptBuilder for composable, personalized system prompts
    */
   private async buildSystemPrompt(topicId: string): Promise<string> {
-    // Import Phase 1 system prompt (natural language, no JSON structure)
+    // Get AI Person ID for this topic to enable personalized prompts
+    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+
+    // Get current subjects for context (if topic analysis is available)
+    let currentSubjects: string[] | undefined;
+    try {
+      const messages = await this.getCachedMessages(topicId);
+      // Could extract subjects from messages here if needed
+      // For now, we'll let SystemPromptBuilder handle this
+    } catch (error) {
+      console.warn('[AIPromptBuilder] Could not get messages for subject extraction:', error);
+    }
+
+    // Build context for SystemPromptBuilder with aiManager and llmManager
+    const context = {
+      topicId,
+      personId: aiPersonId,
+      currentSubjects,
+      aiManager: this.aiManager,
+      llmManager: this.llmManager
+    };
+
+    // Use llmManager's SystemPromptBuilder if available, otherwise fall back to Phase 1 prompt
+    if (this.llmManager?.systemPromptBuilder) {
+      try {
+        const systemPrompt = await this.llmManager.systemPromptBuilder.build(context);
+
+        // Add context enrichment if available
+        if (this.contextEnrichmentService) {
+          try {
+            const messages = await this.getCachedMessages(topicId);
+            const contextHints = await this.contextEnrichmentService.buildEnhancedContext(topicId, messages);
+            if (contextHints) {
+              return systemPrompt + `\n\n${contextHints}`;
+            }
+          } catch (error) {
+            console.warn('[AIPromptBuilder] Context enrichment failed:', error);
+          }
+        }
+
+        return systemPrompt;
+      } catch (error) {
+        console.warn('[AIPromptBuilder] SystemPromptBuilder failed, falling back to Phase 1 prompt:', error);
+      }
+    }
+
+    // Fallback: Import Phase 1 system prompt (natural language, no JSON structure)
     const { PHASE1_SYSTEM_PROMPT } = await import('../../constants/system-prompts.js');
     let systemPrompt = PHASE1_SYSTEM_PROMPT;
 
