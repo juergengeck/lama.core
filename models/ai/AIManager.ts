@@ -244,13 +244,15 @@ export class AIManager {
    * @param name - Display name (e.g., "Claude", "Research Assistant")
    * @param llmId - Optional LLM ID hash to use; undefined = use app default
    * @param modelId - Optional explicit model ID (e.g., "granite:3b"); if not provided, derived from aiId
+   * @param personality - Optional AI personality configuration
    * @returns CreateAIResponse with personIdHash, profileIdHash, someoneIdHash
    */
   async createAI(
     aiId: string,
     name: string,
     llmId?: SHA256IdHash<LLM>,
-    modelId?: string
+    modelId?: string,
+    personality?: AIPersonality
   ): Promise<CreateAIResponse> {
     MessageBus.send('debug', `Creating AI Person: ${name} (${aiId})`);
 
@@ -325,7 +327,8 @@ export class AIManager {
         created: now,
         modified: now,
         active: true,
-        deleted: false
+        deleted: false,
+        personality  // Store personality configuration
       };
 
       const aiResult: any = await this.deps.storeVersionedObject(aiObject);
