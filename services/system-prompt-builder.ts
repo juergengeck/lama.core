@@ -12,6 +12,9 @@
  * Each section is independently configurable and generates content on-demand.
  */
 
+import { buildIdentityPrompt, buildFallbackIdentity } from './identity-prompt-builder.js';
+import { resolveCapabilities } from './capability-resolver.js';
+
 export interface SystemPromptSection {
   name: string;
   priority: number; // Lower = earlier in prompt
@@ -23,6 +26,10 @@ export interface SystemPromptContext {
   topicId?: string;
   personId?: string;
   currentSubjects?: string[];
+  /** AI Manager for looking up AI identity */
+  aiManager?: any;
+  /** LLM Manager for capability resolution */
+  llmManager?: any;
   [key: string]: any;
 }
 
@@ -42,12 +49,51 @@ export class SystemPromptBuilder {
    * Register all default prompt sections
    */
   private registerDefaultSections() {
-    // Section 1: Base Identity (Priority 0)
+    // Section 1: Base Identity (Priority 0) - fallback only
     this.register({
       name: 'base-identity',
       priority: 0,
       enabled: true,
-      generate: () => `You are a private AI assistant with access to the owner's conversations.\n\nIMPORTANT: When providing structured JSON responses, keep your response field under 2000 characters.`
+      generate: () => buildFallbackIdentity() + '\n\nIMPORTANT: When providing structured JSON responses, keep your response field under 2000 characters.'
+    });
+
+    // Section 1b: AI Identity (Priority 5 - personalized identity)
+    this.register({
+      name: 'ai-identity',
+      priority: 5,
+      enabled: true,
+      generate: async (context?: SystemPromptContext) => {
+        // Require both personId and aiManager
+        if (!context?.personId || !context?.aiManager) {
+          return '';
+        }
+
+        try {
+          const ai = context.aiManager.getAI(context.personId);
+          if (!ai) {
+            return '';
+          }
+
+          // Resolve capabilities
+          let capabilities = undefined;
+          if (context.llmManager && ai.modelId) {
+            const llm = await context.llmManager.getModel(ai.modelId);
+            if (llm) {
+              capabilities = resolveCapabilities(
+                ai.modelId,
+                llm.capabilities,
+                llm.provider,
+                llm.contextLength
+              );
+            }
+          }
+
+          return buildIdentityPrompt(ai, capabilities);
+        } catch (error) {
+          console.warn('[SystemPromptBuilder] Failed to build AI identity:', error);
+          return '';
+        }
+      }
     });
 
     // Section 2: User Preferences (Priority 10)
