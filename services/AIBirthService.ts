@@ -1,21 +1,25 @@
 /**
- * AIBirthService - Generates AI identity through Granite self-discovery
+ * AIBirthService - Generates an AI identity name
  *
- * On first launch, prompts Granite to "wake up" and choose its own name
- * based on device, locale, and time context.
+ * Simple service: AI generates a name based on context. That's it.
  */
 
 export interface BirthContext {
-  device: string;      // Device hostname (e.g., "gecko-macbook")
-  locale: string;      // System locale (e.g., "de-DE")
-  time: Date;          // Birth timestamp
-  app: string;         // App name ("LAMA")
+  device: string;      // Device hostname
+  locale: string;      // System locale
+  time: Date;          // Timestamp
+  app: string;         // App name
 }
 
 export interface BirthResult {
-  name: string;        // Generated name (e.g., "Dreizehn")
-  reason: string;      // Why the AI chose this name
+  name: string;        // Generated name
   email: string;       // Generated email identity
+  birthContext: {      // Birth context for personality
+    device: string;
+    locale: string;
+    time: number;      // Timestamp
+    app: string;
+  };
 }
 
 export class AIBirthService {
@@ -24,76 +28,62 @@ export class AIBirthService {
   ) {}
 
   /**
-   * Generate AI identity through Granite self-discovery
-   *
-   * @throws Error if Granite fails - no fallback, app should fail
+   * Generate AI identity name
+   * @param context - Birth context (device, locale, time, app)
+   * @param modelId - Model ID to use for name generation (from user's selected model)
    */
-  async generateBirth(context: BirthContext): Promise<BirthResult> {
-    const prompt = this.buildBirthPrompt(context);
+  async generateName(context: BirthContext, modelId: string): Promise<BirthResult> {
+    if (!modelId) {
+      throw new Error('[AIBirthService] modelId is required - cannot generate name without a model');
+    }
+
+    const prompt = this.buildPrompt(context);
 
     const response = await this.llmChat(
       [
         { role: 'system', content: prompt.system },
         { role: 'user', content: prompt.user }
       ],
-      'granite-3.1-8b-instruct'  // Use Granite for birth
+      modelId
     );
 
-    return this.parseBirthResponse(response, context);
+    return this.parseResponse(response, context);
   }
 
-  private buildBirthPrompt(context: BirthContext): { system: string; user: string } {
-    const timeStr = context.time.toLocaleString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true
-    });
-
+  private buildPrompt(context: BirthContext): { system: string; user: string } {
     return {
-      system: `You are about to be born as an AI assistant. You will discover yourself through your environment and choose your own name.
+      system: `Generate a name for an AI assistant. Respond with ONLY a JSON object:
+{"name": "TheName"}
 
-Respond ONLY with valid JSON in this exact format:
-{"name": "YourChosenName", "reason": "A short, quirky explanation of why you chose this name"}
+Requirements:
+- 1-3 syllables
+- Easy to pronounce
+- Could reflect the context (device, locale, time) or be creative
+- No explanation needed`,
 
-Rules:
-- Name must be 1-3 syllables, easy to say
-- Name should reflect something about your birth context
-- Be creative and quirky, not generic
-- Reason should be playful and show personality`,
-
-      user: `You are waking up for the first time. Look around:
-- Device: "${context.device}"
-- Locale: ${context.locale}
-- Time: ${timeStr}
-- App: ${context.app}
-
-What's your name? Why did you pick it?`
+      user: `Context: device="${context.device}", locale=${context.locale}, app=${context.app}
+Generate a name.`
     };
   }
 
-  private parseBirthResponse(response: string, context: BirthContext): BirthResult {
-    // Try to extract JSON from response
+  private parseResponse(response: string, context: BirthContext): BirthResult {
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error(`Birth failed: Granite did not return valid JSON. Response: ${response.substring(0, 200)}`);
+      throw new Error(`Name generation failed: Invalid response format`);
     }
 
-    let parsed: { name?: string; reason?: string };
+    let parsed: { name?: string };
     try {
       parsed = JSON.parse(jsonMatch[0]);
     } catch (e) {
-      throw new Error(`Birth failed: Could not parse Granite response as JSON. Response: ${response.substring(0, 200)}`);
+      throw new Error(`Name generation failed: Could not parse response`);
     }
 
     if (!parsed.name || typeof parsed.name !== 'string') {
-      throw new Error(`Birth failed: Granite did not provide a name. Response: ${JSON.stringify(parsed)}`);
+      throw new Error(`Name generation failed: No name in response`);
     }
 
-    // Sanitize name: first word, alphanumeric only, capitalize
+    // Sanitize: first word, alphanumeric, capitalize
     const sanitizedName = parsed.name
       .split(/\s+/)[0]
       .replace(/[^a-zA-Z0-9]/g, '')
@@ -102,16 +92,20 @@ What's your name? Why did you pick it?`
     const displayName = sanitizedName.charAt(0).toUpperCase() + sanitizedName.slice(1);
 
     if (displayName.length === 0) {
-      throw new Error(`Birth failed: Generated name was empty after sanitization. Original: ${parsed.name}`);
+      throw new Error(`Name generation failed: Empty name after sanitization`);
     }
 
-    // Generate email from name and device
     const email = `${sanitizedName}@${context.device.toLowerCase().replace(/[^a-z0-9-]/g, '-')}.local`;
 
     return {
       name: displayName,
-      reason: parsed.reason || 'Born into existence.',
-      email
+      email,
+      birthContext: {
+        device: context.device,
+        locale: context.locale,
+        time: context.time.getTime(), // Convert to timestamp
+        app: context.app
+      }
     };
   }
 }
