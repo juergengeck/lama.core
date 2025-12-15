@@ -88,7 +88,7 @@ function extractJsonFromText(text: string): { json: string; start: number; end: 
  */
 export function parseToolCall(text: string): ParseResult {
   // Try markdown code fence first
-  const fenceMatch = text.match(/```json\s*(\{[\s\S]*?\})\s*```/);
+  const fenceMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
 
   if (fenceMatch) {
     try {
