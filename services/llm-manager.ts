@@ -31,6 +31,7 @@
 
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
+import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import type { LLMPlatform } from './llm-platform.js';
 
 const MessageBus = createMessageBus('LLMManager');
@@ -45,6 +46,7 @@ import type { SystemPromptContext } from './system-prompt-builder.js';
 import { formatForAnthropicWithCaching, formatForStandardAPI, type PromptParts } from './context-budget-manager.js';
 import { LLMConcurrencyManager } from './llm-concurrency-manager.js';
 import { getAdapterRegistry, registerDefaultAdapters, type LLMAdapterRegistry, type LLMAdapter, type ChatResult } from './llm-adapters/index.js';
+import { AIToolExecutor, type ToolExecutionContext } from './AIToolExecutor.js';
 
 /**
  * LLM connection health status
@@ -93,6 +95,7 @@ class LLMManager {
   systemPromptBuilder: SystemPromptBuilder; // System prompt builder for composable context injection
   userSettingsManager?: any; // User settings manager for API keys
   corsProxyUrl?: string; // CORS proxy URL for browser API calls
+  private toolExecutor?: AIToolExecutor; // Optional unified tool executor
 
   // LLM health tracking
   private modelHealth: Map<string, LLMHealthStatus>; // modelId → health status
@@ -141,6 +144,13 @@ class LLMManager {
     this.adapterRegistry = getAdapterRegistry()
     registerDefaultAdapters()
 
+    // Propagate platform to adapters that need it (e.g., TransformersAdapter)
+    MessageBus.send('debug', `LLMManager: platform=${platform ? 'provided' : 'undefined'}, setPlatform in registry=${('setPlatform' in this.adapterRegistry)}`)
+    if (platform && 'setPlatform' in this.adapterRegistry) {
+      MessageBus.send('debug', 'LLMManager: Calling registry.setPlatform()')
+      ;(this.adapterRegistry as any).setPlatform(platform)
+    }
+
     // Initialize system prompt builder
     this.systemPromptBuilder = new SystemPromptBuilder(
       mcpManager,
@@ -151,6 +161,27 @@ class LLMManager {
 
     // Methods are already bound as class methods, no need for explicit binding
 }
+
+  /**
+   * Set platform for local model inference (can be called after construction)
+   * This propagates the platform to adapters that need it (e.g., TransformersAdapter)
+   */
+  setPlatform(platform: LLMPlatform): void {
+    this.platform = platform
+    MessageBus.send('debug', 'LLMManager.setPlatform: Setting platform on manager and adapters')
+    if ('setPlatform' in this.adapterRegistry) {
+      ;(this.adapterRegistry as any).setPlatform(platform)
+      MessageBus.send('debug', 'LLMManager.setPlatform: Platform propagated to adapter registry')
+    }
+  }
+
+  /**
+   * Set the AI tool executor for unified tool handling
+   */
+  setToolExecutor(executor: AIToolExecutor): void {
+    this.toolExecutor = executor;
+    MessageBus.send('debug', 'AIToolExecutor set');
+  }
 
   /**
    * Update SystemPromptBuilder dependencies (called after ONE.core is initialized)
@@ -801,23 +832,50 @@ class LLMManager {
       if (toolCall.tool) {
         MessageBus.send('debug', `Executing tool: ${toolCall.tool}`)
 
-        const result: any = await this.mcpManager?.executeTool(
-          toolCall.tool,
-          toolCall.parameters || {},
-          context // Pass context for memory tools
-        )
+        let result: any;
+        let toolResultText = '';
 
-        // Extract tool result text for the LLM to process
-        let toolResultText = ''
-        if (result.content && Array.isArray(result.content)) {
-          const textParts = result.content
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-          toolResultText = textParts.join('\n\n')
-        } else if (typeof result === 'string') {
-          toolResultText = result
+        if (this.toolExecutor && context?.callerId) {
+          // Use unified AIToolExecutor
+          const execContext: ToolExecutionContext = {
+            callerId: context.callerId,
+            topicId: context.topicId,
+            entryPoint: 'internal',  // NOTE: use 'internal', not 'ai-assistant'
+            requestId: crypto.randomUUID()
+          };
+
+          // Add mcp: prefix for backwards compatibility with existing MCP tools
+          const toolName = toolCall.tool.includes(':') && !toolCall.tool.startsWith('plan:') && !toolCall.tool.startsWith('mcp:')
+            ? `mcp:${toolCall.tool}`
+            : toolCall.tool;
+
+          const { result: execResult } = await this.toolExecutor.execute(
+            toolName,
+            toolCall.parameters || {},
+            execContext
+          );
+
+          result = execResult;
+          toolResultText = this.toolExecutor.formatResultForLLM(execResult);
         } else {
-          toolResultText = JSON.stringify(result, null, 2)
+          // Fallback to direct MCP execution
+          result = await this.mcpManager?.executeTool(
+            toolCall.tool,
+            toolCall.parameters || {},
+            context
+          );
+
+          // Extract text from MCP result
+          if (result.content && Array.isArray(result.content)) {
+            const textParts = result.content
+              .filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text);
+            toolResultText = textParts.join('\n\n');
+          } else if (typeof result === 'string') {
+            toolResultText = result;
+          } else {
+            toolResultText = JSON.stringify(result, null, 2);
+          }
         }
 
         // CRITICAL: Implement ReACT pattern - send tool result back to LLM for natural response
@@ -1153,8 +1211,8 @@ class LLMManager {
       content: m.content
     }));
 
-    // Extract model ID (remove 'local:' prefix if present)
-    const modelId = model.id.replace(/^local:/, '');
+    // Model IDs no longer use 'local:' prefix - use directly
+    const modelId = model.id;
 
     try {
       const response = await this.platform.chatWithLocal(modelId, chatMessages, {
@@ -1168,6 +1226,41 @@ class LLMManager {
       return response;
     } catch (error: any) {
       MessageBus.send('error', `Local chat failed: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Chat directly with a local model by ID, bypassing storage lookup.
+   * Use this for first-run scenarios where the model isn't yet in storage
+   * (e.g., AI birth name generation before model registration).
+   */
+  async chatLocalDirect(modelId: string, messages: any[], options: any = {}): Promise<string> {
+    MessageBus.send('debug', `Direct local chat: ${modelId}, ${messages?.length || 0} msgs`);
+
+    // Platform must implement chatWithLocal
+    if (!this.platform?.chatWithLocal) {
+      throw new Error('Local model inference not supported on this platform');
+    }
+
+    // Convert messages to standard format
+    const chatMessages = messages.map((m: any) => ({
+      role: m.role as 'system' | 'user' | 'assistant',
+      content: m.content
+    }));
+
+    try {
+      const response = await this.platform.chatWithLocal(modelId, chatMessages, {
+        onStream: options.onStream,
+        temperature: options.temperature ?? 0.7,
+        maxTokens: options.maxTokens ?? 2048,
+        format: options.format,
+        topicId: options.topicId
+      });
+
+      return response;
+    } catch (error: any) {
+      MessageBus.send('error', `Direct local chat failed: ${error.message}`);
       throw error;
     }
   }
@@ -1512,21 +1605,23 @@ class LLMManager {
     contextLength?: number;
     familyName?: string;
   }>): Promise<void> {
-    MessageBus.send('debug', `Discovering ${installedModels.length} local on-device models...`);
+    console.log(`[LLMManager] discoverLocalModels: ${installedModels.length} models`);
 
     if (!this.channelManager) {
-      MessageBus.send('alert', 'channelManager not available - cannot store local models');
+      console.error('[LLMManager] channelManager not available - cannot store local models');
       return;
     }
 
     for (const model of installedModels) {
       try {
-        const modelId = `local:${model.id}`;
+        // Model IDs no longer use 'local:' prefix - routing is handled by inferenceType field
+        const modelId = model.id;
+        console.log(`[LLMManager] Processing local model: ${modelId}`);
 
         // Check if model already exists
         const existing = await this.getLLMFromStorage(modelId);
         if (existing) {
-          MessageBus.send('debug', `Local model already registered: ${modelId}`);
+          console.log(`[LLMManager] Local model already registered: ${modelId}`);
           continue;
         }
 
@@ -1555,9 +1650,16 @@ class LLMManager {
           lastUsed: nowStr
         };
 
+        console.log(`[LLMManager] Storing LLM object:`, JSON.stringify(llmObject, null, 2));
+        // Store in ONE.core storage first (like LLMConfigPlan.setConfig does)
+        const result = await storeVersionedObject(llmObject);
+        const hash = typeof result === 'string' ? result : result.idHash;
+        console.log(`[LLMManager] Stored LLM object with hash: ${hash}`);
+        // Then post to channel for sync
         await this.channelManager.postToChannel('lama', llmObject);
-        MessageBus.send('debug', `Registered local model: ${model.name} (${modelId})`);
+        console.log(`[LLMManager] ✅ Stored local model: ${model.name} (${modelId})`);
       } catch (error) {
+        console.error(`[LLMManager] ❌ Failed to register local model ${model.id}:`, error);
         MessageBus.send('error', `Failed to register local model ${model.id}:`, error);
       }
     }
