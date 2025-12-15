@@ -38,7 +38,7 @@ export interface ToolExecutionContext {
   /** Current topic/conversation */
   topicId?: string;
   /** Entry point identifier */
-  entryPoint: 'ai-assistant' | 'agent-mode';
+  entryPoint: 'internal';
   /** Request ID for correlation */
   requestId: string;
 }
@@ -180,7 +180,7 @@ export class AIToolExecutor {
     // Build request context for PlanRouter
     const requestContext = {
       callerId: context.callerId.toString(),
-      callerType: 'ai' as const,
+      callerType: 'llm' as const,
       entryPoint: context.entryPoint,
       topicId: context.topicId,
       timestamp: Date.now(),
@@ -194,7 +194,7 @@ export class AIToolExecutor {
     // PlanRouter returns { success, data, error }
     const policy: PolicyResult = {
       allowed: true,
-      matchedRules: planResult.matchedRules || []
+      matchedRules: []  // PlanResult doesn't expose matchedRules
     };
 
     return {
