@@ -47,6 +47,7 @@ import { ProposalCache } from '@lama/core/services/proposal-cache.js';
 // LAMA core services
 import { LLMManager } from '@lama/core/services/llm-manager.js';
 import type { LLMPlatform } from '@lama/core/services/llm-platform.js';
+import { AIToolExecutor, type AIToolExecutorDeps } from '@lama/core/services/AIToolExecutor.js';
 
 /**
  * Platform-specific LLM configuration interface
@@ -145,6 +146,9 @@ export class AIModule implements Module {
   public cubeStorage: any = null;
   public cubePlan: CubePlan | null = null;
 
+  // Tool executor for unified AI tool access
+  public toolExecutor: AIToolExecutor | null = null;
+
   /**
    * Constructor - inject platform-specific dependencies
    * @param llmPlatform - Platform-specific LLM event emitter (Electron, Browser, etc.)
@@ -169,6 +173,22 @@ export class AIModule implements Module {
 
     // Set channelManager on llmManager for LLM storage access
     this.llmManager.channelManager = channelManager;
+
+    // Discover and register installed local models (if platform supports it)
+    if (this.llmPlatform.getInstalledTextGenModels) {
+      try {
+        console.log('[AIModule] Discovering installed local text-generation models...');
+        const installedModels = await this.llmPlatform.getInstalledTextGenModels();
+        if (installedModels.length > 0) {
+          await this.llmManager.discoverLocalModels(installedModels);
+          console.log(`[AIModule] Registered ${installedModels.length} local models in ONE.core storage`);
+        } else {
+          console.log('[AIModule] No installed local models found');
+        }
+      } catch (error) {
+        console.warn('[AIModule] Local model discovery failed (non-fatal):', error);
+      }
+    }
 
     // Capture 'this' for closures
     const that = this;
@@ -216,22 +236,6 @@ export class AIModule implements Module {
           // Wrap createAccess to match expected void return type
           await createAccess(accessRequests);
         },
-        queryAllAIObjects: async function* () {
-          // Query all AI objects from storage using reverse map
-          console.log('[AIModule/queryAllAIObjects] Querying AI objects...');
-          const myId = await leuteModel!.myMainIdentity();
-          const aiEntries = await getAllEntries(myId, 'AI' as any);
-          console.log(`[AIModule/queryAllAIObjects] Found ${aiEntries.length} AI entries`);
-
-          for (const entry of aiEntries) {
-            const objectHash = (entry as any).obj || (entry as any).hash || entry;
-            const aiObject = await getObject(objectHash);
-            if (aiObject && aiObject.$type$ === 'AI') {
-              console.log(`[AIModule/queryAllAIObjects] Yielding AI object: ${(aiObject as any).displayName}`);
-              yield aiObject;
-            }
-          }
-        },
         getOwnerId: async () => {
           return await leuteModel!.myMainIdentity();
         }
@@ -257,9 +261,8 @@ export class AIModule implements Module {
       contextEnrichmentService: undefined, // Optional - not used in browser
       topicAnalysisModel: undefined, // Will be set during init()
       topicGroupManager: topicGroupManager!,
-      settingsPersistence: undefined, // Optional - use llmConfigPlan instead
-      llmConfigPlan: undefined, // Will be set right after
       aiSettingsManager: this.aiSettingsManager,
+      localModelLookup: this.llmPlatform.lookupLocalModel?.bind(this.llmPlatform),
       storageDeps: {
         storeVersionedObject,
         storeUnversionedObject,
@@ -269,9 +272,7 @@ export class AIModule implements Module {
         createDefaultKeys,
         hasDefaultKeys,
         channelManager: channelManager!,    // Required: for querying LLM objects
-        trustPlan: trustPlan!,              // For assigning 'high' trust to AI contacts
-        aiObjectManager: this.aiObjectManager,  // For creating AI storage objects
-        llmObjectManager: this.llmObjectManager // For creating/updating LLM storage objects
+        trustPlan: trustPlan!              // For assigning 'high' trust to AI contacts
       }
     });
 
@@ -407,6 +408,21 @@ export class AIModule implements Module {
     });
     await this.aiMessageListener.start();
     console.log('[AIModule] AIMessageListener started');
+  }
+
+  /**
+   * Initialize the AI tool executor for unified tool access
+   * Call this after mcpManager is available (from platform code)
+   *
+   * @param deps - Tool executor dependencies (planRouter, mcpManager, etc.)
+   */
+  initToolExecutor(deps: AIToolExecutorDeps): void {
+    console.log('[AIModule] Initializing AIToolExecutor...');
+
+    this.toolExecutor = new AIToolExecutor(deps);
+    this.llmManager.setToolExecutor(this.toolExecutor);
+
+    console.log('[AIModule] AIToolExecutor initialized and wired to LLMManager');
   }
 
   async shutdown(): Promise<void> {
