@@ -90,7 +90,8 @@ export class AIModule implements Module {
     { targetType: 'JournalPlan', required: true },
     { targetType: 'OneCore', required: true },
     { targetType: 'TopicAnalysisModel', required: true },
-    { targetType: 'StoryFactory', required: true }
+    { targetType: 'StoryFactory', required: true },
+    { targetType: 'MCPManager', required: false }  // Optional - auto-wires AIToolExecutor when available
   ];
 
   static supplies = [
@@ -121,6 +122,7 @@ export class AIModule implements Module {
     oneCore?: any;
     topicAnalysisModel?: any;
     storyFactory?: StoryFactory;
+    mCPManager?: any;  // Optional - enables AIToolExecutor when supplied (note: capital CP from MCPManager)
   } = {};
 
   // AI Plans
@@ -334,6 +336,11 @@ export class AIModule implements Module {
     // Subjects plan for managing memory/topics/keywords (uses TopicAnalysisModel)
     this.subjectsPlan = new SubjectsPlan();
 
+    // Auto-initialize AIToolExecutor if MCPManager was supplied before init()
+    if (this.deps.mCPManager) {
+      this.initToolExecutor({ mcpManager: this.deps.mCPManager });
+    }
+
     console.log('[AIModule] Initialized');
   }
 
@@ -441,6 +448,12 @@ export class AIModule implements Module {
   setDependency(targetType: string, instance: any): void {
     const key = targetType.charAt(0).toLowerCase() + targetType.slice(1);
     this.deps[key as keyof typeof this.deps] = instance;
+
+    // Auto-initialize AIToolExecutor when MCPManager is supplied (if already initialized)
+    // If not initialized yet, init() will call initToolExecutor after llmManager is ready
+    if (targetType === 'MCPManager' && instance && this.llmManager) {
+      this.initToolExecutor({ mcpManager: instance });
+    }
   }
 
   emitSupplies(registry: any): void {
