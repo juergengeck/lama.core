@@ -218,6 +218,21 @@ External integrations and platform abstractions:
 - **claude.ts** - Anthropic Claude API client
 - **lmstudio.ts** - LM Studio HTTP client
 - **llm-platform.ts** - Platform abstraction interface
+- **AIToolExecutor.ts** - Unified tool execution for AI (routes plan: → PlanRouter, mcp: → MCPManager)
+- **tool-parser.ts** - Extracts JSON tool calls from LLM output
+- **tool-trace.ts** - Tool execution trace format for transparency
+
+### Modules (modules/)
+Module system for platform-agnostic initialization:
+- **AIModule** - AI and LLM functionality (plans, LLM management, tool execution)
+  - Declares dependencies via `static demands` (LeuteModel, ChannelManager, etc.)
+  - Optional `MCPManager` demand auto-wires AIToolExecutor when supplied
+  - Note: Property is `mCPManager` (capital CP) due to setDependency key generation
+- **ChatModule** - Chat and messaging functionality
+- **ConnectionModule** - P2P connections and pairing
+- **TrustModule** - Identity trust system
+- **MemoryModule** - Memory and knowledge management
+- **JournalModule** - Assembly/story tracking
 
 ### AI Models (models/ai/)
 Component-based AI assistant architecture:
