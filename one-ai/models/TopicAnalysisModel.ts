@@ -33,7 +33,18 @@ export default class TopicAnalysisModel extends Model {
         super();
         this.channelManager = channelManager;
         this.topicModel = topicModel;
-}
+    }
+
+    /**
+     * Extract pure SHA256 hash from topicId (which may have ":name" suffix)
+     * e.g., "abc123...def:LAMA" -> "abc123...def"
+     */
+    private extractTopicHash(topicId: string): string {
+        if (typeof topicId === 'string' && topicId.includes(':')) {
+            return topicId.split(':')[0];
+        }
+        return topicId;
+    }
 
     async init(): Promise<any> {
         this.state.assertCurrentState('Uninitialised');
@@ -61,6 +72,11 @@ export default class TopicAnalysisModel extends Model {
      */
     async createSubject(topicId: any, keywordTerms: string[], keywordCombination: any, description: any, confidence: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
+
+        // Extract the hash portion from topicId (format: "hash:name" or just "hash")
+        const topicIdHash = this.extractTopicHash(topicId);
+
+        MessageBus.send('debug', `[TopicAnalysisModel] createSubject: topicId=${topicId}, extracted hash=${topicIdHash}`);
 
         // Ensure all Keywords exist BEFORE creating Subject (referential integrity)
         const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
@@ -112,7 +128,7 @@ export default class TopicAnalysisModel extends Model {
             createdAt: now,       // Timestamp when subject was first created
             lastSeenAt: now,      // Timestamp when subject was last referenced
             messageCount: 1,      // Number of messages referencing this subject
-            topics: [topicId], // Array of topic/channel IDs where this subject is discussed
+            topics: [topicIdHash], // Array of topic/channel IDs where this subject is discussed
             memories: [], // Array of Memory IdHashes (from memory.core)
             feedbackRefs: [] // Array of Feedback IdHashes
         };
@@ -127,8 +143,9 @@ export default class TopicAnalysisModel extends Model {
         MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Subject with hash:', result.hash);
 
         // Also post to channel for sync (optional - if you want it to sync across instances)
+        // Use extracted topicIdHash (pure SHA256), not the full topicId (which may have ":name" suffix)
         await this.channelManager.postToChannel(
-            topicId,
+            topicIdHash,
             subjectObj
         );
 
@@ -142,6 +159,7 @@ export default class TopicAnalysisModel extends Model {
     async createKeyword(topicId: any, term: any, category: any, frequency: any, score: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
+        const topicIdHash = this.extractTopicHash(topicId);
         const now = Date.now();
         const keywordObj = {
             $type$: 'Keyword' as const,
@@ -159,7 +177,7 @@ export default class TopicAnalysisModel extends Model {
 
         // Post to the conversation's channel for sync
         await this.channelManager.postToChannel(
-            topicId,
+            topicIdHash,
             keywordObj
         );
 
@@ -172,6 +190,7 @@ export default class TopicAnalysisModel extends Model {
     async createKeywordWithSubjects(topicId: any, term: any, subjectIds: SHA256IdHash<Subject>[], frequency: any, score: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
+        const topicIdHash = this.extractTopicHash(topicId);
         const now = Date.now();
         const keywordObj = {
             $type$: 'Keyword' as const,
@@ -189,7 +208,7 @@ export default class TopicAnalysisModel extends Model {
 
         // Post to the conversation's channel for sync
         await this.channelManager.postToChannel(
-            topicId,
+            topicIdHash,
             keywordObj
         );
 
@@ -202,6 +221,7 @@ export default class TopicAnalysisModel extends Model {
     async addKeyword(topicId: any, term: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
+        const topicIdHash = this.extractTopicHash(topicId);
         const normalizedTerm = term.toLowerCase().trim();
 
         // Fetch existing keyword directly by ID hash (term is the ID)
@@ -233,7 +253,7 @@ export default class TopicAnalysisModel extends Model {
             // Store updated version FIRST
             await storeVersionedObject(updatedKeyword);
 
-            await this.channelManager.postToChannel(topicId, updatedKeyword);
+            await this.channelManager.postToChannel(topicIdHash, updatedKeyword);
             return updatedKeyword;
         }
 
@@ -251,6 +271,7 @@ export default class TopicAnalysisModel extends Model {
     async addKeywordToSubject(topicId: any, term: any, subjectIdHash: any): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
+        const topicIdHash = this.extractTopicHash(topicId);
         MessageBus.send('debug', '[TopicAnalysisModel] 🔍 addKeywordToSubject called:', { topicId, term, subjectIdHash });
 
         if (!subjectIdHash) {
@@ -296,7 +317,7 @@ export default class TopicAnalysisModel extends Model {
             // Store updated version FIRST
             await storeVersionedObject(updatedKeyword);
 
-            await this.channelManager.postToChannel(topicId, updatedKeyword);
+            await this.channelManager.postToChannel(topicIdHash, updatedKeyword);
             return updatedKeyword;
         }
 
@@ -317,7 +338,7 @@ export default class TopicAnalysisModel extends Model {
         const result = await storeVersionedObject(keywordObj);
 
         MessageBus.send('debug', '[TopicAnalysisModel] ✅ Created new keyword with subject:', { term: normalizedTerm, topicId, subjectIdHash, subjects: keywordObj.subjects, idHash: result.idHash });
-        await this.channelManager.postToChannel(topicId, keywordObj);
+        await this.channelManager.postToChannel(topicIdHash, keywordObj);
         return { ...keywordObj, idHash: result.idHash, hash: result.hash };
     }
 
@@ -346,10 +367,12 @@ export default class TopicAnalysisModel extends Model {
     async createSummary(subjectIdHash: string, topicId: string, prose: string): Promise<any> {
         this.state.assertCurrentState('Initialised');
 
+        const topicIdHash = this.extractTopicHash(topicId);
+
         const summaryObj = {
             $type$: 'Summary' as const,
             subject: subjectIdHash,
-            topic: topicId,
+            topic: topicIdHash,  // Use extracted hash for storage
             prose
         };
 
@@ -358,7 +381,7 @@ export default class TopicAnalysisModel extends Model {
         MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Summary for subject:', subjectIdHash, 'idHash:', result.idHash);
 
         // Post to the conversation's channel for sync
-        await this.channelManager.postToChannel(topicId, summaryObj);
+        await this.channelManager.postToChannel(topicIdHash, summaryObj);
 
         return { ...summaryObj, idHash: result.idHash, hash: result.hash };
     }

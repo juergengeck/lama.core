@@ -10,7 +10,7 @@ import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/s
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
 // Memory.core imports
-import { MemoryPlan as CoreMemoryPlan, ChatMemoryPlan, ChatMemoryService } from '@memory/core';
+import { MemoryPlan as CoreMemoryPlan, ChatMemoryPlan, ChatMemoryService, MemoryExportPlan, MemoryImportPlan } from '@memory/core';
 
 /**
  * MemoryModule - Memory management functionality
@@ -27,7 +27,9 @@ export class MemoryModule implements Module {
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicAnalysisModel', required: true },
     { targetType: 'SubjectsPlan', required: true },
-    { targetType: 'OneCore', required: true }
+    { targetType: 'OneCore', required: true },
+    { targetType: 'LeuteModel', required: false },
+    { targetType: 'AuditService', required: false }
   ];
 
   static supplies = [
@@ -41,6 +43,8 @@ export class MemoryModule implements Module {
     topicAnalysisModel?: TopicAnalysisModel;
     subjectsPlan?: SubjectsPlan;
     oneCore?: any;
+    leuteModel?: any;
+    auditService?: any;
   } = {};
 
   // Memory plans and services
@@ -49,6 +53,8 @@ export class MemoryModule implements Module {
   private coreMemoryPlan!: CoreMemoryPlan;
   public chatMemoryPlan!: ChatMemoryPlan;
   public chatMemoryService!: ChatMemoryService;
+  private memoryExportPlan?: MemoryExportPlan;
+  private memoryImportPlan?: MemoryImportPlan;
 
   async init(): Promise<void> {
     if (!this.hasRequiredDeps()) {
@@ -89,6 +95,34 @@ export class MemoryModule implements Module {
     this.chatMemoryPlan = new ChatMemoryPlan({
       chatMemoryService: this.chatMemoryService
     });
+
+    // Create export/import plans if optional dependencies are available
+    if (this.deps.leuteModel && this.deps.auditService) {
+      this.memoryExportPlan = new MemoryExportPlan({
+        implode: async (hash) => {
+          const { implode } = await import('@refinio/one.core/lib/microdata-imploder.js');
+          return implode(hash);
+        },
+        leuteModel: this.deps.leuteModel,
+        auditService: this.deps.auditService,
+        createCryptoApi: async (owner) => {
+          const { createCryptoApiFromDefaultKeys } = await import('@refinio/one.core/lib/keychain/keychain.js');
+          return createCryptoApiFromDefaultKeys(owner);
+        }
+      });
+
+      this.memoryImportPlan = new MemoryImportPlan({
+        explode: async (html, expectedType) => {
+          const { explode } = await import('@refinio/one.core/lib/microdata-exploder.js');
+          return explode(html, expectedType as any);
+        },
+        storeVersionedObject,
+        trustedKeysManager: this.deps.leuteModel.trustedKeysManager,
+        auditService: this.deps.auditService,
+        leuteModel: this.deps.leuteModel,
+        onUnknownSigner: async () => false // Reject unknown signers by default
+      });
+    }
 
     // Create the UI-compatible memoryPlan adapter
     // This implements ui.core's MemoryPlan interface
@@ -382,6 +416,57 @@ export class MemoryModule implements Module {
           console.error('[MemoryModule] getKnowledgeGraph error:', error);
           return { success: false, error: error instanceof Error ? error.message : String(error) };
         }
+      },
+
+      // Memory export/import methods (delegate to memory.core plans)
+      exportMemory: async (params: { hash: string; options?: any }) => {
+        if (!this.memoryExportPlan) {
+          throw new Error('Memory export not available - missing LeuteModel or AuditService');
+        }
+        const html = await this.memoryExportPlan.exportMemory(params.hash as any, params.options);
+        return { success: true, html };
+      },
+
+      importMemory: async (params: { html: string }) => {
+        if (!this.memoryImportPlan) {
+          throw new Error('Memory import not available - missing LeuteModel or AuditService');
+        }
+        const result = await this.memoryImportPlan.importMemory(params.html);
+        return {
+          success: true,
+          hash: result.hash,
+          idHash: result.idHash,
+          trustStatus: 'untrusted' as const
+        };
+      },
+
+      previewImport: async (params: { html: string }) => {
+        // Extract metadata from HTML without importing
+        // Parse the signatureData meta tag
+        const signatureMatch = params.html.match(/<meta\s+itemprop="signatureData"\s+content="([^"]+)"/);
+        let signer: { personId: string; name?: string; signingKey: string; signedAt: number } | undefined;
+
+        if (signatureMatch) {
+          try {
+            const decoded = JSON.parse(signatureMatch[1]
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&amp;/g, '&')
+              .replace(/&quot;/g, '"'));
+            signer = {
+              personId: decoded.personId,
+              name: decoded.name,
+              signingKey: decoded.signingKey || '',
+              signedAt: decoded.signedAt
+            };
+          } catch { /* ignore parse errors */ }
+        }
+
+        return {
+          success: true,
+          signer,
+          signatureValid: !!signatureMatch
+        };
       }
     };
   }
