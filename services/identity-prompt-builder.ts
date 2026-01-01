@@ -3,17 +3,17 @@
  * Generates personalized identity section for system prompts
  */
 
-import type { AI, AIPersonality } from '../models/ai/AIManager.js';
+import type { AI, AICreationContext } from '../models/ai/AIManager.js';
 import type { LLMCapabilities } from '../models/ai/types.js';
 import { getCapabilityHints } from './capability-resolver.js';
 
 /**
- * Format birth context into natural language
+ * Format creation context into natural language
  */
-function formatBirthContext(birthContext: AIPersonality['birthContext']): string | null {
-  if (!birthContext) return null;
+function formatCreationContext(creationContext: AICreationContext): string | null {
+  if (!creationContext) return null;
 
-  const date = new Date(birthContext.time);
+  const date = new Date(creationContext.time);
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                       'July', 'August', 'September', 'October', 'November', 'December'];
@@ -31,7 +31,7 @@ function formatBirthContext(birthContext: AIPersonality['birthContext']): string
   else timeOfDay = 'at night';
 
   // Clean device name
-  const device = birthContext.device
+  const device = creationContext.device
     .replace(/\.local$/, '')
     .replace(/-/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase());
@@ -42,12 +42,14 @@ function formatBirthContext(birthContext: AIPersonality['birthContext']): string
 /**
  * Build personalized identity prompt section
  *
- * @param ai - AI object with personality
+ * @param ai - AI object with creationContext and systemPromptAddition
+ * @param traits - Personality traits (from Profile's PersonTraits)
  * @param capabilities - Resolved LLM capabilities
  * @returns Identity prompt text
  */
 export function buildIdentityPrompt(
   ai: AI,
+  traits?: string[],
   capabilities?: LLMCapabilities
 ): string {
   const parts: string[] = [];
@@ -55,17 +57,17 @@ export function buildIdentityPrompt(
   // Core identity
   parts.push(`You are ${ai.displayName}, a personal AI assistant.`);
 
-  // Personality traits
-  if (ai.personality?.traits && ai.personality.traits.length > 0) {
-    const traitsText = ai.personality.traits.join(', ');
+  // Personality traits (from Profile)
+  if (traits && traits.length > 0) {
+    const traitsText = traits.join(', ');
     parts.push(`Your personality: ${traitsText}.`);
   }
 
-  // Birth context (subtle personality flavor)
-  if (ai.personality?.birthContext) {
-    const birthText = formatBirthContext(ai.personality.birthContext);
-    if (birthText) {
-      parts.push(birthText);
+  // Creation context (subtle personality flavor)
+  if (ai.creationContext) {
+    const creationText = formatCreationContext(ai.creationContext);
+    if (creationText) {
+      parts.push(creationText);
     }
   }
 
@@ -78,10 +80,10 @@ export function buildIdentityPrompt(
     }
   }
 
-  // User-defined additions
-  if (ai.personality?.systemPromptAddition) {
+  // User-defined additions (from AI object)
+  if (ai.systemPromptAddition) {
     parts.push(''); // Empty line before user additions
-    parts.push(ai.personality.systemPromptAddition);
+    parts.push(ai.systemPromptAddition);
   }
 
   return parts.join('\n');

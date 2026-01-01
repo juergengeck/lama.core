@@ -73,8 +73,21 @@ export type AI = {
   modified: number;
   active: boolean;
   deleted: boolean;
-  /** AI personality configuration */
-  personality?: AIPersonality;
+  // AI behavior flags (global defaults, can be overridden per-topic)
+  analyse?: boolean;                     // Run analytics extraction (default: true)
+  respond?: boolean;                     // Generate AI responses (default: true)
+  mute?: boolean;                        // Suppress notifications (default: false)
+  ignore?: boolean;                      // Skip entirely (default: false)
+  // AI-specific character data (not applicable to humans)
+  /** Context from AI creation (device, locale, time, app) - immutable */
+  creationContext?: {
+    device: string;
+    locale: string;
+    time: number;
+    app: string;
+  };
+  /** User-defined system prompt addition */
+  systemPromptAddition?: string;
 };
 
 // LLM object - standalone configuration (no Person/Profile/Someone)
@@ -97,23 +110,14 @@ export type LLM = {
 };
 
 /**
- * AI personality configuration
- * Combines birth context (auto-generated) with user customization
+ * AI creation context - captured at AI creation time
+ * Used for the "Creation Certificate" display in the UI
  */
-export interface AIPersonality {
-  /** Context from AI birth experience */
-  birthContext?: {
-    device: string;
-    locale: string;
-    time: number;
-    app: string;
-  };
-
-  /** Personality traits (e.g., ["curious", "concise"]) */
-  traits?: string[];
-
-  /** User-defined prompt addition */
-  systemPromptAddition?: string;
+export interface AICreationContext {
+  device: string;
+  locale: string;
+  time: number;
+  app: string;
 }
 
 export class AIManager {
@@ -244,7 +248,8 @@ export class AIManager {
    * @param name - Display name (e.g., "Claude", "Research Assistant")
    * @param llmId - Optional LLM ID hash to use; undefined = use app default
    * @param modelId - Optional explicit model ID (e.g., "granite:3b"); if not provided, derived from aiId
-   * @param personality - Optional AI personality configuration
+   * @param creationContext - Optional creation context (device, locale, time, app)
+   * @param systemPromptAddition - Optional user-defined system prompt addition
    * @returns CreateAIResponse with personIdHash, profileIdHash, someoneIdHash
    */
   async createAI(
@@ -252,7 +257,8 @@ export class AIManager {
     name: string,
     llmId?: SHA256IdHash<LLM>,
     modelId?: string,
-    personality?: AIPersonality
+    creationContext?: AICreationContext,
+    systemPromptAddition?: string
   ): Promise<CreateAIResponse> {
     MessageBus.send('debug', `Creating AI Person: ${name} (${aiId})`);
 
@@ -312,7 +318,7 @@ export class AIManager {
       // 4. Create AI metadata object
       const now = Date.now();
       // modelId is required - AI identity is independent of model per design
-      // aiId is now derived from birth experience (email prefix), not from modelId
+      // aiId is derived from AI creation (email prefix), not from modelId
       if (!modelId) {
         throw new Error('[AIManager] modelId is required - AI identity and model must be specified separately');
       }
@@ -328,7 +334,8 @@ export class AIManager {
         modified: now,
         active: true,
         deleted: false,
-        personality  // Store personality configuration
+        ...(creationContext && { creationContext }),
+        ...(systemPromptAddition && { systemPromptAddition })
       };
 
       const aiResult: any = await this.deps.storeVersionedObject(aiObject);
