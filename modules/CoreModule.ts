@@ -96,15 +96,17 @@ export class CoreModule implements Module {
       // Use pre-supplied models if available, otherwise create new ones
       // This allows platforms like lama.cube to supply nodeOneCore's models
       // instead of creating duplicates (which causes issues like duplicate PairingManagers)
-      const modelsSupplied = this.deps.leuteModel && this.deps.channelManager &&
-                             this.deps.topicModel && this.deps.connectionsModel;
+      // Note: Check oneCore for models since that's what we demand (not individual models)
+      const oneCore = this.deps.oneCore;
+      const modelsSupplied = oneCore?.leuteModel && oneCore?.channelManager &&
+                             oneCore?.topicModel && oneCore?.connectionsModel;
 
       if (modelsSupplied) {
         console.log('[CoreModule] Using pre-supplied models from platform');
-        this.leuteModel = this.deps.leuteModel!;
-        this.channelManager = this.deps.channelManager!;
-        this.topicModel = this.deps.topicModel!;
-        this.connections = this.deps.connectionsModel!;
+        this.leuteModel = oneCore.leuteModel;
+        this.channelManager = oneCore.channelManager;
+        this.topicModel = oneCore.topicModel;
+        this.connections = oneCore.connectionsModel;
         this.settings = this.deps.settings || new PropertyTreeStore('lama.browser.settings');
 
         // Models already initialized by platform - only init settings if we created it
