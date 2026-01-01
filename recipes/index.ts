@@ -5,6 +5,7 @@
 
 import { AIRecipe } from './AIRecipe.js';
 import { LLMRecipe } from './LLMRecipe.js';
+import { PersonTraitsRecipe, PersonVoiceRecipe, type PersonTraits, type PersonVoice } from './PersonDescriptionRecipes.js';
 import { GlobalLLMSettingsRecipe } from './GlobalLLMSettingsRecipe.js';
 import { AISettingsRecipe } from './AISettingsRecipe.js';
 import { AppSettingsRecipe } from './AppSettingsRecipe.js';
@@ -26,6 +27,8 @@ import { MemoryRecipe } from '@memory/core';
 export const LAMA_CORE_RECIPES = [
     AIRecipe,
     LLMRecipe,
+    PersonTraitsRecipe,
+    PersonVoiceRecipe,
     GlobalLLMSettingsRecipe,
     AISettingsRecipe,
     AppSettingsRecipe,
@@ -46,6 +49,8 @@ export const LAMA_CORE_RECIPES = [
 export {
     AIRecipe,
     LLMRecipe,
+    PersonTraitsRecipe,
+    PersonVoiceRecipe,
     GlobalLLMSettingsRecipe,
     AISettingsRecipe,
     AppSettingsRecipe,
@@ -61,3 +66,6 @@ export {
     FeedbackRecipe,
     MemoryRecipe
 };
+
+// Re-export types
+export type { PersonTraits, PersonVoice };

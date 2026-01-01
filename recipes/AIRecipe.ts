@@ -63,6 +63,46 @@ export const AIRecipe = {
         {
             itemprop: 'deleted',
             itemtype: { type: 'boolean' }
+        },
+        // AI behavior flags
+        {
+            itemprop: 'analyse',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'respond',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'mute',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        {
+            itemprop: 'ignore',
+            itemtype: { type: 'boolean' },
+            optional: true
+        },
+        // AI-specific character data
+        {
+            itemprop: 'creationContext',
+            itemtype: {
+                type: 'object',
+                properties: {
+                    device: { type: 'string' },
+                    locale: { type: 'string' },
+                    time: { type: 'number' },
+                    app: { type: 'string' }
+                }
+            },
+            optional: true
+        },
+        {
+            itemprop: 'systemPromptAddition',
+            itemtype: { type: 'string' },
+            optional: true
         }
     ]
 };
