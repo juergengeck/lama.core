@@ -118,7 +118,14 @@ export class CoreModule implements Module {
         this.channelManager = new ChannelManager(this.leuteModel);
         this.topicModel = new TopicModel(this.channelManager, this.leuteModel);
         this.connections = new ConnectionsModel(this.leuteModel, {
-          commServerUrl: this.commServerUrl
+          commServerUrl: this.commServerUrl,
+          acceptIncomingConnections: true,
+          acceptUnknownInstances: true,       // Accept new instances via pairing
+          acceptUnknownPersons: false,        // Require pairing for new persons
+          allowPairing: true,                 // Enable pairing protocol
+          establishOutgoingConnections: true, // Auto-connect to discovered endpoints
+          allowDebugRequests: true,
+          pairingTokenExpirationDuration: 60000 * 15  // 15 minutes
         });
         this.settings = new PropertyTreeStore('lama.browser.settings');
 
