@@ -13,8 +13,7 @@ export const LLMRecipe = {
         },
         {
             itemprop: 'name',
-            itemtype: { type: 'string' },
-            isId: true
+            itemtype: { type: 'string' }
         },
         // LLM server address (e.g., http://localhost:11434 for Ollama)
         {
@@ -22,10 +21,11 @@ export const LLMRecipe = {
             itemtype: { type: 'string' },
             isId: true
         },
+        // Model identifier (e.g., "claude-3-5-haiku-20241022", "llama3:latest")
         {
             itemprop: 'modelId',
             itemtype: { type: 'string' },
-            optional: true
+            isId: true
         },
         {
             itemprop: 'filename',
@@ -120,7 +120,7 @@ export const LLMRecipe = {
                 type: 'array',
                 item: {
                     type: 'string',
-                    regexp: /^(chat|inference)$/
+                    regexp: /^(chat|completion|inference|extended-thinking)$/
                 }
             },
             optional: true
@@ -189,6 +189,11 @@ export const LLMRecipe = {
         },
         {
             itemprop: 'provider',
+            itemtype: { type: 'string' },
+            optional: true
+        },
+        {
+            itemprop: 'description',
             itemtype: { type: 'string' },
             optional: true
         },

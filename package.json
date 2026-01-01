@@ -6,8 +6,7 @@
   "files": [
     "dist/",
     "@OneObjectInterfaces.d.ts",
-    "@OneCoreTypes.d.ts",
-    "vendor/"
+    "@OneCoreTypes.d.ts"
   ],
   "scripts": {
     "build": "tsc",
@@ -18,6 +17,7 @@
   "exports": {
     "./@OneObjectInterfaces": "./@OneObjectInterfaces.d.ts",
     "./@OneCoreTypes": "./@OneCoreTypes.d.ts",
+    "./events": "./dist/lama.core/events/index.js",
     "./modules": "./dist/lama.core/modules/index.js",
     "./plans": "./dist/lama.core/plans/index.js",
     "./plans/*": "./dist/lama.core/plans/*",

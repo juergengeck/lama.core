@@ -16,7 +16,7 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
-import type { GlobalLLMSettings } from '@OneObjectInterfaces';
+import type { GlobalLLMSettings, OllamaServerConfig } from '@OneObjectInterfaces';
 
 export const DEFAULT_LLM_SETTINGS = {
     temperature: 0.5,
@@ -159,5 +159,96 @@ export class GlobalLLMSettingsManager {
     clearCache(): void {
         this.cachedSettings = undefined;
         // Keep idHash - it's still valid
+    }
+
+    // ========== Ollama Server Management ==========
+
+    /**
+     * Default Ollama server (localhost)
+     */
+    private static readonly DEFAULT_OLLAMA_SERVER: OllamaServerConfig = {
+        id: 'local',
+        name: 'Local',
+        baseUrl: 'http://localhost:11434',
+        authType: 'none',
+        enabled: true
+    };
+
+    /**
+     * Get all configured Ollama servers
+     * Returns default localhost if none configured
+     */
+    async getOllamaServers(): Promise<OllamaServerConfig[]> {
+        const settings = await this.getSettings();
+        if (!settings.ollamaServers || settings.ollamaServers.length === 0) {
+            return [GlobalLLMSettingsManager.DEFAULT_OLLAMA_SERVER];
+        }
+        return settings.ollamaServers;
+    }
+
+    /**
+     * Get enabled Ollama servers only
+     */
+    async getEnabledOllamaServers(): Promise<OllamaServerConfig[]> {
+        const servers = await this.getOllamaServers();
+        return servers.filter(s => s.enabled);
+    }
+
+    /**
+     * Add a new Ollama server
+     */
+    async addOllamaServer(server: Omit<OllamaServerConfig, 'id'>): Promise<OllamaServerConfig> {
+        const settings = await this.getSettings();
+        const servers = settings.ollamaServers || [];
+
+        // Generate unique ID
+        const id = `server-${Date.now()}`;
+        const newServer: OllamaServerConfig = { ...server, id };
+
+        await this.updateSettings({
+            ollamaServers: [...servers, newServer]
+        });
+
+        return newServer;
+    }
+
+    /**
+     * Update an existing Ollama server
+     */
+    async updateOllamaServer(id: string, updates: Partial<Omit<OllamaServerConfig, 'id'>>): Promise<OllamaServerConfig | null> {
+        const settings = await this.getSettings();
+        const servers = settings.ollamaServers || [];
+
+        const index = servers.findIndex(s => s.id === id);
+        if (index === -1) return null;
+
+        const updated = { ...servers[index], ...updates };
+        const newServers = [...servers];
+        newServers[index] = updated;
+
+        await this.updateSettings({ ollamaServers: newServers });
+        return updated;
+    }
+
+    /**
+     * Remove an Ollama server
+     */
+    async removeOllamaServer(id: string): Promise<boolean> {
+        const settings = await this.getSettings();
+        const servers = settings.ollamaServers || [];
+
+        const filtered = servers.filter(s => s.id !== id);
+        if (filtered.length === servers.length) return false;
+
+        await this.updateSettings({ ollamaServers: filtered });
+        return true;
+    }
+
+    /**
+     * Enable/disable an Ollama server
+     */
+    async setOllamaServerEnabled(id: string, enabled: boolean): Promise<boolean> {
+        const result = await this.updateOllamaServer(id, { enabled });
+        return result !== null;
     }
 }

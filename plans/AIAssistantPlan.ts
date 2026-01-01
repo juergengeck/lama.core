@@ -336,8 +336,9 @@ export class AIAssistantPlan {
         console.log(`[AIAssistantPlan.init] No savedDefaultModel - showing onboarding`);
       }
 
-      // DO NOT auto-select first available model - let UI show onboarding
-      // The UI checks for default model and shows ModelOnboarding when none exists
+      // DO NOT auto-select first available model during init - let UI show onboarding
+      // When user later configures a model and no default exists, that model becomes default
+      // (handled in LLMConfigPlan.setConfig)
       if (!this.topicManager.getDefaultModel() && models.length > 0) {
         MessageBus.send('debug', `No default model - UI will show onboarding (${models.length} models available)`);
       }
@@ -463,6 +464,14 @@ export class AIAssistantPlan {
   }
 
   /**
+   * Check if an LLM object exists for a given modelId
+   * Returns true if model is "available" (has been registered)
+   */
+  hasLLM(modelId: string): boolean {
+    return this.aiManager.hasLLM(modelId);
+  }
+
+  /**
    * Check if a topic has any LLM participants.
    *
    * The AITopicManager registry is the source of truth - if the topic isn't registered, it doesn't have AI.
@@ -560,6 +569,10 @@ export class AIAssistantPlan {
         MessageBus.send('debug', `Updating AI ${aiId} modelId: ${existingAI.modelId} → ${modelId}`);
         await this.aiManager.updateModelId(existingAI.personId, modelId);
       }
+      // CRITICAL: Ensure AI's Someone is in LeuteModel
+      // Fixes bug where AI exists in cache but Someone wasn't added to Leute
+      // (can happen if Leute was cleared but AIList persisted in storage)
+      await this.aiManager.ensureSomeoneInLeute(existingAI);
       return existingAI.personId;
     }
 
@@ -707,6 +720,61 @@ export class AIAssistantPlan {
    */
   getDefaultAIPersonId(): SHA256IdHash<Person> | null {
     return this._defaultAIPersonId;
+  }
+
+  /**
+   * Ensure an AI contact exists for a model and return its Person ID
+   * Finds existing AI by modelId, or creates a new one if none exists
+   *
+   * @param modelId - Model ID to find/create AI for (e.g., 'claude-opus-4-5-20251101')
+   * @returns Person ID of the AI
+   */
+  async ensureAIContactForModel(modelId: string): Promise<SHA256IdHash<Person>> {
+    // Find existing AI by modelId
+    const allAIs = this.aiManager.getAllAIs();
+    const aiForModel = allAIs.find(ai => ai.modelId === modelId && ai.active);
+
+    if (aiForModel) {
+      return aiForModel.personId;
+    }
+
+    // No AI found - create one with generated name/email
+    MessageBus.send('debug', `No AI found for ${modelId}, creating new AI contact...`);
+
+    // Generate AI identity
+    const { name, email } = await this._generateAIIdentity(modelId);
+
+    // Create the AI contact
+    const personality: AIPersonality = {
+      creationContext: {
+        device: (typeof navigator !== 'undefined' && navigator.userAgent) || 'node',
+        locale: (typeof navigator !== 'undefined' && navigator.language) || 'en',
+        time: Date.now(),
+        app: 'lama'
+      }
+    };
+
+    const personId = await this.ensureAIForModel(modelId, name, email, personality);
+    MessageBus.send('debug', `Created AI contact for ${modelId}: ${personId.toString().substring(0, 8)}...`);
+
+    return personId;
+  }
+
+  /**
+   * Generate AI identity (name and email) for a model
+   * @private
+   */
+  private async _generateAIIdentity(modelId: string): Promise<{ name: string; email: string }> {
+    // Extract model family for display name
+    const displayName = this._extractModelFamily(modelId);
+
+    // Generate unique email based on model
+    const deviceName = (typeof process !== 'undefined' && process.env?.HOSTNAME) ||
+                       (typeof window !== 'undefined' && 'location' in window ? window.location.hostname : 'local');
+    const sanitizedModelId = modelId.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const email = `${sanitizedModelId}@${deviceName}.local`;
+
+    return { name: displayName, email };
   }
 
   /**

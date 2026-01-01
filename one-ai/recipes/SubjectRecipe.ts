@@ -16,6 +16,16 @@
  *   - Who authored or modified the Subject
  *   - Version history of the Subject
  *
+ * ABSTRACTION HIERARCHY:
+ * - Subjects form a parent/child tree based on semantic abstraction
+ * - Parent = more abstract concept (e.g., "meaning" → "42" → "42 mpg")
+ * - abstractionLevel = tree depth (root = max, leaves = 0)
+ * - Parent/child relationships detected empirically via embeddings:
+ *   - Parent embeddings sit "between" their children (centroid-like)
+ *   - Children cluster around parent but are distant from each other
+ * - Reference frequency is orthogonal to abstraction level
+ *   (abstract concepts like "42" appear in many concrete contexts)
+ *
  * IDENTITY (ONE.core automatic):
  * - ID hash generated from sorted keywords (isId: true)
  * - Subjects with identical keywords get same ID hash (automatic deduplication)
@@ -49,6 +59,44 @@ export const SubjectRecipe = {
         {
             itemprop: 'abstractionLevel',
             itemtype: { type: 'integer' },
+            optional: true
+        },
+        // Abstraction hierarchy - parent/child relationships
+        // Parent is the more abstract concept this subject is an instance of
+        {
+            itemprop: 'parent',
+            itemtype: {
+                type: 'referenceToId',
+                allowedTypes: new Set(['Subject'])
+            },
+            optional: true
+        },
+        // Children are more concrete instances of this subject
+        {
+            itemprop: 'children',
+            itemtype: {
+                type: 'array',
+                item: {
+                    type: 'referenceToId',
+                    allowedTypes: new Set(['Subject'])
+                }
+            },
+            optional: true
+        },
+        // Embedding for computing parent/child relationships empirically
+        // Parent embeddings approximate centroid of children embeddings
+        {
+            itemprop: 'embedding',
+            itemtype: {
+                type: 'array',
+                item: { type: 'number' }
+            },
+            optional: true
+        },
+        // Model used to generate embedding (for compatibility validation)
+        {
+            itemprop: 'embeddingModel',
+            itemtype: { type: 'string' },
             optional: true
         },
         // Timestamp fields for message navigation

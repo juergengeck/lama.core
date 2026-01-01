@@ -41,6 +41,7 @@ export class TransformersAdapter implements LLMAdapter {
    * Set platform (can be set after construction)
    */
   setPlatform(platform: LLMPlatform): void {
+    MessageBus.send('debug', `TransformersAdapter.setPlatform called, chatWithLocal available: ${!!platform?.chatWithLocal}`);
     this.platform = platform;
   }
 
@@ -60,12 +61,15 @@ export class TransformersAdapter implements LLMAdapter {
    * Execute chat with local transformers.js model
    */
   async chat(llm: LLM, messages: ChatMessage[], options?: ChatOptions): Promise<ChatResult> {
+    MessageBus.send('debug', `TransformersAdapter.chat called: platform=${!!this.platform}, chatWithLocal=${!!this.platform?.chatWithLocal}`);
+
     if (!this.platform?.chatWithLocal) {
+      MessageBus.send('error', `TransformersAdapter: Platform not available! platform=${!!this.platform}`);
       throw new Error('Local model inference not supported on this platform - LLMPlatform.chatWithLocal not available');
     }
 
     const modelId = llm.modelId || llm.name;
-    MessageBus.send('debug', `Transformers chat: ${modelId}, ${messages.length} msgs`);
+    MessageBus.send('debug', `Transformers chat: ${modelId}, ${messages.length} msgs, provider=${llm.provider}, inferenceType=${llm.inferenceType}`);
 
     // Get temperature and maxTokens from LLM object or options
     const temperature = options?.temperature ?? llm.temperature ?? 0.7;

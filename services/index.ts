@@ -1,7 +1,7 @@
 export * from './capability-resolver.js';
 export * from './identity-prompt-builder.js';
-export * from './AIBirthService.js';
-export * from './BirthContextCollector.js';
+export * from './AICreateService.js';
+export * from './CreateContextCollector.js';
 
 // Tool execution
 export * from './tool-trace.js';

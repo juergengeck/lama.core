@@ -162,7 +162,10 @@ export class AISettingsManager {
    * Returns null if no model is configured (undefined or empty string)
    */
   async getDefaultModelId(): Promise<string | null> {
+    console.log('[AISettingsManager.getDefaultModelId] Getting default model ID...')
+    console.log('[AISettingsManager.getDefaultModelId] instanceName:', this.nodeOneCore?.instanceName)
     const settings = await this.getSettings()
+    console.log('[AISettingsManager.getDefaultModelId] settings.defaultModelId:', settings?.defaultModelId)
     // Return null if defaultModelId is undefined, null, or empty string
     return settings?.defaultModelId || null
   }

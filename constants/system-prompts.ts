@@ -17,11 +17,12 @@ Provide clear, accurate, and contextually relevant responses to the user's quest
  * Phase 2: Analytics with structured output
  * Used to extract keywords and subjects after the user-facing response
  */
-export const PHASE2_ANALYTICS_PROMPT = `Analyze the conversation and extract keywords and a subject label. Output ONLY a JSON object.
+export const PHASE2_ANALYTICS_PROMPT = `Analyze the conversation and extract keywords, subject label, and response language. Output ONLY a JSON object.
 
 {
   "keywords": ["keyword1", "keyword2", "keyword3"],
-  "description": "concise topic label (2-5 words)"
+  "description": "concise topic label (2-5 words)",
+  "language": "en"
 }
 
 Rules:
@@ -29,6 +30,7 @@ Rules:
 - Extract 3-8 keywords representing the main topics
 - Description should be a SHORT topic label (2-5 words), NOT a sentence. Examples: "pizza baking techniques", "React component testing", "API error handling"
 - NEVER start with "Conversation about" or "Discussion of" - just the topic itself
+- Language is the ISO 639-1 code of the assistant's response (e.g., "en", "de", "fr", "es", "zh", "ja")
 - Output ONLY the JSON object, nothing else`;
 
 /**

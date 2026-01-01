@@ -9,7 +9,7 @@ import {ConnectionPlan, type PairingEventCallbacks} from '@connection/core/plans
 import type {TrustPlanDependencies} from '@connection/core/plans/TrustPlan.js';
 import {GroupChatPlan, type GroupChatPlanDependencies} from '@connection/core/plans/GroupChatPlan.js';
 import {TrustPlan} from '@trust/core/plans/TrustPlan.js';
-import {DiscoveryService} from '@connection/core';
+import {DiscoveryService, type LocalDiscoveryProvider} from '@connection/core';
 import {getAllEntries} from '@refinio/one.core/lib/reverse-map-query.js';
 import {getObject, storeUnversionedObject} from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import {storeVersionedObject, getObjectByIdHash} from '@refinio/one.core/lib/storage-versioned-objects.js';
@@ -59,15 +59,29 @@ export class ConnectionModule implements Module {
   // Discovery Service
   public discoveryService: DiscoveryService;
 
+  // Platform-specific discovery provider (set before init)
+  private localDiscoveryProvider?: LocalDiscoveryProvider;
+
   // Event emitters for platform-specific UI updates
   public onContactsChanged = new OEvent<() => void>();
   public onTopicsChanged = new OEvent<() => void>();
   public onConnectionsChanged = new OEvent<() => void>();
 
+  // Cache for mapping topicId to participantsHash (used by channelManager adapter)
+  private channelParticipantsCache = new Map<string, any>();
+
   constructor(
     private commServerUrl: string,
     private webUrl: string
   ) {}
+
+  /**
+   * Set platform-specific local discovery provider
+   * Must be called BEFORE init() to integrate with DiscoveryService
+   */
+  setLocalDiscoveryProvider(provider: LocalDiscoveryProvider): void {
+    this.localDiscoveryProvider = provider;
+  }
 
   async init(): Promise<void> {
     if (!this.hasRequiredDeps()) {
@@ -123,6 +137,18 @@ export class ConnectionModule implements Module {
       undefined     // No storyFactory
     );
 
+    // CRITICAL: Register pairing handler with actual ConnectionsModel
+    // This ensures the handler is registered even if oneCore.connectionsModel
+    // was not ready during ConnectionPlan construction (timing issue)
+    console.log('[ConnectionModule] Registering pairing handler...');
+    console.log('[ConnectionModule] connectionsModel available:', !!this.deps.connectionsModel);
+    console.log('[ConnectionModule] connectionsModel.pairing available:', !!(this.deps.connectionsModel as any)?.pairing);
+    if (this.deps.connectionsModel) {
+      this.connectionPlan.registerPairingHandler(this.deps.connectionsModel);
+    } else {
+      console.error('[ConnectionModule] ❌ Cannot register pairing handler - no ConnectionsModel!');
+    }
+
     // Group chat plan dependencies (platform-agnostic from connection.core)
     const groupChatDeps: GroupChatPlanDependencies = {
       // ONE.core storage functions
@@ -163,17 +189,25 @@ export class ConnectionModule implements Module {
       },
 
       // Channel manager for group chat channels
+      // Note: This adapter maps the old string-based channel API to the new participants-based API
       channelManager: {
-        getOrCreateChannel: async (channelId: string, owner: any) => {
-          // Get existing channels
-          const existingChannels = await this.deps.channelManager!.channels();
-          const existing = existingChannels.find((ch: any) => ch.id === channelId && ch.owner === owner);
-          if (existing) return existing;
-          // Create new channel
-          return this.deps.channelManager!.createChannel(channelId, owner);
+        getOrCreateChannel: async (topicId: string, owner: any) => {
+          // Create a channel with owner as the sole participant
+          // The topicId is stored for reference but identity is based on participants
+          const result = await this.deps.channelManager!.createChannel([owner], owner);
+          // Cache the mapping for postToChannel
+          this.channelParticipantsCache.set(topicId, result.participantsHash);
+          return result;
         },
-        postToChannel: (topicId: string, message: any, owner?: any) =>
-          this.deps.channelManager!.postToChannel(topicId, message, owner)
+        postToChannel: async (topicId: string, message: any, owner?: any) => {
+          // Look up the participantsHash from cache
+          const participantsHash = this.channelParticipantsCache.get(topicId);
+          if (!participantsHash) {
+            console.warn(`[ConnectionModule] No cached participantsHash for topicId: ${topicId}`);
+            return;
+          }
+          await this.deps.channelManager!.postToChannel(participantsHash, message, owner);
+        }
       }
     };
 
@@ -181,10 +215,11 @@ export class ConnectionModule implements Module {
     this.groupChatPlan = new GroupChatPlan(groupChatDeps);
 
     // Discovery service for QuicVC device discovery
-    // Note: Browser doesn't have platform-specific local/relay discovery providers yet
-    // This creates the service in an uninitialized state for future integration
+    // Platform-specific providers (UDP, BTLE) can be set via setLocalDiscoveryProvider
     this.discoveryService = new DiscoveryService();
-    await this.discoveryService.initialize();
+    await this.discoveryService.initialize({
+      localDiscovery: this.localDiscoveryProvider
+    });
 
     console.log('[ConnectionModule] ✅ Initialized with ConnectionPlan, GroupChatPlan, and DiscoveryService');
   }

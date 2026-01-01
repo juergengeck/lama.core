@@ -277,12 +277,28 @@ export function getModelConfig(modelId: string): ModelConfig | undefined {
 }
 
 /**
+ * Local browser models (transformers.js)
+ * These run on-device via Web Worker, not through Ollama
+ */
+const LOCAL_BROWSER_MODELS = [
+  'granite-4.0-350m',
+  'granite-3.3-2b-instruct',
+  'phi-3.5-mini-instruct'
+];
+
+/**
  * Get model provider from model ID
  */
 export function getModelProvider(modelId: string): string {
   const config = getModelConfig(modelId);
   if (config) {
     return config.provider;
+  }
+
+  // Check for local browser models (transformers.js) FIRST
+  // These models run on-device, not through Ollama
+  if (LOCAL_BROWSER_MODELS.includes(modelId)) {
+    return 'transformers';
   }
 
   // Fallback: Detect from model ID pattern

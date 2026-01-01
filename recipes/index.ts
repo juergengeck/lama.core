@@ -3,15 +3,15 @@
  * All ONE.core recipes that need to be registered
  */
 
-import { AIRecipe } from './AIRecipe.js';
+import { AIRecipe, AIListRecipe } from './AIRecipe.js';
 import { LLMRecipe } from './LLMRecipe.js';
-import { PersonTraitsRecipe, PersonVoiceRecipe, type PersonTraits, type PersonVoice } from './PersonDescriptionRecipes.js';
 import { GlobalLLMSettingsRecipe } from './GlobalLLMSettingsRecipe.js';
 import { AISettingsRecipe } from './AISettingsRecipe.js';
 import { AppSettingsRecipe } from './AppSettingsRecipe.js';
 import { ProposalConfigRecipe } from './ProposalConfigRecipe.js';
 import { ProposalRecipe } from './ProposalRecipe.js';
 import { ProposalInteractionPlanRecipe, ProposalInteractionResponseRecipe } from './ProposalInteractionRecipes.js';
+import { ToolExecutionRecipe, type ToolExecution } from './ToolExecutionRecipe.js';
 import { SubjectRecipe } from '../one-ai/recipes/SubjectRecipe.js';
 import { KeywordRecipe } from '../one-ai/recipes/KeywordRecipe.js';
 import { SummaryRecipe } from '../one-ai/recipes/SummaryRecipe.js';
@@ -26,9 +26,8 @@ import { MemoryRecipe } from '@memory/core';
  */
 export const LAMA_CORE_RECIPES = [
     AIRecipe,
+    AIListRecipe,
     LLMRecipe,
-    PersonTraitsRecipe,
-    PersonVoiceRecipe,
     GlobalLLMSettingsRecipe,
     AISettingsRecipe,
     AppSettingsRecipe,
@@ -36,6 +35,7 @@ export const LAMA_CORE_RECIPES = [
     ProposalRecipe,
     ProposalInteractionPlanRecipe,
     ProposalInteractionResponseRecipe,
+    ToolExecutionRecipe,
     SubjectRecipe,
     KeywordRecipe,
     SummaryRecipe,
@@ -48,9 +48,8 @@ export const LAMA_CORE_RECIPES = [
 // Re-export individual recipes for convenience
 export {
     AIRecipe,
+    AIListRecipe,
     LLMRecipe,
-    PersonTraitsRecipe,
-    PersonVoiceRecipe,
     GlobalLLMSettingsRecipe,
     AISettingsRecipe,
     AppSettingsRecipe,
@@ -58,6 +57,7 @@ export {
     ProposalRecipe,
     ProposalInteractionPlanRecipe,
     ProposalInteractionResponseRecipe,
+    ToolExecutionRecipe,
     SubjectRecipe,
     KeywordRecipe,
     SummaryRecipe,
@@ -68,4 +68,4 @@ export {
 };
 
 // Re-export types
-export type { PersonTraits, PersonVoice };
+export type { ToolExecution };

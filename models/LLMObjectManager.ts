@@ -333,9 +333,15 @@ export class LLMObjectManager {
      * Extract provider from model ID
      */
     private getProviderFromModelId(modelId: string): string {
-        if (modelId.startsWith('ollama:')) return 'ollama';
-        if (modelId.startsWith('claude:')) return 'claude';
-        if (modelId.startsWith('gpt:')) return 'openai';
+        const lower = modelId.toLowerCase();
+        // Check prefixes first
+        if (lower.startsWith('ollama:')) return 'ollama';
+        if (lower.startsWith('claude:')) return 'anthropic';
+        if (lower.startsWith('gpt:') || lower.startsWith('openai:')) return 'openai';
+        // Check model name patterns
+        if (lower.includes('claude') || lower.includes('haiku') || lower.includes('sonnet') || lower.includes('opus')) return 'anthropic';
+        if (lower.includes('gpt-') || lower.includes('gpt4') || lower.includes('o1-') || lower.includes('o3-')) return 'openai';
+        if (lower.includes('llama') || lower.includes('mistral') || lower.includes('gemma') || lower.includes('phi') || lower.includes('qwen')) return 'ollama';
         return 'unknown';
     }
 }

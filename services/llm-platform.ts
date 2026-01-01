@@ -27,7 +27,7 @@ export interface LLMPlatform {
   emitMessageUpdate(
     topicId: string,
     messageId: string,
-    content: string | { thinking?: string; response: string; raw?: string },
+    content: string | { thinking?: string; response: string; raw?: string; language?: string },
     status: string,
     modelId?: string,
     modelName?: string
@@ -43,6 +43,27 @@ export interface LLMPlatform {
   loadLocalModel?(modelId: string, onProgress?: (progress: number) => void): Promise<void>;
   unloadLocalModel?(modelId: string): Promise<void>;
   getAvailableLocalModels?(): Promise<Array<{ id: string; name: string; size: number; installed: boolean }>>;
+
+  /**
+   * Get installed local text-generation models for ONE.core registration
+   * Called by AIModule during init to register models in storage
+   * Returns models that are ready to use (installed, not downloading)
+   */
+  getInstalledTextGenModels?(): Promise<Array<{
+    id: string;
+    name: string;
+    sizeBytes: number;
+    contextLength?: number;
+    familyName?: string;
+  }>>;
+
+  /**
+   * Lookup local model info by ID for UI display
+   * Used when switching topic models to get displayName and provider
+   * @param modelId - Local model ID (without 'local:' prefix)
+   * @returns Model info or null if not found
+   */
+  lookupLocalModel?(modelId: string): Promise<{ displayName: string; provider: string } | null>;
 }
 
 /**

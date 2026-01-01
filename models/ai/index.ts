@@ -35,3 +35,19 @@ export { AIPromptBuilder } from './AIPromptBuilder.js';
 export { AITaskManager } from './AITaskManager.js';
 export { AIMessageListener } from './AIMessageListener.js';
 export { AIManager } from './AIManager.js';
+
+// Settings resolver
+export {
+  resolveAISettings,
+  getFirstAIInTopic,
+  createDefaultTopicAISettings,
+  shouldAnalyseTopic,
+  getRespondingAIs,
+  DEFAULT_AI_SETTINGS,
+  DEFAULT_SUBSEQUENT_AI_SETTINGS,
+} from './AISettingsResolver.js';
+export type {
+  ResolvedAISettings,
+  TopicAISettings,
+  TopicAIParticipants,
+} from './AISettingsResolver.js';

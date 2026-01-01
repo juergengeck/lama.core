@@ -156,6 +156,8 @@ export interface LamaCoreDependencies {
   proposalEngine?: any;
   llmManager?: any;
   meaningPlan?: any;
+  /** SubjectMemoryPlan for unified memory tool access */
+  subjectMemoryPlan?: any;
 }
 
 /**
@@ -227,12 +229,45 @@ export function registerLamaCorePlans(deps: LamaCoreDependencies): void {
     );
   }
 
+  // Register SubjectMemoryPlan for unified memory tool access
+  // Tools can be called via plan:memory:* (e.g., plan:memory:memory_context)
+  if (deps.subjectMemoryPlan) {
+    // Get tool definitions from the plan itself (self-documented)
+    const planToolDefs = deps.subjectMemoryPlan.getToolDefinitions?.() || [];
+
+    // Convert SubjectMemoryPlan's tool definitions to PlanRegistry format
+    const convertedTools: ToolDefinition[] = planToolDefs.map((td: any) => ({
+      name: td.name,
+      description: td.description,
+      params: Object.entries(td.inputSchema?.properties || {}).map(([name, def]: [string, any]) => ({
+        name,
+        type: def.type,
+        description: def.description,
+        required: td.inputSchema?.required?.includes(name),
+        ...(def.default !== undefined ? { examples: [def.default] } : {})
+      })),
+      returns: 'MCP-formatted result object'
+    }));
+
+    planRegistry.registerPlan(
+      'memory',
+      'memory',
+      deps.subjectMemoryPlan,
+      'Memory context, search, storage, and subject retrieval (Phase 3 unified tools)',
+      convertedTools
+    );
+  }
+
   console.log('[lama.core] Plan registration complete');
 }
 
 /**
  * Get lama.core plan dependencies from a NodeOneCore instance
  * Convenience function to extract plan instances from NodeOneCore
+ *
+ * Note: subjectMemoryPlan must be created separately since it requires
+ * extended dependencies (topicModel, memoryStorageHandler, aiAssistantModel)
+ * that are set via setExtendedDependencies() after construction.
  */
 export function getLamaCoreDepend(nodeOneCore: any): LamaCoreDependencies {
   return {
@@ -242,6 +277,8 @@ export function getLamaCoreDepend(nodeOneCore: any): LamaCoreDependencies {
     subjectService: nodeOneCore.subjectService,
     proposalEngine: nodeOneCore.proposalEngine,
     llmManager: nodeOneCore.llmManager,
-    meaningPlan: nodeOneCore.meaningPlan
+    meaningPlan: nodeOneCore.meaningPlan,
+    // SubjectMemoryPlan should be created and wired by platform code
+    subjectMemoryPlan: nodeOneCore.subjectMemoryPlan
   };
 }

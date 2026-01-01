@@ -76,7 +76,7 @@ export class InstancePlan {
 
     // Story 1: Instance creation (product = instanceId)
     const instanceMetadata: ExecutionMetadata = {
-      title: `Instance "${this.instanceName}" created - Initialize and register with journal`,
+      title: `Create Instance: ${this.instanceName}`,
       planId: this.planIdHash,
       planTypeName: InstancePlan.PLAN_ID,
       owner: this.ownerId,
@@ -98,7 +98,7 @@ export class InstancePlan {
 
     // Story 2: Owner initialization (product = ownerId)
     const ownerMetadata: ExecutionMetadata = {
-      title: `Owner initialized for "${this.instanceName}" - Set up owner identity`,
+      title: `Create Owner: ${this.instanceName}`,
       planId: this.planIdHash,
       planTypeName: InstancePlan.PLAN_ID,
       owner: this.ownerId,

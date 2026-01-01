@@ -32,9 +32,19 @@ export interface UnrankedProposal {
 
 export class ProposalEngine {
   private topicAnalysisModel: any;
+  private topicManager?: any;  // Optional AITopicManager for default topic checks
 
-  constructor(topicAnalysisModel: any) {
+  constructor(topicAnalysisModel: any, topicManager?: any) {
     this.topicAnalysisModel = topicAnalysisModel;
+    this.topicManager = topicManager;
+  }
+
+  /**
+   * Check if a topic is a memory topic (LAMA private space)
+   * Uses topicManager if available, falls back to false
+   */
+  private isMemoryTopic(topicId: string): boolean {
+    return this.topicManager?.isLamaTopic?.(topicId) ?? false;
   }
 
   /**
@@ -168,7 +178,7 @@ export class ProposalEngine {
       }
 
       try {
-        const isMemoryTopic = pastTopicId === 'lama';
+        const isMemoryTopic = this.isMemoryTopic(pastTopicId);
         console.log('[ProposalEngine] Processing topic:', pastTopicId, isMemoryTopic ? '(MEMORY)' : '');
 
         const pastSubjects = await this.topicAnalysisModel.getSubjects(pastTopicId);

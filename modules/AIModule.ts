@@ -9,6 +9,7 @@ import type { TrustPlan } from '@trust/core/plans/TrustPlan.js';
 
 // ONE.core storage imports
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { getIdObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject, storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 
@@ -38,6 +39,7 @@ import { AIMessageListener } from '@lama/core/models/ai/index.js';
 import { LLMObjectManager } from '@lama/core/models/LLMObjectManager.js';
 import { AIObjectManager } from '@lama/core/models/AIObjectManager.js';
 import { AISettingsManager } from '@lama/core/models/settings/AISettingsManager.js';
+import { GlobalLLMSettingsManager } from '@lama/core/models/settings/GlobalLLMSettingsManager.js';
 
 // Proposal services
 import { ProposalEngine } from '@lama/core/services/proposal-engine.js';
@@ -48,6 +50,7 @@ import { ProposalCache } from '@lama/core/services/proposal-cache.js';
 import { LLMManager } from '@lama/core/services/llm-manager.js';
 import type { LLMPlatform } from '@lama/core/services/llm-platform.js';
 import { AIToolExecutor, type AIToolExecutorDeps } from '@lama/core/services/AIToolExecutor.js';
+import { planRegistry } from '@mcp/core';
 
 /**
  * Platform-specific LLM configuration interface
@@ -109,6 +112,7 @@ export class AIModule implements Module {
     { targetType: 'LLMObjectManager' },
     { targetType: 'AIObjectManager' },
     { targetType: 'AISettingsManager' },
+    { targetType: 'GlobalLLMSettingsManager' },
     { targetType: 'AIMessageListener' }
   ];
 
@@ -142,6 +146,7 @@ export class AIModule implements Module {
   public llmObjectManager!: LLMObjectManager;
   public aiObjectManager!: AIObjectManager;
   public aiSettingsManager!: AISettingsManager;
+  public globalLLMSettingsManager!: GlobalLLMSettingsManager;
   public aiMessageListener: AIMessageListener | null = null;
 
   // Cube storage and plan
@@ -173,8 +178,25 @@ export class AIModule implements Module {
     // LLM management - uses injected platform
     this.llmManager = new LLMManager(this.llmPlatform);
 
-    // Set channelManager on llmManager for LLM storage access
+    // Set channelManager on llmManager for LLM storage access (legacy fallback)
     this.llmManager.channelManager = channelManager;
+
+    // Set leuteModel for storage lookups (legacy fallback - deprecated)
+    this.llmManager.setLeuteModel(leuteModel);
+
+    // Create GlobalLLMSettingsManager for multi-server config
+    const ownerId = await leuteModel!.myMainIdentity();
+    this.globalLLMSettingsManager = new GlobalLLMSettingsManager(
+      {
+        storeVersionedObject,
+        getObjectByIdHash,
+        calculateIdHashOfObj
+      },
+      ownerId
+    );
+
+    // Wire GlobalLLMSettingsManager to LLMManager for multi-server discovery
+    this.llmManager.setGlobalSettingsManager(this.globalLLMSettingsManager);
 
     // Discover and register installed local models (if platform supports it)
     if (this.llmPlatform.getInstalledTextGenModels) {
@@ -230,6 +252,11 @@ export class AIModule implements Module {
       // No federation group for browser (optional parameter)
     );
 
+    // CRITICAL: Initialize LLMObjectManager to load cached AI contacts from storage
+    // This populates the personId ↔ modelId cache that isLLMPerson() needs
+    await this.llmObjectManager.initialize();
+    console.log('[AIModule] LLMObjectManager initialized');
+
     // AIObjectManager - platform-agnostic AI object management
     this.aiObjectManager = new AIObjectManager(
       {
@@ -280,12 +307,15 @@ export class AIModule implements Module {
 
     // Create LLMConfigPlan with settings for secure API key storage
     // Settings uses ONE.core's master key encryption automatically
+    // Pass registry and globalSettingsManager for multi-transport discovery
     this.llmConfigPlan = new LLMConfigPlan(
       oneCore!,
       this.aiAssistantPlan,
       this.llmManager,
       settings!, // ONE.core SettingsModel (encrypted storage)
-      this.llmConfigAdapter.ollamaValidator
+      this.llmConfigAdapter.ollamaValidator,
+      this.llmManager.getRegistry(), // LLM registry for in-memory model tracking
+      this.globalLLMSettingsManager   // Global settings for default model
     );
 
     // Set llmConfigPlan on aiAssistantPlan for settings persistence
@@ -336,10 +366,10 @@ export class AIModule implements Module {
     // Subjects plan for managing memory/topics/keywords (uses TopicAnalysisModel)
     this.subjectsPlan = new SubjectsPlan();
 
-    // Auto-initialize AIToolExecutor if MCPManager was supplied before init()
-    if (this.deps.mCPManager) {
-      this.initToolExecutor({ mcpManager: this.deps.mCPManager });
-    }
+    // Always initialize AIToolExecutor for plan: tool access
+    // MCPManager is optional - without it, only plan: tools work (no mcp: tools)
+    // This enables Gemma and other local models to call plan methods
+    this.initToolExecutor({ mcpManager: this.deps.mCPManager });
 
     console.log('[AIModule] Initialized');
   }
@@ -415,21 +445,86 @@ export class AIModule implements Module {
     });
     await this.aiMessageListener.start();
     console.log('[AIModule] AIMessageListener started');
+
+    // CRITICAL: Scan existing conversations AFTER ChannelManager is fully loaded
+    // This registers all AI topics so the message listener knows which topics have AI
+    // Without this, isAITopic() returns false and AI doesn't respond
+    console.log('[AIModule] Scanning existing conversations for AI topics...');
+    const registeredCount = await this.aiAssistantPlan.scanExistingConversations();
+    console.log(`[AIModule] Registered ${registeredCount} AI topics from existing conversations`);
   }
 
   /**
    * Initialize the AI tool executor for unified tool access
    * Call this after mcpManager is available (from platform code)
    *
+   * Creates a simple planRouter adapter for internal AI calls that uses
+   * the global planRegistry singleton. This bypasses PolicyEngine for
+   * internal calls which is acceptable since internal calls are already
+   * allowed by default policy (supply:internal:all at priority 990).
+   *
    * @param deps - Tool executor dependencies (planRouter, mcpManager, etc.)
    */
   initToolExecutor(deps: AIToolExecutorDeps): void {
     console.log('[AIModule] Initializing AIToolExecutor...');
 
-    this.toolExecutor = new AIToolExecutor(deps);
+    // Register our plans with the global planRegistry
+    this.registerPlansWithRegistry();
+
+    // Create a simple planRouter adapter for internal AI calls
+    // This bypasses PolicyEngine since internal calls are allowed by default
+    const internalPlanRouter = {
+      call: async (_context: any, plan: string, method: string, params: any) => {
+        try {
+          const result = await planRegistry.callPlanMethod(plan, method, params);
+          return { success: true, data: result };
+        } catch (error: any) {
+          return { success: false, error: error.message || String(error) };
+        }
+      }
+    };
+
+    // Merge with provided deps, adding planRouter if not already provided
+    const fullDeps: AIToolExecutorDeps = {
+      planRouter: deps.planRouter || internalPlanRouter,
+      mcpManager: deps.mcpManager,
+      policyEngine: deps.policyEngine
+    };
+
+    this.toolExecutor = new AIToolExecutor(fullDeps);
     this.llmManager.setToolExecutor(this.toolExecutor);
 
-    console.log('[AIModule] AIToolExecutor initialized and wired to LLMManager');
+    console.log('[AIModule] AIToolExecutor initialized with planRouter and wired to LLMManager');
+  }
+
+  /**
+   * Register AIModule's plans with the global planRegistry
+   * This enables plan: prefixed tool calls from LLMs (Gemma, Claude, etc.)
+   */
+  private registerPlansWithRegistry(): void {
+    console.log('[AIModule] Registering plans with global registry...');
+
+    // Register AI-related plans for tool access
+    if (this.aiAssistantPlan) {
+      planRegistry.registerPlan('ai-assistant', 'llm', this.aiAssistantPlan, 'AI assistant operations');
+    }
+    if (this.llmConfigPlan) {
+      planRegistry.registerPlan('llm-config', 'llm', this.llmConfigPlan, 'LLM configuration');
+    }
+    if (this.topicAnalysisPlan) {
+      planRegistry.registerPlan('topic-analysis', 'analysis', this.topicAnalysisPlan, 'Topic analysis');
+    }
+    if (this.proposalsPlan) {
+      planRegistry.registerPlan('proposals', 'recommendations', this.proposalsPlan, 'Proposal generation');
+    }
+    if (this.subjectsPlan) {
+      planRegistry.registerPlan('subjects', 'memory', this.subjectsPlan, 'Subject management');
+    }
+    if (this.llmManager) {
+      planRegistry.registerPlan('llm', 'llm', this.llmManager, 'LLM provider management');
+    }
+
+    console.log('[AIModule] Plans registered with global registry');
   }
 
   async shutdown(): Promise<void> {
@@ -471,6 +566,7 @@ export class AIModule implements Module {
     registry.supply('LLMObjectManager', this.llmObjectManager);
     registry.supply('AIObjectManager', this.aiObjectManager);
     registry.supply('AISettingsManager', this.aiSettingsManager);
+    registry.supply('GlobalLLMSettingsManager', this.globalLLMSettingsManager);
     registry.supply('AIMessageListener', this.aiMessageListener);
   }
 

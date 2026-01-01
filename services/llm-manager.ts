@@ -32,7 +32,10 @@
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import type { LLMPlatform } from './llm-platform.js';
+import type { SHA256Hash, SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { HashGroup, Person } from '@refinio/one.core/lib/recipes.js';
 
 const MessageBus = createMessageBus('LLMManager');
 import { LLM_RESPONSE_SCHEMA } from '../schemas/llm-response.schema.js';
@@ -47,6 +50,7 @@ import { formatForAnthropicWithCaching, formatForStandardAPI, type PromptParts }
 import { LLMConcurrencyManager } from './llm-concurrency-manager.js';
 import { getAdapterRegistry, registerDefaultAdapters, type LLMAdapterRegistry, type LLMAdapter, type ChatResult } from './llm-adapters/index.js';
 import { AIToolExecutor, type ToolExecutionContext } from './AIToolExecutor.js';
+import { LLMRegistry, getLLMRegistry, type LLMSource } from './llm-registry.js';
 
 /**
  * LLM connection health status
@@ -84,6 +88,7 @@ class LLMManager {
   capabilities: any;
   close: any;
   channelManager?: any; // ONE.core channel manager for storage access
+  leuteModel?: any; // ONE.core leute model for identity access
   modelSettings: Map<string, any>;
   mcpClients: Map<string, any>;
   mcpTools: Map<string, any>;
@@ -110,6 +115,12 @@ class LLMManager {
 
   // Adapter registry for demand/supply pattern
   private adapterRegistry: LLMAdapterRegistry;
+
+  // LLM registry for in-memory model tracking (replaces channel storage)
+  private llmRegistry: LLMRegistry;
+
+  // Global LLM settings manager for multi-server config
+  private globalSettingsManager?: any;
 
   constructor(
     platform?: LLMPlatform,
@@ -143,6 +154,9 @@ class LLMManager {
     // Initialize adapter registry and register default adapters
     this.adapterRegistry = getAdapterRegistry()
     registerDefaultAdapters()
+
+    // Initialize LLM registry (in-memory model tracking)
+    this.llmRegistry = getLLMRegistry()
 
     // Propagate platform to adapters that need it (e.g., TransformersAdapter)
     MessageBus.send('debug', `LLMManager: platform=${platform ? 'provided' : 'undefined'}, setPlatform in registry=${('setPlatform' in this.adapterRegistry)}`)
@@ -184,6 +198,79 @@ class LLMManager {
   }
 
   /**
+   * Set the leuteModel for identity access (called after ONE.core is initialized)
+   * @deprecated Use registry-based discovery instead
+   */
+  setLeuteModel(leuteModel: any): void {
+    this.leuteModel = leuteModel;
+    MessageBus.send('debug', 'LeuteModel set');
+  }
+
+  /**
+   * Set the GlobalLLMSettingsManager for multi-server config access
+   */
+  setGlobalSettingsManager(manager: any): void {
+    this.globalSettingsManager = manager;
+    MessageBus.send('debug', 'GlobalSettingsManager set');
+  }
+
+  /**
+   * Discover models from all configured Ollama servers
+   * Uses GlobalLLMSettingsManager to get server list
+   */
+  async discoverFromAllOllamaServers(): Promise<void> {
+    if (!this.globalSettingsManager) {
+      // Fall back to single server discovery using ollamaConfig
+      MessageBus.send('debug', 'No GlobalSettingsManager, using single-server discovery');
+      await this.discoverOllamaModels();
+      return;
+    }
+
+    try {
+      const servers = await this.globalSettingsManager.getEnabledOllamaServers();
+      MessageBus.send('debug', `Discovering from ${servers.length} Ollama servers...`);
+
+      // Clear existing Ollama models from registry before re-discovery
+      this.llmRegistry.removeBySource('ollama');
+
+      // Discover from each server in parallel
+      const discoveries = servers.map((server: any) =>
+        this.discoverOllamaModels(server.baseUrl, server.id)
+          .catch((error: any) => {
+            MessageBus.send('alert', `Failed to discover from ${server.name} (${server.baseUrl}): ${error.message}`);
+          })
+      );
+
+      await Promise.all(discoveries);
+
+      const summary = this.llmRegistry.getSummary();
+      MessageBus.send('log', `Multi-server discovery complete: ${summary.bySource['ollama'] || 0} Ollama models`);
+    } catch (error: any) {
+      MessageBus.send('error', 'Multi-server discovery failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get the participantsHash for the application data channel
+   * The 'lama' channel is now identified by participants (owner's personId)
+   * @deprecated LLMs are now stored in registry, not channels. Only for legacy storage fallback.
+   */
+  private async getAppChannelParticipants(): Promise<SHA256Hash<HashGroup<Person>> | null> {
+    if (!this.leuteModel) {
+      MessageBus.send('alert', 'LeuteModel not available - cannot get participants hash');
+      return null;
+    }
+    const myId = await this.leuteModel.myMainIdentity();
+    const hashGroup: HashGroup<Person> = {
+      $type$: 'HashGroup',
+      person: new Set([myId])
+    };
+    const result = await storeUnversionedObject(hashGroup);
+    return result.hash;
+  }
+
+  /**
    * Update SystemPromptBuilder dependencies (called after ONE.core is initialized)
    */
   updateSystemPromptDependencies(
@@ -207,6 +294,7 @@ class LLMManager {
 
   /**
    * Get all LLMs from ONE.core storage
+   * @deprecated Use llmRegistry.getAll() instead. Storage is legacy fallback only.
    */
   private async getAllLLMsFromStorage(): Promise<any[]> {
     if (!this.channelManager) {
@@ -216,8 +304,12 @@ class LLMManager {
 
     try {
       const llms: any[] = []
+      const participantsHash = await this.getAppChannelParticipants()
+      if (!participantsHash) {
+        return []
+      }
       const iterator = this.channelManager.objectIteratorWithType('LLM', {
-        channelId: 'lama',
+        participants: participantsHash,
       })
 
       for await (const obj of iterator) {
@@ -235,6 +327,7 @@ class LLMManager {
 
   /**
    * Get specific LLM from ONE.core storage by modelId
+   * @deprecated Use llmRegistry.get() instead. Storage is legacy fallback only.
    */
   private async getLLMFromStorage(modelId: string): Promise<any | null> {
     if (!this.channelManager) {
@@ -243,8 +336,12 @@ class LLMManager {
     }
 
     try {
+      const participantsHash = await this.getAppChannelParticipants()
+      if (!participantsHash) {
+        return null
+      }
       const iterator = this.channelManager.objectIteratorWithType('LLM', {
-        channelId: 'lama',
+        participants: participantsHash,
       })
 
       for await (const obj of iterator) {
@@ -499,28 +596,47 @@ class LLMManager {
     }
     const effectiveModelId = modelId
 
-    // Read model from ONE.core storage instead of in-memory Map
-    const llmObject = await this.getLLMFromStorage(effectiveModelId)
+    // Try registry first, then fall back to storage (transition period)
+    let llmObject = this.llmRegistry.get(effectiveModelId)
     if (!llmObject) {
-      const allLLMs = await this.getAllLLMsFromStorage()
-      const availableIds = allLLMs.map(llm => llm.modelId).join(', ')
-      throw new Error(`Model ${effectiveModelId} not found in storage. Available: ${availableIds}`)
+      // Fall back to storage for legacy compatibility
+      llmObject = await this.getLLMFromStorage(effectiveModelId)
+    }
+    if (!llmObject) {
+      // List available models from both sources
+      const registryModels = this.llmRegistry.getAll().map(llm => llm.modelId || llm.name)
+      const storageModels = (await this.getAllLLMsFromStorage()).map(llm => llm.modelId)
+      const allAvailable = [...new Set([...registryModels, ...storageModels])]
+      throw new Error(`Model ${effectiveModelId} not found. Available: ${allAvailable.join(', ')}`)
     }
 
-    // Use LLM object directly (storage is source of truth)
+    // Detect provider from modelId if stored provider is unknown or missing
+    let provider = llmObject.provider;
+    if (!provider || provider === 'unknown') {
+      const modelIdLower = effectiveModelId.toLowerCase();
+      if (modelIdLower.includes('claude') || modelIdLower.includes('haiku') || modelIdLower.includes('sonnet') || modelIdLower.includes('opus')) {
+        provider = 'anthropic';
+        MessageBus.send('debug', `Detected Anthropic provider from modelId: ${effectiveModelId}`);
+      } else if (modelIdLower.includes('gpt') || modelIdLower.startsWith('o1-') || modelIdLower.startsWith('o3-')) {
+        provider = 'openai';
+        MessageBus.send('debug', `Detected OpenAI provider from modelId: ${effectiveModelId}`);
+      }
+    }
+
+    // Use LLM object directly (registry/storage is source of truth)
     const model = {
-      id: llmObject.modelId,
+      id: llmObject.modelId || llmObject.name,
       name: llmObject.name || llmObject.modelId,
-      provider: llmObject.provider,
+      provider,
       baseUrl: llmObject.server, // Ollama server address
       systemPrompt: llmObject.systemPrompt,
       // Defaults for fields that may not be in storage
-      capabilities: ['chat', 'completion'],
-      contextLength: 8192,
+      capabilities: llmObject.capabilities || ['chat', 'completion'],
+      contextLength: llmObject.contextLength || 8192,
       parameters: {
-        modelName: llmObject.modelId,
+        modelName: llmObject.modelId || llmObject.name,
         temperature: options.temperature ?? 0.7,
-        maxTokens: options.maxTokens ?? 4096  // Use user setting or default
+        maxTokens: options.maxTokens ?? llmObject.maxTokens ?? 4096
       }
     }
 
@@ -566,8 +682,18 @@ class LLMManager {
       // Enhancement not needed - context is already built into PromptParts
       enhancedMessages = []; // Will be replaced by provider-specific formatting
     } else {
-      // Legacy path: Add tool descriptions to system message (unless explicitly disabled)
-      enhancedMessages = shouldDisableTools ? actualMessages : await this.enhanceMessagesWithContext(actualMessages, {})
+      // Legacy path: Skip enhancement if system prompt already exists
+      // This happens when messages came through the promptParts flow (formatForStandardAPI)
+      // which already includes identity. Re-enhancing would add a conflicting fallback identity.
+      const hasSystemPrompt = actualMessages.some((m: any) => m.role === 'system');
+      if (hasSystemPrompt) {
+        MessageBus.send('debug', 'Skipping enhancement - system prompt already present');
+        enhancedMessages = actualMessages;
+      } else if (shouldDisableTools) {
+        enhancedMessages = actualMessages;
+      } else {
+        enhancedMessages = await this.enhanceMessagesWithContext(actualMessages, {});
+      }
     }
 
     // Inject API key for Anthropic if not provided
@@ -620,7 +746,16 @@ class LLMManager {
           platform: this.platform,
           ollamaContextCache: this.ollamaContextCache
         });
-        response = chatResult.content;
+        // Preserve thinking from reasoning models (gpt-oss, deepseek-r1)
+        if (chatResult.thinking) {
+          response = {
+            content: chatResult.content,
+            thinking: chatResult.thinking,
+            _hasThinking: true
+          };
+        } else {
+          response = chatResult.content;
+        }
       } else {
         // Fallback to legacy routing (will be removed once all adapters are registered)
         const inferenceType = llmObject.inferenceType;
@@ -1233,7 +1368,7 @@ class LLMManager {
   /**
    * Chat directly with a local model by ID, bypassing storage lookup.
    * Use this for first-run scenarios where the model isn't yet in storage
-   * (e.g., AI birth name generation before model registration).
+   * (e.g., AI name generation during creation before model registration).
    */
   async chatLocalDirect(modelId: string, messages: any[], options: any = {}): Promise<string> {
     MessageBus.send('debug', `Direct local chat: ${modelId}, ${messages?.length || 0} msgs`);
@@ -1290,47 +1425,95 @@ class LLMManager {
   }
 
   async getAllModels(): Promise<any[]> {
-    return await this.getAllLLMsFromStorage()
+    // Combine registry and storage, deduplicate
+    const registryModels = this.llmRegistry.getAll()
+    const storageModels = await this.getAllLLMsFromStorage()
+
+    // Deduplicate by modelId, preferring registry
+    const seen = new Set<string>()
+    const combined: any[] = []
+
+    for (const llm of registryModels) {
+      const id = llm.modelId || llm.name
+      if (!seen.has(id)) {
+        seen.add(id)
+        combined.push(llm)
+      }
+    }
+
+    for (const llm of storageModels) {
+      const id = llm.modelId || llm.name
+      if (!seen.has(id)) {
+        seen.add(id)
+        combined.push(llm)
+      }
+    }
+
+    return combined
   }
 
   async getModel(id: any): Promise<any | null> {
+    // Try registry first, then storage
+    const fromRegistry = this.llmRegistry.get(id)
+    if (fromRegistry) return fromRegistry
     return await this.getLLMFromStorage(id)
   }
 
   /**
+   * Get the LLM registry for direct access
+   */
+  getRegistry(): LLMRegistry {
+    return this.llmRegistry
+  }
+
+  /**
    * Get available models for external consumers
-   * Deduplicates by composite key (name + server) to prevent duplicate entries
+   * Combines registry and storage, deduplicates by modelId
    */
   async getAvailableModels(): Promise<any[]> {
-    const llms = await this.getAllLLMsFromStorage()
+    // Get from both sources
+    const registryLlms = this.llmRegistry.getAll()
+    const storageLlms = await this.getAllLLMsFromStorage()
 
-    // Deduplicate by composite key (name + server) - LLM Recipe uses both as isId
+    // Deduplicate by modelId, preferring registry
     const seen = new Set<string>()
-    const dedupedLlms = llms.filter((llm: any) => {
-      const key = `${llm.name}@${llm.server || 'localhost'}`
-      if (seen.has(key)) {
-        return false
-      }
-      seen.add(key)
-      return true
-    })
+    const combined: any[] = []
 
-    return dedupedLlms.map((llm: any) => ({
-      id: llm.modelId,
+    // Add registry models first (preferred)
+    for (const llm of registryLlms) {
+      const id = llm.modelId || llm.name
+      if (!seen.has(id)) {
+        seen.add(id)
+        combined.push(llm)
+      }
+    }
+
+    // Add storage models that aren't in registry
+    for (const llm of storageLlms) {
+      const id = llm.modelId || llm.name
+      if (!seen.has(id)) {
+        seen.add(id)
+        combined.push(llm)
+      }
+    }
+
+    return combined.map((llm: any) => ({
+      id: llm.modelId || llm.name,
       name: llm.name || llm.modelId,
       provider: llm.provider,
-      server: llm.server || '', // Include server URL for UI display
+      server: llm.server || '',
       description: llm.description || '',
       contextLength: llm.contextLength || 4096,
       maxTokens: llm.maxTokens || 2048,
       capabilities: llm.capabilities || [],
-      // Inference type from storage (ondevice/server/cloud)
       inferenceType: llm.inferenceType || (llm.provider === 'ollama' ? 'server' : 'cloud'),
-      // Determine modelType for backward compat
       modelType: llm.inferenceType === 'ondevice' ? 'ondevice' : (llm.provider === 'ollama' ? 'local' : 'remote'),
-      size: llm.size, // Include size if available
-      isLoaded: llm.isLoaded || false, // Include load status
-      isDefault: llm.isDefault || false // Include default status
+      size: llm.size,
+      // Remote/cloud models are always "ready" - only local models have actual load state
+      isLoaded: llm.provider === 'ollama' || llm.provider === 'lmstudio' || llm.inferenceType === 'ondevice'
+        ? (llm.isLoaded || false)
+        : true,
+      isDefault: llm.isDefault || false
     }))
   }
 
@@ -1366,59 +1549,67 @@ class LLMManager {
 
   /**
    * Discover Ollama models from local Ollama instance
-   * Registers available Ollama models for use in the application
+   * Registers available Ollama models in the in-memory registry
+   *
+   * @param baseUrl - Optional Ollama server URL (defaults to config or localhost)
+   * @param serverId - Optional server identifier for multi-server support
    */
-  async discoverOllamaModels(): Promise<void> {
-    MessageBus.send('debug', 'Discovering Ollama models...');
+  async discoverOllamaModels(baseUrl?: string, serverId?: string): Promise<void> {
+    const effectiveUrl = baseUrl || this.ollamaConfig?.baseUrl || 'http://localhost:11434';
+    MessageBus.send('debug', `Discovering Ollama models from ${effectiveUrl}...`);
 
     try {
       // Get local Ollama models
-      const ollamaModels = await getLocalOllamaModels();
+      const ollamaModels = await getLocalOllamaModels(effectiveUrl);
 
       if (!ollamaModels || ollamaModels.length === 0) {
         MessageBus.send('debug', 'No Ollama models found');
         return;
       }
 
-      // Store models in ONE.core storage via channelManager
-      if (!this.channelManager) {
-        MessageBus.send('alert', 'channelManager not available - cannot store Ollama models');
-        return;
-      }
-
-      MessageBus.send('debug', `Registering ${ollamaModels.length} Ollama models...`);
+      MessageBus.send('debug', `Found ${ollamaModels.length} Ollama models, registering...`);
 
       for (const model of ollamaModels) {
         try {
-          const modelId = `ollama:${model.name}`;
+          // Include server host in modelId for multi-server uniqueness
+          const host = new URL(effectiveUrl).host;
+          const modelId = `${model.name}@${host}`;
 
-          // Check if model already exists
-          const existing = await this.getLLMFromStorage(modelId);
-          if (existing) {
-            continue;
-          }
+          const now = Date.now();
+          const nowStr = new Date().toISOString();
 
-          // Create LLM object in storage
-          const llmObject = {
+          // Create LLM object
+          const llmObject: any = {
             $type$: 'LLM',
             modelId: modelId,
             name: model.name,
+            server: effectiveUrl,
+            filename: model.name,
             provider: 'ollama',
+            inferenceType: 'server' as const,
+            modelType: 'remote' as const,
             description: model.details?.family || 'Ollama model',
             contextLength: (model.details as any)?.context_length || 4096,
             maxTokens: 2048,
             capabilities: ['chat', 'completion'],
-            apiKey: '' // Ollama doesn't need API key
+            active: true,
+            deleted: false,
+            created: now,
+            modified: now,
+            createdAt: nowStr,
+            lastUsed: nowStr
           };
 
-          // await this.saveLLMToStorage(llmObject); // TODO: Method doesn't exist
+          // Register in in-memory registry
+          this.llmRegistry.register(llmObject, 'ollama', serverId);
+
           MessageBus.send('debug', `Registered Ollama model: ${modelId}`);
         } catch (error) {
           MessageBus.send('error', `Failed to register Ollama model ${model.name}:`, error);
         }
       }
 
-      MessageBus.send('log', 'Ollama model discovery complete');
+      MessageBus.send('log', `Ollama model discovery complete: ${ollamaModels.length} models from ${effectiveUrl}`);
     } catch (error) {
       MessageBus.send('error', 'Failed to discover Ollama models:', error);
       throw error;
@@ -1476,7 +1667,7 @@ class LLMManager {
 
   /**
    * Discover Claude models from Anthropic API
-   * Registers available Claude models for use in the application
+   * Registers available Claude models in the in-memory registry
    */
   async discoverClaudeModels(apiKey?: string): Promise<void> {
     MessageBus.send('debug', 'Discovering Claude models...');
@@ -1500,77 +1691,67 @@ class LLMManager {
       }
 
       // Define available Claude models
-      // These are the current Anthropic models as of 2025
+      // Current Anthropic models as of late 2025
       const claudeModels = [
         {
-          modelId: 'claude:claude-sonnet-4.5-20250929',
+          modelId: 'claude-opus-4-5-20251101',
+          name: 'Claude Opus 4.5',
+          provider: 'anthropic',
+          description: 'Most capable model. Best for complex reasoning, coding, and agentic tasks.',
+          contextLength: 200000,
+          maxTokens: 8192,
+          capabilities: ['chat', 'completion', 'function-calling']
+        },
+        {
+          modelId: 'claude-sonnet-4-5-20250929',
           name: 'Claude Sonnet 4.5',
           provider: 'anthropic',
-          description: 'Latest Claude Sonnet model with extended thinking',
+          description: 'Best coding model. Strongest for complex agents and computer use.',
           contextLength: 200000,
           maxTokens: 8192,
-          capabilities: ['chat', 'completion', 'extended-thinking']
+          capabilities: ['chat', 'completion', 'function-calling']
         },
         {
-          modelId: 'claude:claude-3-5-sonnet-20241022',
-          name: 'Claude 3.5 Sonnet',
+          modelId: 'claude-haiku-4-5',
+          name: 'Claude Haiku 4.5',
           provider: 'anthropic',
-          description: 'Balanced intelligence and speed',
+          description: 'Fast and affordable. Similar coding to Sonnet 4 at 1/3 cost.',
           contextLength: 200000,
           maxTokens: 8192,
           capabilities: ['chat', 'completion']
         },
         {
-          modelId: 'claude:claude-3-5-haiku-20241022',
+          modelId: 'claude-3-5-haiku-20241022',
           name: 'Claude 3.5 Haiku',
           provider: 'anthropic',
-          description: 'Fastest Claude model for quick responses',
+          description: 'Fast and efficient for simple tasks.',
           contextLength: 200000,
           maxTokens: 8192,
-          capabilities: ['chat', 'completion']
-        },
-        {
-          modelId: 'claude:claude-3-opus-20240229',
-          name: 'Claude 3 Opus',
-          provider: 'anthropic',
-          description: 'Most capable Claude model for complex tasks',
-          contextLength: 200000,
-          maxTokens: 4096,
           capabilities: ['chat', 'completion']
         }
       ];
-
-      // Store models in ONE.core storage via channelManager
-      if (!this.channelManager) {
-        MessageBus.send('alert', 'channelManager not available - cannot store Claude models');
-        return;
-      }
 
       MessageBus.send('debug', `Registering ${claudeModels.length} Claude models...`);
 
       for (const model of claudeModels) {
         try {
-          // Check if model already exists
-          const existing = await this.getLLMFromStorage(model.modelId);
-          if (existing) {
-            continue;
-          }
-
-          // Create LLM object in storage with all mandatory fields
           const now = Date.now();
           const nowStr = new Date().toISOString();
-          const llmObject = {
+
+          // Create LLM object
+          const llmObject: any = {
             $type$: 'LLM',
             modelId: model.modelId,
             name: model.name,
-            filename: model.modelId, // Required field - use modelId as filename for API models
+            filename: model.modelId,
             provider: model.provider,
+            inferenceType: 'cloud' as const,
             description: model.description,
             contextLength: model.contextLength,
             maxTokens: model.maxTokens,
             capabilities: model.capabilities,
-            server: 'https://api.anthropic.com', // Claude API endpoint
-            modelType: 'remote' as const, // Claude is API-based
+            server: 'https://api.anthropic.com',
+            modelType: 'remote' as const,
             active: true,
             deleted: false,
             created: now,
@@ -1579,7 +1760,8 @@ class LLMManager {
             lastUsed: nowStr
           };
 
-          await this.channelManager.postToChannel('lama', llmObject);
+          // Register in in-memory registry
+          this.llmRegistry.register(llmObject, 'anthropic');
 
           MessageBus.send('debug', `Registered Claude model: ${model.name}`);
         } catch (error) {
@@ -1605,42 +1787,35 @@ class LLMManager {
     contextLength?: number;
     familyName?: string;
   }>): Promise<void> {
-    console.log(`[LLMManager] discoverLocalModels: ${installedModels.length} models`);
-
-    if (!this.channelManager) {
-      console.error('[LLMManager] channelManager not available - cannot store local models');
-      return;
-    }
+    MessageBus.send('debug', `Discovering local models: ${installedModels.length} models`);
 
     for (const model of installedModels) {
       try {
-        // Model IDs no longer use 'local:' prefix - routing is handled by inferenceType field
         const modelId = model.id;
-        console.log(`[LLMManager] Processing local model: ${modelId}`);
 
-        // Check if model already exists
-        const existing = await this.getLLMFromStorage(modelId);
-        if (existing) {
-          console.log(`[LLMManager] Local model already registered: ${modelId}`);
+        // Check if already in registry
+        if (this.llmRegistry.has(modelId)) {
+          MessageBus.send('debug', `Local model already registered: ${modelId}`);
           continue;
         }
 
-        // Create LLM object in storage
         const now = Date.now();
         const nowStr = new Date().toISOString();
-        const llmObject = {
+
+        // Create LLM object
+        const llmObject: any = {
           $type$: 'LLM',
           modelId: modelId,
           name: model.familyName || model.name,
           filename: model.id,
           provider: 'transformers',
+          inferenceType: 'ondevice' as const,
           description: `On-device ${model.name}`,
           contextLength: model.contextLength || 4096,
           maxTokens: 2048,
           capabilities: ['chat'],
-          server: 'local', // Required isId field - 'local' for on-device
+          server: 'local',
           modelType: 'local' as const,
-          inferenceType: 'ondevice' as const,
           size: model.sizeBytes,
           active: true,
           deleted: false,
@@ -1650,16 +1825,11 @@ class LLMManager {
           lastUsed: nowStr
         };
 
-        console.log(`[LLMManager] Storing LLM object:`, JSON.stringify(llmObject, null, 2));
-        // Store in ONE.core storage first (like LLMConfigPlan.setConfig does)
-        const result = await storeVersionedObject(llmObject);
-        const hash = typeof result === 'string' ? result : result.idHash;
-        console.log(`[LLMManager] Stored LLM object with hash: ${hash}`);
-        // Then post to channel for sync
-        await this.channelManager.postToChannel('lama', llmObject);
-        console.log(`[LLMManager] ✅ Stored local model: ${model.name} (${modelId})`);
+        // Register in in-memory registry
+        this.llmRegistry.register(llmObject, 'local');
+
+        MessageBus.send('debug', `Registered local model: ${model.name} (${modelId})`);
       } catch (error) {
-        console.error(`[LLMManager] ❌ Failed to register local model ${model.id}:`, error);
         MessageBus.send('error', `Failed to register local model ${model.id}:`, error);
       }
     }

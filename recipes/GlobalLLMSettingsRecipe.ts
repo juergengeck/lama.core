@@ -56,6 +56,24 @@ export const GlobalLLMSettingsRecipe = {
         {
             itemprop: 'defaultPrompt',
             itemtype: { type: 'string' }
+        },
+        // Ollama server configurations for multi-server support
+        {
+            itemprop: 'ollamaServers',
+            itemtype: {
+                type: 'array',
+                item: {
+                    type: 'object',
+                    rules: [
+                        { itemprop: 'id', itemtype: { type: 'string' } },
+                        { itemprop: 'name', itemtype: { type: 'string' } },
+                        { itemprop: 'baseUrl', itemtype: { type: 'string' } },
+                        { itemprop: 'authType', itemtype: { type: 'string', regexp: /^(none|bearer)$/ }, optional: true },
+                        { itemprop: 'enabled', itemtype: { type: 'boolean' } }
+                    ]
+                }
+            },
+            optional: true
         }
     ]
 };

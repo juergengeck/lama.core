@@ -62,6 +62,9 @@ export class AIInitializationPlan {
     // Step 2: Discover Claude models
     const anthropicApiKey = await this.discoverClaudeModels(userSettingsManager);
 
+    // Step 2b: Discover Ollama models from all configured servers
+    await this.discoverOllamaModels();
+
     // Step 3: Configure LLM manager
     this.configureLLMManager(userSettingsManager);
 
@@ -110,6 +113,24 @@ export class AIInitializationPlan {
     console.log('[AIInitializationPlan] ✅ Claude models discovered');
 
     return anthropicApiKey;
+  }
+
+  private async discoverOllamaModels(): Promise<void> {
+    console.log('[AIInitializationPlan] Discovering Ollama models...');
+
+    try {
+      // Use multi-server discovery if GlobalLLMSettingsManager is wired up
+      if (this.deps.llmManager.discoverFromAllOllamaServers) {
+        await this.deps.llmManager.discoverFromAllOllamaServers();
+      } else {
+        // Fallback to single-server discovery
+        const baseUrl = this.deps.ollamaBaseUrl || 'http://localhost:11434';
+        await this.deps.llmManager.discoverOllamaModels(baseUrl);
+      }
+      console.log('[AIInitializationPlan] ✅ Ollama models discovered');
+    } catch (err) {
+      console.warn('[AIInitializationPlan] Ollama discovery failed (non-fatal):', err);
+    }
   }
 
   private configureLLMManager(userSettingsManager: any): void {

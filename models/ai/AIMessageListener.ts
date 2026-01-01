@@ -6,8 +6,8 @@
  *
  * Responsibilities:
  * - Listen to channelManager.onUpdated() events
- * - Detect messages in AI topics
- * - Trigger AI response generation via AIAssistantPlan
+ * - Detect messages in AI topics based on Topic.aiParticipants settings
+ * - Trigger AI response generation for responding AIs
  * - Debounce rapid updates
  *
  * This class is platform-agnostic and works on both browser and Node.js.
@@ -17,7 +17,10 @@ import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import type { AIAssistantPlan } from '../../plans/AIAssistantPlan.js';
+import { getRespondingAIs } from './AISettingsResolver.js';
+import type { AI } from './AIManager.js';
 
 export interface AIMessageListenerDeps {
     channelManager: ChannelManager;
@@ -56,39 +59,80 @@ export class AIMessageListener {
         // Register channel update listener
         this.unsubscribe = this.deps.channelManager.onUpdated(async (
             channelInfoIdHash,
-            channelId,
+            channelParticipants,
             channelOwner,
             timeOfEarliestChange,
             data
         ) => {
-            // Debounce frequent updates
-            const existingTimer = this.debounceTimers.get(channelId);
+            // Debounce frequent updates using channelInfoIdHash (stable identifier)
+            const existingTimer = this.debounceTimers.get(channelInfoIdHash);
             if (existingTimer) {
                 clearTimeout(existingTimer);
             }
 
             const timerId = setTimeout(async () => {
-                this.debounceTimers.delete(channelId);
+                this.debounceTimers.delete(channelInfoIdHash);
 
-                console.log(`[AIMessageListener] 🔔 Channel update received for: ${channelId}`);
+                console.log(`[AIMessageListener] 🔔 Channel update received - channelInfoIdHash: ${channelInfoIdHash}`);
 
-                // Check if this is an AI topic
-                const isAI = this.deps.aiPlan.isAITopic(channelId);
-                console.log(`[AIMessageListener] 🤖 Is AI topic? ${isAI} for channel: ${channelId}`);
+                // Find topic by matching channel ID hash (Topic.channel === channelInfoIdHash)
+                const allTopics = await this.deps.topicModel.topics.all();
+                const topic = allTopics.find(t => t.channel === channelInfoIdHash);
 
-                if (!isAI) {
-                    console.log(`[AIMessageListener] ⏭️  Skipping non-AI topic: ${channelId}`);
+                if (!topic) {
+                    console.log(`[AIMessageListener] ⏭️  No topic found for channelInfoIdHash: ${channelInfoIdHash}`);
                     return;
                 }
 
-                try{
-                    await this.handleChannelUpdate(channelId);
+                // Check if this topic has responding AIs based on settings
+                // Priority: Check Topic.aiParticipants (new settings) → fallback to isAITopic (legacy)
+                let respondingAIPersonIds: SHA256IdHash<Person>[] = [];
+
+                if (topic.aiParticipants && topic.aiParticipants.size > 0) {
+                    // New settings-based check
+                    try {
+                        const aiManager = this.deps.aiPlan.getAIManager?.();
+                        if (aiManager) {
+                            const getAI = async (personId: SHA256IdHash<Person>): Promise<AI | null> => {
+                                return aiManager.getAI(personId);
+                            };
+                            respondingAIPersonIds = await getRespondingAIs(topic.aiParticipants, getAI);
+                        }
+                    } catch (err) {
+                        console.log(`[AIMessageListener] Error checking AI settings, falling back to legacy:`, err);
+                    }
+                }
+
+                // Fallback to legacy isAITopic check if no settings-based AIs found
+                if (respondingAIPersonIds.length === 0) {
+                    const isAI = this.deps.aiPlan.isAITopic(topic.id);
+                    console.log(`[AIMessageListener] 🤖 Is AI topic (legacy)? ${isAI} for topic.id: ${topic.id}`);
+                    if (!isAI) {
+                        console.log(`[AIMessageListener] ⏭️  Skipping non-AI topic: ${topic.id}`);
+                        return;
+                    }
+                    // Legacy mode: single AI from _topicAIMap
+                    const legacyAI = this.deps.aiPlan.getAIPersonForTopic?.(topic.id);
+                    if (legacyAI) {
+                        respondingAIPersonIds = [legacyAI as SHA256IdHash<Person>];
+                    }
+                } else {
+                    console.log(`[AIMessageListener] 🤖 Settings-based: ${respondingAIPersonIds.length} AIs should respond for topic.id: ${topic.id}`);
+                }
+
+                if (respondingAIPersonIds.length === 0) {
+                    console.log(`[AIMessageListener] ⏭️  No responding AIs for topic: ${topic.id}`);
+                    return;
+                }
+
+                try {
+                    await this.handleChannelUpdate(topic, respondingAIPersonIds);
                 } catch (error) {
                     console.error(`[AIMessageListener] Error processing channel update:`, error);
                 }
             }, this.DEBOUNCE_MS);
 
-            this.debounceTimers.set(channelId, timerId);
+            this.debounceTimers.set(channelInfoIdHash, timerId);
         });
 
         console.log('[AIMessageListener] Message listener started successfully');
@@ -116,15 +160,20 @@ export class AIMessageListener {
 
     /**
      * Handle a channel update - check if AI should respond
+     * @param topic - The topic where the update occurred
+     * @param respondingAIPersonIds - Person IDs of AIs that should respond (from settings)
      */
-    private async handleChannelUpdate(channelId: string): Promise<void> {
-        console.log(`[AIMessageListener] Processing channel update for ${channelId}`);
+    private async handleChannelUpdate(
+        topic: Topic,
+        respondingAIPersonIds: SHA256IdHash<Person>[]
+    ): Promise<void> {
+        console.log(`[AIMessageListener] Processing channel update for topic.id: ${topic.id}`);
 
         try {
             // Enter the topic room to access messages
-            const topicRoom = await this.deps.topicModel.enterTopicRoom(channelId);
+            const topicRoom = await this.deps.topicModel.enterTopicRoom(topic.id);
             if (!topicRoom) {
-                console.error(`[AIMessageListener] Could not enter topic room ${channelId}`);
+                console.error(`[AIMessageListener] Could not enter topic room ${topic.id}`);
                 return;
             }
 
@@ -134,7 +183,7 @@ export class AIMessageListener {
 
             // If topic is empty, skip (welcome message handled elsewhere)
             if (messages.length === 0) {
-                console.log(`[AIMessageListener] Empty topic ${channelId} - skipping`);
+                console.log(`[AIMessageListener] Empty topic ${topic.id} - skipping`);
                 return;
             }
 
@@ -143,11 +192,16 @@ export class AIMessageListener {
             const messageText = lastMessage.data?.text;
             const messageSender = lastMessage.data?.sender || lastMessage.author;
 
-            // Check if message is from AI (skip if yes)
-            const isFromAI = this.deps.aiPlan.isAIPerson(messageSender);
-            console.log(`[AIMessageListener] Last message from ${messageSender?.toString().substring(0, 8)}...: isAI=${isFromAI}, text="${messageText?.substring(0, 50)}..."`);
+            // Check if message is from one of our responding AIs (skip if yes)
+            const isFromRespondingAI = respondingAIPersonIds.some(
+                aiId => aiId === messageSender
+            );
+            // Also check using legacy isAIPerson for backwards compatibility
+            const isFromAnyAI = this.deps.aiPlan.isAIPerson(messageSender);
 
-            if (isFromAI) {
+            console.log(`[AIMessageListener] Last message from ${messageSender?.toString().substring(0, 8)}...: isFromRespondingAI=${isFromRespondingAI}, isFromAnyAI=${isFromAnyAI}, text="${messageText?.substring(0, 50)}..."`);
+
+            if (isFromRespondingAI || isFromAnyAI) {
                 console.log(`[AIMessageListener] Ignoring AI message from ${messageSender?.toString().substring(0, 8)}...`);
                 return;
             }
@@ -171,10 +225,10 @@ export class AIMessageListener {
             const messageIdentifier = `${lastMessage.creationTime}-${messageSender}-${messageText.substring(0, 50)}`;
 
             // Check if we've already processed this message
-            if (!this.processedMessages.has(channelId)) {
-                this.processedMessages.set(channelId, new Set());
+            if (!this.processedMessages.has(topic.id)) {
+                this.processedMessages.set(topic.id, new Set());
             }
-            const topicProcessedMessages = this.processedMessages.get(channelId)!;
+            const topicProcessedMessages = this.processedMessages.get(topic.id)!
 
             if (topicProcessedMessages.has(messageIdentifier)) {
                 console.log(`[AIMessageListener] Already processed this message - skipping duplicate`);
@@ -190,10 +244,16 @@ export class AIMessageListener {
                 entries.slice(0, entries.length - 100).forEach(entry => topicProcessedMessages.delete(entry));
             }
 
-            console.log(`[AIMessageListener] Processing user message: "${messageText}"`);
+            console.log(`[AIMessageListener] Processing user message for ${respondingAIPersonIds.length} AIs: "${messageText}"`);
 
-            // Delegate to AIAssistantPlan for AI response generation
-            await this.deps.aiPlan.processMessage(channelId, messageText, messageSender);
+            // Process message for each responding AI
+            // In the future, this could be parallelized or have per-AI logic
+            for (const aiPersonId of respondingAIPersonIds) {
+                console.log(`[AIMessageListener] Triggering response from AI: ${aiPersonId.substring(0, 8)}...`);
+                // Delegate to AIAssistantPlan for AI response generation
+                // The plan will use the AI's settings to determine how to respond
+                await this.deps.aiPlan.processMessage(topic.id, messageText, messageSender, aiPersonId);
+            }
 
         } catch (error) {
             console.error(`[AIMessageListener] Error handling channel update:`, error);

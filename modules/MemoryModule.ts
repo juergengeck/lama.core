@@ -341,10 +341,14 @@ export class MemoryModule implements Module {
           const topics = await topicAnalysisModel.getAllTopics();
 
           for (const topicId of topics) {
+            // Get topic to retrieve display name
+            const topic = await topicAnalysisModel.topicModel?.findTopic?.(topicId);
+            const topicLabel = topic?.screenName || topic?.name || topicId;
+
             const topicNode: GraphNode = {
               id: `topic:${topicId}`,
               type: 'topic',
-              label: topicId.length > 20 ? topicId.substring(0, 20) + '...' : topicId,
+              label: topicLabel,
               metadata: { topicId }
             };
 

@@ -391,6 +391,16 @@ export class LLMConfigPlan {
 
         this.llmRegistry.register(llmObject, source);
         MessageBus.send('debug', `[LLMConfigPlan] Registered ${request.modelName} in LLMRegistry (source: ${source})`);
+
+        // AUTO-SET AS DEFAULT if no default model exists
+        // This handles the case where user skipped onboarding and later configures a model
+        if (!request.setAsActive && this.globalSettingsManager) {
+          const currentDefault = await this.globalSettingsManager.getDefaultModelId();
+          if (!currentDefault) {
+            await this.globalSettingsManager.setDefaultModelId(request.modelName);
+            MessageBus.send('log', `[LLMConfigPlan] No default model - auto-set ${request.modelName} as default`);
+          }
+        }
       } else {
         // LEGACY FALLBACK: Store to channel if registry not available
         MessageBus.send('debug', '[LLMConfigPlan] No registry - using legacy channel storage');

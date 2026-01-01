@@ -99,7 +99,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
       // Get messages from current topic (will be Part 3)
       const allMessages = await this.getCachedMessages(topicId);
-      const currentSubjectMessages = this.formatMessagesForContext(allMessages);
+      const currentSubjectMessages = await this.formatMessagesForContext(allMessages);
 
       // Build context using budget manager with abstraction-based compression
       const promptParts = buildContextWithinBudget({
@@ -213,18 +213,26 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
   /**
    * Format messages for context (Part 3)
+   * Skips the first message if it's from AI (welcome message - shown in UI but not in prompt)
    */
-  private formatMessagesForContext(messages: any[]): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  private async formatMessagesForContext(messages: any[]): Promise<Array<{ role: 'system' | 'user' | 'assistant'; content: string }>> {
     const formatted: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
 
-    for (const msg of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
       const text = (msg as any).data?.text || (msg as any).text;
       const msgSender = (msg as any).data?.sender || (msg as any).author;
-      const isAI = this.isAIMessage(msgSender);
+      // CRITICAL: isAIMessage is async - must await to get boolean, not Promise
+      const isAI = await this.isAIMessage(msgSender);
+
+      // Skip first message if it's from AI (welcome message - not part of conversation prompt)
+      if (i === 0 && isAI) {
+        continue;
+      }
 
       if (text && text.trim()) {
         formatted.push({
-          role: (isAI ? 'assistant' : 'user') as 'system' | 'user' | 'assistant',
+          role: isAI ? 'assistant' : 'user',
           content: text
         });
       }

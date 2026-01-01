@@ -40,6 +40,8 @@ export interface ChatOptions {
 export interface ChatResult {
   content: string;
   thinking?: string;
+  /** ISO 639-1 language code of the response (e.g., 'en', 'de', 'fr') */
+  language?: string;
   usage?: {
     promptTokens: number;
     completionTokens: number;

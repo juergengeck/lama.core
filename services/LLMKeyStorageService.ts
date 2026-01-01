@@ -6,15 +6,35 @@
  */
 
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
+import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import { storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
+import type { HashGroup, Person } from '@refinio/one.core/lib/recipes.js';
+import type { SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 
 /**
  * LLMKeyStorageService - Secure storage for LLM API keys
  */
 export class LLMKeyStorageService {
   private channelManager: ChannelManager;
+  private leuteModel: LeuteModel;
 
-  constructor(channelManager: ChannelManager) {
+  constructor(channelManager: ChannelManager, leuteModel: LeuteModel) {
     this.channelManager = channelManager;
+    this.leuteModel = leuteModel;
+  }
+
+  /**
+   * Get the participantsHash for the application data channel
+   */
+  private async getAppChannelParticipants(): Promise<SHA256Hash<HashGroup<Person>>> {
+    const myId = await this.leuteModel.myMainIdentity();
+    // Create HashGroup from myId
+    const hashGroup: HashGroup<Person> = {
+      $type$: 'HashGroup',
+      person: new Set([myId])
+    };
+    const result = await storeUnversionedObject(hashGroup);
+    return result.hash;
   }
 
   /**
@@ -94,8 +114,9 @@ export class LLMKeyStorageService {
           throw new Error('Decrypt token function not provided');
         }
 
+        const participantsHash = await this.getAppChannelParticipants();
         const iterator = this.channelManager.objectIteratorWithType('LLM', {
-          channelId: 'lama'
+          participants: participantsHash
         });
 
         for await (const llmObj of iterator) {

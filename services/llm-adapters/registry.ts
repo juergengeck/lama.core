@@ -103,6 +103,21 @@ class AdapterRegistry implements LLMAdapterRegistry {
   clear(): void {
     this.adapters.clear();
   }
+
+  /**
+   * Set platform on all adapters that support it
+   * Some adapters (like TransformersAdapter) need the platform for local inference
+   */
+  setPlatform(platform: any): void {
+    MessageBus.send('debug', `AdapterRegistry.setPlatform: setting platform on ${this.adapters.size} adapters`);
+    for (const adapter of this.adapters.values()) {
+      MessageBus.send('debug', `AdapterRegistry: checking adapter ${adapter.id} for setPlatform: ${'setPlatform' in adapter}`);
+      if ('setPlatform' in adapter && typeof (adapter as any).setPlatform === 'function') {
+        (adapter as any).setPlatform(platform);
+        MessageBus.send('debug', `AdapterRegistry: Set platform on adapter: ${adapter.id}`);
+      }
+    }
+  }
 }
 
 // Singleton instance

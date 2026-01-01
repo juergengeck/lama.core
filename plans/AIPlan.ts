@@ -407,13 +407,15 @@ export class AIPlan {
       const defaultModel = this.nodeOneCore?.aiAssistantModel?.getDefaultModel();
       const defaultModelId = defaultModel?.id || null;
 
-      // Mark models as loaded if they have AI contacts created
-      // A model is loaded if it has been initialized with an AI contact (person ID)
-      const modelsWithLoadStatus = models.map((model: any) => {
-        const hasAIContact = this.nodeOneCore?.aiAssistantModel?.getPersonIdForModel(model.id) !== null;
+      // Mark models with availability and load status
+      // - available: LLM object exists for this model (registered in ONE.core)
+      // - isLoaded: model is in memory (Ollama loaded, WebGPU loaded) - from provider info
+      const modelsWithStatus = models.map((model: any) => {
+        const isAvailable = this.nodeOneCore?.aiAssistantModel?.hasLLM(model.id) ?? false;
         return {
           ...model,
-          isLoaded: hasAIContact,
+          available: isAvailable,
+          isLoaded: model.isLoaded ?? false,  // From provider (Ollama/WebGPU status)
           isDefault: model.id === defaultModelId
         };
       });
@@ -421,7 +423,7 @@ export class AIPlan {
       return {
         success: true,
         data: {
-          models: modelsWithLoadStatus,
+          models: modelsWithStatus,
           defaultModelId
         }
       };
@@ -847,27 +849,9 @@ export class AIPlan {
 
       console.log(`[AIPlan] Discovered ${claudeModels.length} Claude models`);
 
-      // Automatically create AI contacts for all discovered Claude models
-      if (this.nodeOneCore?.aiAssistantModel && claudeModels.length > 0) {
-        console.log('[AIPlan] Creating AI contacts for discovered Claude models...');
-
-        for (const model of claudeModels) {
-          try {
-            await this.nodeOneCore.aiAssistantModel.ensureAIContactForModel(model.id);
-            console.log(`[AIPlan] Created AI contact for ${model.name}`);
-          } catch (contactError) {
-            console.warn(`[AIPlan] Failed to create contact for ${model.name}:`, contactError);
-          }
-        }
-
-        // Emit contacts:updated event to notify UI
-        if (eventSender) {
-          eventSender.getAllWindows().forEach(window => {
-            window.webContents.send('contacts:updated');
-          });
-          console.log('[AIPlan] Emitted contacts:updated event after creating Claude contacts');
-        }
-      }
+      // NOTE: AI contacts are NOT auto-created here
+      // Contacts are created on-demand when user clicks "Start Chat" on a model
+      // This keeps the contacts list clean and only shows models the user actively uses
 
       return {
         success: true,

@@ -39,6 +39,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   // Welcome generation tracking (topicId → promise)
   private welcomeGenerationInProgress: Map<string, Promise<any>>;
 
+  // Message processing tracking (topicId → promise) - prevents duplicate processing
+  private processingInProgress: Map<string, Promise<any>>;
+
   // Available LLM models
   private availableModels: LLMModelInfo[];
 
@@ -58,6 +61,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   ) {
     this.pendingMessageQueues = new Map();
     this.welcomeGenerationInProgress = new Map();
+    this.processingInProgress = new Map();
     this.availableModels = [];
     this.personCache = new OneObjectCache<Person>(['Person']);
 
@@ -121,11 +125,16 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
   /**
    * Process a message and generate AI response
+   * @param topicId - The topic ID
+   * @param message - The message text
+   * @param senderId - The sender's Person ID
+   * @param aiPersonIdOverride - Optional: specific AI to respond (from settings-based routing)
    */
   async processMessage(
     topicId: string,
     message: string,
-    senderId: SHA256IdHash<Person>
+    senderId: SHA256IdHash<Person>,
+    aiPersonIdOverride?: SHA256IdHash<Person>
   ): Promise<string | null> {
     const t0 = Date.now()
     MessageBus.send('debug', `Processing message for topic ${topicId}`);
@@ -150,18 +159,26 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       return null; // Don't process now, will be processed after welcome
     }
 
+    // Check if message processing is already in progress for this topic
+    // This prevents duplicate processing when AI's own stored message triggers channel update
+    if (this.processingInProgress.has(topicId)) {
+      MessageBus.send('debug', `Message processing already in progress for ${topicId}, skipping duplicate`);
+      return null;
+    }
+
     try {
       // Get the AI Person ID for this topic
-      const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+      // Use override (from settings-based routing) or fall back to topicManager (legacy)
+      const aiPersonId = aiPersonIdOverride ?? this.topicManager.getAIPersonForTopic(topicId);
       if (!aiPersonId) {
         MessageBus.send('debug', 'No AI Person registered for this topic');
         return null;
       }
 
-      // Resolve AI Person → Model ID (getLLMId handles delegation chain)
-      const modelId = await this.aiManager.getLLMId(aiPersonId);
+      // Resolve AI Person → Model ID
+      const modelId = this.aiManager.getModelIdForAI(aiPersonId);
       if (!modelId) {
-        MessageBus.send('error', 'Could not get LLM ID from AI Person');
+        MessageBus.send('error', 'Could not get model ID from AI Person');
         return null;
       }
       MessageBus.send('debug', `T+${Date.now() - t0}ms: Resolved to model: ${modelId}`);
@@ -197,6 +214,10 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       // Get model info for event emission
       const model = this.llmManager?.getModel(modelId);
       const modelName = model?.name || model?.displayName;
+
+      // Mark this topic as having processing in progress
+      // This prevents duplicate processing when AI's stored message triggers channel update
+      this.processingInProgress.set(topicId, Promise.resolve());
 
       // Emit thinking indicator via platform
       if (this.platform) {
@@ -251,7 +272,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
               MessageBus.send('error', 'NO PLATFORM - cannot emit thinking stream');
             }
           },
-          onAnalysis: (analysis: { keywords: string[]; description?: string; summaryUpdate?: string }) => {
+          onAnalysis: (analysis: { keywords: string[]; description?: string; language?: string; summaryUpdate?: string }) => {
             // Phase 2 analytics callback - receives keywords, description, and summaryUpdate
             MessageBus.send('debug', `Phase 2 analytics received: ${analysis.keywords.length} keywords`);
             // Analysis will be included in onComplete callback
@@ -264,10 +285,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
             const thinking = completionResult.thinking;
             const analysis = completionResult.analysis;
 
-            // Emit completion via platform
-            if (this.platform) {
-              this.platform.emitMessageUpdate(topicId, messageId, response, 'complete', modelId, modelName);
-            }
+            // NOTE: emitMessageUpdate('complete') is called AFTER message is stored (see below)
+            // This ensures the UI can fetch the persisted message when it receives the event
 
             // Process analysis in background (non-blocking)
             if (analysis && this.topicAnalysisModel) {
@@ -283,9 +302,11 @@ export class AIMessageProcessor implements IAIMessageProcessor {
             // CRITICAL: Store the AI's response to the channel with analytics
             // This persists the message in ONE.core so it doesn't vanish after streaming
             try {
-              const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+              const topic = await this.topicModel.findTopic(topicId);
+              const topicRoom = topic ? await this.topicModel.enterTopicRoom(topic.id) : null;
               if (topicRoom) {
-                // Post the AI's response to the channel
+                // Post the AI's response to the topic's existing channel (owned by user)
+                // AI is the author, but use topic's channel (undefined = current user default)
                 if (thinking) {
                   // Store thinking as CLOB attachment
                   const thinkingClob = await storeUTF8Clob(thinking);
@@ -297,10 +318,10 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                       mimeType: 'text/plain',
                       size: new TextEncoder().encode(thinking).length
                     }
-                  }], aiPersonId, aiPersonId);
+                  }], aiPersonId);
                   MessageBus.send('debug', `Stored AI response with thinking to ${topicId}`);
                 } else {
-                  await topicRoom.sendMessage(response, aiPersonId, aiPersonId);
+                  await topicRoom.sendMessage(response, aiPersonId);
                   MessageBus.send('debug', `Stored AI response to ${topicId}`);
                 }
 
@@ -315,11 +336,33 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                   };
                   this.promptBuilder.addMessageToCache(topicId, messageObj);
                 }
+
+                // NOW emit completion - message is persisted, UI can fetch it
+                if (this.platform) {
+                  const content = analysis?.language ? { response, language: analysis.language } : response;
+                  this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
+                }
+                // Clear processing flag - message is stored and complete event sent
+                this.processingInProgress.delete(topicId);
               } else {
                 MessageBus.send('error', `Could not enter topic room ${topicId}`);
+                // Still emit completion so UI clears processing state
+                if (this.platform) {
+                  const content = analysis?.language ? { response, language: analysis.language } : response;
+                  this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
+                }
+                // Clear processing flag even on error
+                this.processingInProgress.delete(topicId);
               }
             } catch (error) {
               MessageBus.send('error', 'Failed to store AI response:', error);
+              // Still emit completion so UI clears processing state
+              if (this.platform) {
+                const content = analysis?.language ? { response, language: analysis.language } : response;
+                this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
+              }
+              // Clear processing flag even on error
+              this.processingInProgress.delete(topicId);
               // Don't throw - the response was already streamed to UI
             }
           }
@@ -334,6 +377,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       return fullResponse;
     } catch (error) {
       MessageBus.send('error', 'Failed to process message:', error);
+
+      // Clear processing flag on error
+      this.processingInProgress.delete(topicId);
 
       // Emit error via platform
       if (this.platform) {
@@ -356,13 +402,11 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   }
 
   /**
-   * Check if a person/profile ID is an AI contact (AI Person or LLM Person)
+   * Check if a person/profile ID is an AI contact
    */
   async isAIContact(personId: SHA256IdHash<Person> | string): Promise<boolean> {
-    // Check if personId is an AI Person or LLM Person using AIManager
-    const aiId = await this.aiManager.getAIId(personId);
-    const llmId = await this.aiManager.getLLMId(personId);
-    return aiId !== null || llmId !== null;
+    // Check if personId is an AI Person using AIManager
+    return this.aiManager.isAI(personId as SHA256IdHash<Person>);
   }
 
   /**
@@ -395,12 +439,11 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     const t0 = Date.now();
     MessageBus.send('debug', `Starting welcome message generation for topic: ${topicId}`);
 
-    // Resolve Person → Model ID (handles both AI Person → LLM Person delegation and direct LLM Person)
-    const llmId = await this.aiManager.getLLMId(aiPersonId);
-    if (!llmId) {
-      throw new Error('Could not get LLM ID for Person');
+    // Resolve AI Person → Model ID
+    const modelId = this.aiManager.getModelIdForAI(aiPersonId);
+    if (!modelId) {
+      throw new Error('Could not get model ID for AI Person');
     }
-    const modelId = llmId; // llmId is already the model ID (e.g., "gpt-oss:20b")
 
     try {
       // Emit thinking indicator
@@ -421,18 +464,12 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
         // Store the hardcoded message in ONE.core
         try {
-          const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+          const topic = await this.topicModel.findTopic(topicId);
+          const topicRoom = topic ? await this.topicModel.enterTopicRoom(topic.id) : null;
           if (aiPersonId && topicRoom) {
-            // Create the AI's channel first
-            try {
-              await this.channelManager.createChannel(topicId, aiPersonId);
-            } catch (channelError: any) {
-              if (!channelError?.message?.includes('already exists')) {
-                throw channelError;
-              }
-            }
-
-            await topicRoom.sendMessage(hardcodedWelcome, aiPersonId, aiPersonId);
+            // Use the topic's existing channel (owned by user, not AI)
+            // AI is the author, but channel owner is the user (undefined = current user default)
+            await topicRoom.sendMessage(hardcodedWelcome, aiPersonId);
             MessageBus.send('debug', `Hardcoded welcome message stored for ${topicId}`);
 
             // Add to cache
@@ -455,13 +492,22 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         return;
       }
 
-      // Build welcome prompt for generated messages
-      const welcomePrompt = this.buildWelcomePrompt(topicId);
+      // Get full AI identity for personalized welcome
+      const ai = this.aiManager.getAI(aiPersonId);
+      if (!ai) {
+        throw new Error(`AI not found for personId: ${aiPersonId}`);
+      }
 
-      // Use simple system prompt for welcome messages (no structured output instructions)
-      // Combine base prompt with specific welcome instructions
-      const simpleSystemPrompt = 'You are LAMA, a helpful local AI assistant. Respond naturally and warmly.';
-      const combinedSystemPrompt = `${simpleSystemPrompt}\n\n${welcomePrompt}`;
+      // Build full identity prompt (includes personality traits, creation context, etc.)
+      // Import dynamically to avoid circular dependency
+      const { buildIdentityPrompt } = await import('../../services/identity-prompt-builder.js');
+      const identityPrompt = buildIdentityPrompt(ai);
+
+      // Build welcome instructions for this specific topic type
+      const welcomeInstructions = this.buildWelcomeInstructions(topicId);
+
+      // Combine full identity with welcome instructions
+      const combinedSystemPrompt = `${identityPrompt}\n\n${welcomeInstructions}`;
 
       const history = [
         {
@@ -483,28 +529,27 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
       // Use regular chat (not chatWithAnalysis) - simple streaming with no special parsing
       // IMPORTANT: Disable MCP tools for welcome messages to avoid confusing the LLM
-      const response = await this.llmManager?.chat(
-        history,
-        modelId,
-        {
-          topicId,  // Pass topicId for concurrency tracking
-          priority: topicPriority,  // Pass priority for concurrency management
-          onStream: (chunk: string) => {
-            fullResponse += chunk;
+      // chat() uses the LLM object's provider field from storage to route correctly
+      const chatOptions = {
+        topicId,  // Pass topicId for concurrency tracking
+        priority: topicPriority,  // Pass priority for concurrency management
+        onStream: (chunk: string) => {
+          fullResponse += chunk;
 
-            // Send streaming updates directly (no parsing needed)
-            if (this.platform) {
-              this.platform.emitMessageUpdate(
-                topicId,
-                messageId,
-                fullResponse,
-                'streaming'
-              );
-            }
-          },
-          disableTools: true, // Disable MCP tools for welcome messages
-        }
-      );
+          // Send streaming updates directly (no parsing needed)
+          if (this.platform) {
+            this.platform.emitMessageUpdate(
+              topicId,
+              messageId,
+              fullResponse,
+              'streaming'
+            );
+          }
+        },
+        disableTools: true, // Disable MCP tools for welcome messages
+      };
+
+      const response = await this.llmManager?.chat(history, modelId, chatOptions);
 
       // Extract content from structured response if needed
       const finalResponse = typeof response === 'object' && response.content
@@ -523,22 +568,13 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
       // CRITICAL: Store the welcome message in ONE.core so it persists
       try {
-        const topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        const topic = await this.topicModel.findTopic(topicId);
+        const topicRoom = topic ? await this.topicModel.enterTopicRoom(topic.id) : null;
 
         if (topicRoom) {
-          // CRITICAL: Create the AI's channel BEFORE posting
-          // Channels are for transport, not storage. We must create the channel first.
-          try {
-            await this.channelManager.createChannel(topicId, aiPersonId);
-          } catch (channelError: any) {
-            // Channel might already exist - that's fine
-            if (!channelError?.message?.includes('already exists')) {
-              throw channelError;
-            }
-          }
-
-          // Now send the message (topicRoom.sendMessage stores + posts to channel)
-          await topicRoom.sendMessage(finalResponse, aiPersonId, aiPersonId);
+          // Use the topic's existing channel (owned by user, not AI)
+          // AI is the author, but channel owner is the user (undefined = current user default)
+          await topicRoom.sendMessage(finalResponse, aiPersonId);
           MessageBus.send('debug', `Welcome message stored for ${topicId}`);
 
           // Add welcome message to cache
@@ -588,18 +624,20 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     return null;
   }
 
-  private buildWelcomePrompt(topicId: string): string {
-    if (topicId === 'hi') {
-      return 'Please introduce yourself briefly and warmly as LAMA, a local AI assistant.';
-    } else if (topicId === 'lama') {
-      return `Welcome the user to LAMA, explaining that this is your private memory space. Explain that:
+  private buildWelcomeInstructions(topicId: string): string {
+    // Use topicManager helpers instead of hardcoded topic IDs
+    if (this.topicManager?.isHiTopic?.(topicId)) {
+      return 'Introduce yourself briefly and warmly. Be yourself.';
+    } else if (this.topicManager?.isLamaTopic?.(topicId)) {
+      return `Welcome the user to your private memory space. Explain that:
 - This is your personal memory where you store context from all conversations
 - Everything you learn gets stored here for transparency
 - Nobody else can see this content - it's completely private
 - The user can configure visibility in Settings
 Ask what you can help them with today.`;
     } else {
-      return 'Greet the user and offer to help.';
+      // Custom chat - let the AI's personality shine through
+      return 'Introduce yourself naturally. Be yourself and offer to help.';
     }
   }
 
@@ -647,7 +685,15 @@ Ask what you can help them with today.`;
    * New format: {keywords, description?}
    */
   private async processAnalysisResults(topicId: string, analysis: any): Promise<void> {
+    console.log('[processAnalysisResults] Called with:', {
+      topicId: topicId.substring(0, 16),
+      keywords: analysis?.keywords?.length,
+      description: analysis?.description,
+      hasTopicAnalysisModel: !!this.topicAnalysisModel
+    });
+
     if (!this.topicAnalysisModel) {
+      console.log('[processAnalysisResults] SKIPPING - no topicAnalysisModel');
       return;
     }
 
@@ -655,6 +701,7 @@ Ask what you can help them with today.`;
     const description = analysis.description;
 
     if (keywords.length === 0) {
+      console.log('[processAnalysisResults] SKIPPING - no keywords');
       return;
     }
 
@@ -734,6 +781,8 @@ Ask what you can help them with today.`;
       // Now create the new subject
       try {
         const keywordCombination = keywords.sort().join('+');
+        console.log('[processAnalysisResults] Creating subject:', { keywordCombination, description });
+        console.log('[processAnalysisResults] Calling createSubject...');
         const subject = await this.topicAnalysisModel.createSubject(
           topicId,
           keywords,
@@ -742,6 +791,7 @@ Ask what you can help them with today.`;
           1.0 // confidence
         );
 
+        console.log('[processAnalysisResults] Subject created:', subject?.idHash?.substring(0, 16));
         MessageBus.send('debug', `Created subject: ${keywordCombination}`);
 
         // Prime cache to avoid race condition
@@ -762,6 +812,7 @@ Ask what you can help them with today.`;
 
         subjectCreated = true;
       } catch (error) {
+        console.error('[processAnalysisResults] FAILED to create subject:', error);
         MessageBus.send('error', 'Failed to create subject:', error);
       }
     } else {

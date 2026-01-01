@@ -10,14 +10,13 @@
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
-import type { Profile } from '@refinio/one.models/lib/recipes/Leute/Profile.js';
 
 export interface AIObject {
     $type$: 'AI';
     aiId: string;
     displayName: string;
     personId: SHA256IdHash<Person>;
-    llmProfileId: SHA256IdHash<Profile>;  // Profile ID hash that this AI delegates to
+    llmId?: SHA256IdHash<any>;  // Optional LLM ID; undefined = use app default
     modelId: string;
     owner: SHA256IdHash<Person>;
     created: number;
@@ -29,7 +28,6 @@ export interface AIObject {
 export interface AIObjectManagerDeps {
     storeVersionedObject: (obj: any) => Promise<any>;
     createAccess?: (accessRequests: any[]) => Promise<void>;
-    queryAllAIObjects?: () => AsyncIterable<AIObject>;
     getOwnerId: () => Promise<SHA256IdHash<Person>>;
 }
 
@@ -67,47 +65,12 @@ export class AIObjectManager {
 
     /**
      * Load all AI objects from ONE.core storage
-     * This is the source of truth for aiId ↔ personId ↔ llmPersonId mappings
+     * Note: AI loading is now handled by AIManager via AIList pattern
+     * This method remains for API compatibility but returns 0
      */
     async loadAIObjectsFromStorage(): Promise<number> {
-        if (!this.deps.queryAllAIObjects) {
-            console.log('[AIObjectManager] queryAllAIObjects not provided, skipping storage load');
-            return 0;
-        }
-
-        try {
-            console.log('[AIObjectManager] 📂 LOADING from storage...');
-            const aiObjectsIterator = this.deps.queryAllAIObjects();
-
-            let loadedCount = 0;
-            let iterationCount = 0;
-            for await (const aiObject of aiObjectsIterator) {
-                iterationCount++;
-                console.log(`[AIObjectManager] 🔍 Iterator #${iterationCount}:`, {
-                    type: aiObject?.$type$,
-                    aiId: aiObject?.aiId,
-                    displayName: aiObject?.displayName,
-                    personId: aiObject?.personId?.toString().substring(0,8),
-                    llmProfileId: aiObject?.llmProfileId?.toString().substring(0,8)
-                });
-
-                // Cache all AI objects
-                if (aiObject.aiId && aiObject.personId && aiObject.llmProfileId) {
-                    this.aiObjects.set(aiObject.aiId, aiObject);
-                    loadedCount++;
-                    console.log(`[AIObjectManager] ✅ CACHED: ${aiObject.aiId}`);
-                } else {
-                    console.warn(`[AIObjectManager] ⚠️ SKIP - missing required fields`);
-                }
-            }
-
-            console.log(`[AIObjectManager] 📊 COMPLETE - yielded ${iterationCount}, cached ${loadedCount}`);
-            console.log(`[AIObjectManager] ✅ Loaded ${loadedCount} AI objects from storage`);
-            return loadedCount;
-        } catch (error) {
-            console.error('[AIObjectManager] Failed to load AI objects from storage:', error);
-            throw error;
-        }
+        console.log('[AIObjectManager] loadAIObjectsFromStorage - AI loading now handled by AIManager via AIList');
+        return 0;
     }
 
     /**
@@ -117,10 +80,10 @@ export class AIObjectManager {
         aiId: string;
         displayName: string;
         aiPersonId: SHA256IdHash<Person>;
-        llmProfileId: SHA256IdHash<Profile>;  // Profile ID hash that this AI delegates to
+        llmId?: SHA256IdHash<any>;  // Optional LLM ID; undefined = use app default
         modelId: string;
     }): Promise<void> {
-        const { aiId, displayName, aiPersonId, llmProfileId, modelId } = params;
+        const { aiId, displayName, aiPersonId, llmId, modelId } = params;
 
         console.log(`[AIObjectManager] Creating AI object for ${displayName} (${aiId})`);
 
@@ -139,7 +102,7 @@ export class AIObjectManager {
             aiId,
             displayName,
             personId: ensureIdHash(aiPersonId),
-            llmProfileId: ensureIdHash(llmProfileId),
+            llmId: llmId ? ensureIdHash(llmId) : undefined,
             modelId,
             owner: ownerId,
             created: now,
@@ -153,7 +116,7 @@ export class AIObjectManager {
             type: aiObject.$type$,
             aiId: aiObject.aiId,
             personId: aiObject.personId?.toString().substring(0,8),
-            llmProfileId: aiObject.llmProfileId?.toString().substring(0,8)
+            llmId: aiObject.llmId?.toString().substring(0,8)
         });
         const result = await this.deps.storeVersionedObject(aiObject);
         console.log(`[AIObjectManager] ✅ STORED - hash: ${result.hash?.toString().substring(0,8)}, idHash: ${result.idHash?.toString().substring(0,8)}`);
@@ -216,15 +179,15 @@ export class AIObjectManager {
     }
 
     /**
-     * Get LLM Profile ID for an AI Person ID
+     * Get LLM ID for an AI Person ID
      */
-    getLLMProfileIdForAIPerson(aiPersonId: SHA256IdHash<Person>): SHA256IdHash<Profile> | null {
+    getLLMIdForAIPerson(aiPersonId: SHA256IdHash<Person>): SHA256IdHash<any> | null {
         if (!aiPersonId) return null;
         const personIdStr = aiPersonId.toString();
 
         for (const aiObj of this.aiObjects.values()) {
             if (aiObj.personId && aiObj.personId.toString() === personIdStr) {
-                return aiObj.llmProfileId;
+                return aiObj.llmId || null;
             }
         }
 

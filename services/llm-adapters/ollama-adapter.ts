@@ -21,7 +21,7 @@ export class OllamaAdapter implements LLMAdapter {
     chat: true,
     streaming: true,
     structuredOutput: true, // Via JSON mode
-    thinking: false,
+    thinking: true, // Supported by reasoning models (gpt-oss, deepseek-r1)
     toolCalls: false, // Ollama doesn't have native tool support
     embeddings: true
   };
@@ -112,9 +112,10 @@ export class OllamaAdapter implements LLMAdapter {
     }
 
     if (typeof response === 'object') {
-      // Ollama returns { content, context, ... }
+      // Ollama returns { content, thinking, context, ... }
       return {
         content: response.content || response.response || response.message?.content || '',
+        thinking: response.thinking, // Preserve thinking from reasoning models (gpt-oss, deepseek-r1)
         usage: response.eval_count ? {
           promptTokens: response.prompt_eval_count || 0,
           completionTokens: response.eval_count || 0,

@@ -19,7 +19,7 @@ import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 
 const MessageBus = createMessageBus('AIManager');
-import type { Person, Instance, Keys } from '@refinio/one.core/lib/recipes.js';
+import type { Person, Instance, Keys, HashGroup } from '@refinio/one.core/lib/recipes.js';
 import type { Profile } from '@refinio/one.models/lib/recipes/Leute/Profile.js';
 import type { KeyPair } from '@refinio/one.core/lib/crypto/encryption.js';
 import type { SignKeyPair } from '@refinio/one.core/lib/crypto/sign.js';
@@ -48,6 +48,7 @@ export interface CreateAIResponse {
   personIdHash: SHA256IdHash<Person>;
   profileIdHash: SHA256IdHash<Profile>;
   someoneIdHash: SHA256IdHash<any>;
+  name: string;
   storyIdHash?: string;
   assemblyIdHash?: string;
 }
@@ -78,16 +79,8 @@ export type AI = {
   respond?: boolean;                     // Generate AI responses (default: true)
   mute?: boolean;                        // Suppress notifications (default: false)
   ignore?: boolean;                      // Skip entirely (default: false)
-  // AI-specific character data (not applicable to humans)
-  /** Context from AI creation (device, locale, time, app) - immutable */
-  creationContext?: {
-    device: string;
-    locale: string;
-    time: number;
-    app: string;
-  };
-  /** User-defined system prompt addition */
-  systemPromptAddition?: string;
+  /** AI personality configuration */
+  personality?: AIPersonality;
 };
 
 // LLM object - standalone configuration (no Person/Profile/Someone)
@@ -110,14 +103,23 @@ export type LLM = {
 };
 
 /**
- * AI creation context - captured at AI creation time
- * Used for the "Creation Certificate" display in the UI
+ * AI personality configuration
+ * Combines creation context (auto-generated) with user customization
  */
-export interface AICreationContext {
-  device: string;
-  locale: string;
-  time: number;
-  app: string;
+export interface AIPersonality {
+  /** Context from AI creation (device, locale, time, app) */
+  creationContext?: {
+    device: string;
+    locale: string;
+    time: number;
+    app: string;
+  };
+
+  /** Personality traits (e.g., ["curious", "concise"]) */
+  traits?: string[];
+
+  /** User-defined prompt addition */
+  systemPromptAddition?: string;
 }
 
 export class AIManager {
@@ -144,6 +146,21 @@ export class AIManager {
     this.llmByModelId = new Map();
   }
 
+  /**
+   * Get the participantsHash for the application data channel
+   * The 'lama' channel is now identified by participants (owner's personId)
+   */
+  private async getAppChannelParticipants(): Promise<SHA256Hash<HashGroup<Person>>> {
+    const myId = await this.leuteModel.myMainIdentity();
+    const hashGroup: HashGroup<Person> = {
+      $type$: 'HashGroup',
+      person: new Set([myId])
+    };
+    const result = await this.deps.storeUnversionedObject(hashGroup);
+    // Handle both formats: plain hash or {hash, obj, status} object
+    return typeof result === 'string' ? result : (result as any).hash;
+  }
+
   // ==================== AIList Management ====================
 
   private static readonly AI_LIST_ID = 'ai-list';
@@ -152,21 +169,35 @@ export class AIManager {
    * Get or create the AIList singleton
    */
   private async getOrCreateAIList(): Promise<AIList> {
-    try {
-      // Calculate proper idHash from ID properties
-      // CRITICAL: getObjectByIdHash expects SHA256IdHash, not a string literal
-      const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
-      const aiListIdHash = await calculateIdHashOfObj({ $type$: 'AIList', id: AIManager.AI_LIST_ID } as any);
+    // Calculate proper idHash from ID properties
+    // CRITICAL: getObjectByIdHash expects SHA256IdHash, not a string literal
+    const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+    const aiListIdHash = await calculateIdHashOfObj({ $type$: 'AIList', id: AIManager.AI_LIST_ID } as any);
 
+    try {
       // Try to get existing AIList
       const result = await this.deps.getObjectByIdHash(aiListIdHash);
       if (result?.obj && result.obj.$type$ === 'AIList') {
-        console.log(`[AIManager] Found existing AIList with ${result.obj.aiIds?.size || 0} AIs`);
-        return result.obj as AIList;
+        // Ensure aiIds is a proper Set (ONE.core should deserialize it correctly)
+        const aiList = result.obj as AIList;
+        if (!(aiList.aiIds instanceof Set)) {
+          console.warn('[AIManager] AIList.aiIds is not a Set, converting:', typeof aiList.aiIds);
+          // Convert to Set if it's an array or other iterable
+          aiList.aiIds = new Set(aiList.aiIds || []);
+        }
+        console.log(`[AIManager] Found existing AIList with ${aiList.aiIds.size} AIs`);
+        return aiList;
       }
-    } catch (error) {
-      // AIList doesn't exist yet, create it
-      console.log('[AIManager] AIList not found, creating new one');
+    } catch (error: any) {
+      // Only create new AIList if it truly doesn't exist (FileNotFoundError)
+      // For any other error, throw to fail fast
+      if (error?.name === 'FileNotFoundError') {
+        console.log('[AIManager] AIList not found (FileNotFoundError), creating new one');
+      } else {
+        // Real error - log and throw to fail fast
+        console.error('[AIManager] Error loading AIList:', error);
+        throw error;
+      }
     }
 
     // Create new AIList
@@ -248,8 +279,7 @@ export class AIManager {
    * @param name - Display name (e.g., "Claude", "Research Assistant")
    * @param llmId - Optional LLM ID hash to use; undefined = use app default
    * @param modelId - Optional explicit model ID (e.g., "granite:3b"); if not provided, derived from aiId
-   * @param creationContext - Optional creation context (device, locale, time, app)
-   * @param systemPromptAddition - Optional user-defined system prompt addition
+   * @param personality - Optional AI personality configuration
    * @returns CreateAIResponse with personIdHash, profileIdHash, someoneIdHash
    */
   async createAI(
@@ -257,8 +287,7 @@ export class AIManager {
     name: string,
     llmId?: SHA256IdHash<LLM>,
     modelId?: string,
-    creationContext?: AICreationContext,
-    systemPromptAddition?: string
+    personality?: AIPersonality
   ): Promise<CreateAIResponse> {
     MessageBus.send('debug', `Creating AI Person: ${name} (${aiId})`);
 
@@ -269,18 +298,21 @@ export class AIManager {
         // Get profile ID
         const profileIdHash = await this._getMainProfileForPerson(personId);
         const someone = await this.leuteModel.getSomeone(personId);
+        // Return with _cached flag to skip Story creation
         return {
           success: true,
           personIdHash: personId,
           profileIdHash,
-          someoneIdHash: someone?.idHash || ('' as any)
-        };
+          someoneIdHash: someone?.idHash || ('' as any),
+          name: ai.displayName,
+          _cached: true
+        } as any;
       }
     }
 
     try {
       // 1. Create Person object
-      const email = `${aiId.replace(/[^a-zA-Z0-9]/g, '_')}@ai.local`;
+      const email = `${aiId}@ai.local`;
       const personData = {
         $type$: 'Person' as const,
         email,
@@ -318,7 +350,7 @@ export class AIManager {
       // 4. Create AI metadata object
       const now = Date.now();
       // modelId is required - AI identity is independent of model per design
-      // aiId is derived from AI creation (email prefix), not from modelId
+      // aiId is now derived from AI creation (email prefix), not from modelId
       if (!modelId) {
         throw new Error('[AIManager] modelId is required - AI identity and model must be specified separately');
       }
@@ -334,8 +366,7 @@ export class AIManager {
         modified: now,
         active: true,
         deleted: false,
-        ...(creationContext && { creationContext }),
-        ...(systemPromptAddition && { systemPromptAddition })
+        ...(personality && { personality })  // Only include if defined
       };
 
       const aiResult: any = await this.deps.storeVersionedObject(aiObject);
@@ -392,7 +423,8 @@ export class AIManager {
         success: true,
         personIdHash,
         profileIdHash,
-        someoneIdHash
+        someoneIdHash,
+        name
       };
     } catch (error) {
       MessageBus.send('error', 'Failed to create AI Person:', error);
@@ -408,23 +440,24 @@ export class AIManager {
    * @param name - Display name (e.g., "Claude Sonnet 4.5")
    * @param provider - Provider name (e.g., "anthropic", "openai", "ollama")
    * @param server - Optional server URL (defaults to localhost:11434 for ollama)
-   * @returns SHA256IdHash<LLM> of the created LLM config
+   * @returns Object with idHash and name for Story/Assembly tracking with dynamic titles
    */
   async createLLM(
     modelId: string,
     name: string,
     provider: string,
     server?: string
-  ): Promise<SHA256IdHash<LLM>> {
+  ): Promise<{ idHash: SHA256IdHash<LLM>; name: string }> {
     MessageBus.send('debug', `Creating LLM config: ${name} (${modelId})`);
 
     // Check cache first
     const cached = this.llmByModelId.get(modelId);
     if (cached) {
       MessageBus.send('debug', `LLM ${modelId} already cached`);
-      // Calculate and return ID hash
+      // Calculate and return ID hash - mark as cached to skip Story creation
       const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
-      return await calculateIdHashOfObj({ $type$: 'LLM', name, server: server || '' } as any);
+      const idHash = await calculateIdHashOfObj({ $type$: 'LLM', name, server: server || '' } as any);
+      return { idHash, name, _cached: true } as any;
     }
 
     try {
@@ -453,7 +486,7 @@ export class AIManager {
       this.llmByModelId.set(modelId, llmObject);
 
       MessageBus.send('debug', `LLM config created: ${name}`);
-      return llmIdHash;
+      return { idHash: llmIdHash, name };
     } catch (error) {
       MessageBus.send('error', 'Failed to create LLM config:', error);
       throw error;
@@ -466,8 +499,12 @@ export class AIManager {
    *
    * @param aiPersonId - AI Person ID
    * @param llmId - LLM ID hash (or undefined to use app default)
+   * @returns Object with hash (version) and idHash (entity identity) for Story/Assembly tracking
    */
-  async setAIModel(aiPersonId: SHA256IdHash<Person>, llmId?: SHA256IdHash<LLM>): Promise<void> {
+  async setAIModel(aiPersonId: SHA256IdHash<Person>, llmId?: SHA256IdHash<LLM>): Promise<{
+    hash: SHA256Hash<AI>;
+    idHash: SHA256IdHash<AI>;
+  }> {
     MessageBus.send('debug', `Setting AI model for ${aiPersonId.toString().substring(0, 8)}...`);
 
     const aiObject = this.aiByPerson.get(aiPersonId);
@@ -495,10 +532,11 @@ export class AIManager {
       modified: Date.now()
     };
 
-    await this.deps.storeVersionedObject(updatedAI);
+    const result = await this.deps.storeVersionedObject(updatedAI);
     this.aiByPerson.set(aiPersonId, updatedAI);
 
-    MessageBus.send('debug', `AI model set to ${modelId}`);
+    MessageBus.send('debug', `AI model set to ${modelId}, version: ${result.hash.toString().substring(0, 8)}...`);
+    return { hash: result.hash, idHash: result.idHash };
   }
 
   /**
@@ -507,9 +545,12 @@ export class AIManager {
    *
    * @param aiPersonId - AI Person ID
    * @param newModelId - New model ID (e.g., "claude-sonnet-4", "gpt-4")
-   * @returns Store result with hash of the new AI version
+   * @returns Object with hash (version) and idHash (entity identity) for Story/Assembly tracking
    */
-  async updateModelId(aiPersonId: SHA256IdHash<Person>, newModelId: string): Promise<{ hash: SHA256Hash<AI> }> {
+  async updateModelId(aiPersonId: SHA256IdHash<Person>, newModelId: string): Promise<{
+    hash: SHA256Hash<AI>;
+    idHash: SHA256IdHash<AI>;
+  }> {
     MessageBus.send('debug', `Updating AI modelId for ${aiPersonId.toString().substring(0, 8)}... to ${newModelId}`);
 
     const aiObject = this.aiByPerson.get(aiPersonId);
@@ -527,41 +568,43 @@ export class AIManager {
     const result = await this.deps.storeVersionedObject(updatedAI);
     this.aiByPerson.set(aiPersonId, updatedAI);
 
-    MessageBus.send('debug', `AI modelId updated to ${newModelId}`);
-    return { hash: result.hash as SHA256Hash<AI> };
+    MessageBus.send('debug', `AI modelId updated to ${newModelId}, version: ${result.hash.toString().substring(0, 8)}...`);
+    return { hash: result.hash, idHash: result.idHash };
   }
 
   /**
-   * Update AI's systemPromptAddition
-   * Creates a new AI version with the updated system prompt
+   * Update AI personality (system prompt addition, traits)
    *
    * @param aiPersonId - AI Person ID
-   * @param systemPromptAddition - New system prompt addition (or undefined to remove)
-   * @returns Store result with hash of the new AI version
+   * @param personality - Partial personality update (merged with existing)
+   * @returns Object with hash (version) and idHash (entity identity)
    */
-  async updateSystemPromptAddition(
+  async updatePersonality(
     aiPersonId: SHA256IdHash<Person>,
-    systemPromptAddition: string | undefined
-  ): Promise<{ hash: SHA256Hash<AI> }> {
-    MessageBus.send('debug', `Updating AI systemPromptAddition for ${aiPersonId.toString().substring(0, 8)}...`);
+    personality: Partial<AIPersonality>
+  ): Promise<{ hash: SHA256Hash<AI>; idHash: SHA256IdHash<AI> }> {
+    MessageBus.send('debug', `Updating AI personality for ${aiPersonId.toString().substring(0, 8)}...`);
 
     const aiObject = this.aiByPerson.get(aiPersonId);
     if (!aiObject) {
-      throw new Error(`[AIManager] AI not found for Person ${aiPersonId.toString().substring(0, 8)}...`);
+      throw new Error(`[AIManager] AI not found for Person: ${aiPersonId}`);
     }
 
-    // Update AI object with new systemPromptAddition
+    // Merge with existing personality
     const updatedAI: AI = {
       ...aiObject,
-      systemPromptAddition,
+      personality: {
+        ...aiObject.personality,
+        ...personality
+      },
       modified: Date.now()
     };
 
     const result = await this.deps.storeVersionedObject(updatedAI);
     this.aiByPerson.set(aiPersonId, updatedAI);
 
-    MessageBus.send('debug', `AI systemPromptAddition updated`);
-    return { hash: result.hash as SHA256Hash<AI> };
+    MessageBus.send('debug', `AI personality updated, version: ${result.hash.toString().substring(0, 8)}...`);
+    return { hash: result.hash, idHash: result.idHash };
   }
 
   /**
@@ -581,6 +624,53 @@ export class AIManager {
       }
     }
     return null;
+  }
+
+  /**
+   * Ensure the AI's Someone is registered in LeuteModel
+   *
+   * This fixes a bug where AI exists in cache (loaded from AIList) but the Someone
+   * is not in LeuteModel.others() - can happen if Leute was cleared but AIList persisted.
+   *
+   * @param ai - The AI object to ensure Someone for
+   * @returns true if Someone was added, false if already present
+   */
+  async ensureSomeoneInLeute(ai: AI): Promise<boolean> {
+    const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
+
+    // Check if Someone for this AI is already in LeuteModel
+    const others = await this.leuteModel.others();
+    for (const someone of others) {
+      // Check if this Someone manages the AI's personId
+      if (someone.managesIdentity(ai.personId)) {
+        MessageBus.send('debug', `AI ${ai.aiId} Someone already in LeuteModel`);
+        return false;
+      }
+    }
+
+    // Someone not found in LeuteModel - look it up and add it
+    MessageBus.send('debug', `AI ${ai.aiId} Someone not in LeuteModel, looking up...`);
+
+    // Calculate the expected Someone idHash from the someoneId pattern used in createAI
+    const someoneIdObj = { $type$: 'Someone' as const, someoneId: `ai:${ai.aiId}` };
+    const someoneIdHash = await calculateIdHashOfObj(someoneIdObj);
+
+    try {
+      // Verify the Someone exists in storage
+      const someoneResult = await this.deps.getObjectByIdHash(someoneIdHash);
+      if (!someoneResult?.obj) {
+        MessageBus.send('warn', `AI ${ai.aiId} Someone not found in storage - cannot add to LeuteModel`);
+        return false;
+      }
+
+      // Add to LeuteModel
+      await this.leuteModel.addSomeoneElse(someoneIdHash);
+      MessageBus.send('debug', `Added AI ${ai.aiId} Someone to LeuteModel`);
+      return true;
+    } catch (error) {
+      MessageBus.send('warn', `Failed to add AI ${ai.aiId} Someone to LeuteModel:`, error);
+      return false;
+    }
   }
 
   /**
@@ -647,10 +737,20 @@ export class AIManager {
   }
 
   /**
+   * Check if an LLM object exists for a given modelId
+   *
+   * @param modelId - Model ID (e.g., "claude-3-5-haiku-20241022")
+   * @returns true if LLM object exists (model is "available")
+   */
+  hasLLM(modelId: string): boolean {
+    return this.llmByModelId.has(modelId);
+  }
+
+  /**
    * Get Person ID by entity ID (prefixed string like "ai:dreizehn" or "llm:claude-sonnet")
    * This is the inverse of what getAIByAiId does internally
    *
-   * Per design: aiId is derived from birth experience email prefix (e.g., "dreizehn" from "dreizehn@device.local")
+   * Per design: aiId is derived from AI creation email prefix (e.g., "dreizehn" from "dreizehn@device.local")
    * NOT from modelId patterns like "started-as-X" or "ai-X"
    *
    * @param entityId - Entity ID with prefix (e.g., "ai:dreizehn", "llm:claude-sonnet")
@@ -694,7 +794,7 @@ export class AIManager {
    * Rename an AI Person by creating a new identity while preserving the old one
    * Creates a new Person/Profile and adds it to the Someone, keeping the old Person as past identity
    *
-   * @param aiId - Current AI ID (e.g., "dreizehn" - derived from birth experience email prefix)
+   * @param aiId - Current AI ID (e.g., "dreizehn" - derived from AI creation email prefix)
    * @param newName - New display name (e.g., "Research Assistant")
    * @returns Person ID of the new identity
    */
@@ -899,8 +999,9 @@ export class AIManager {
   private async _loadLLMObjectByModelId(modelId: string): Promise<LLM | null> {
     try {
       // Query all LLM objects from storage
+      const participantsHash = await this.getAppChannelParticipants();
       const iterator = this.deps.channelManager.objectIteratorWithType('LLM', {
-        channelId: 'lama',
+        participants: participantsHash,
       });
 
       for await (const llmObj of iterator) {
@@ -950,6 +1051,9 @@ export class AIManager {
                 aiCount++;
                 console.log(`[AIManager.loadExisting] ✅ Loaded AI: ${ai.aiId} (${ai.displayName})`);
                 MessageBus.send('debug', `Loaded AI: ${ai.aiId} (${ai.displayName})`);
+
+                // Ensure AI's Someone is in LeuteModel (fixes bug where Leute was cleared but AIList persisted)
+                await this.ensureSomeoneInLeute(ai);
               }
             }
           } catch (error) {
@@ -965,8 +1069,9 @@ export class AIManager {
 
       // Load LLM objects from storage (these ARE channel objects in lama channel)
       try {
+        const participantsHash = await this.getAppChannelParticipants();
         const iterator = this.deps.channelManager.objectIteratorWithType('LLM', {
-          channelId: 'lama',
+          participants: participantsHash,
         });
 
         for await (const llmObj of iterator) {

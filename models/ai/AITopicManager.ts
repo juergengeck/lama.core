@@ -6,10 +6,15 @@
  *
  * Responsibilities:
  * - Register AI topics with their associated models
- * - Track topic loading states and display names
+ * - Track topic loading states
  * - Manage default AI model selection
  * - Create and register default chats (Hi and LAMA)
  * - Scan existing conversations for AI participants
+ *
+ * @deprecated Display name management is deprecated.
+ * Use TopicV2.screenName instead (see TopicModelV2 in one.models).
+ * The _topicDisplayNames, getTopicDisplayName(), and setTopicDisplayName()
+ * will be removed after TopicV2 migration is complete.
  */
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
@@ -34,6 +39,7 @@ export class AITopicManager implements IAITopicManager {
   private _topicLoadingState: Map<string, boolean>;
 
   // Topic display names (topicId → display name)
+  // @deprecated Use TopicV2.screenName instead
   private _topicDisplayNames: Record<string, string>;
 
   // Topic AI modes (topicId → mode)
@@ -47,6 +53,11 @@ export class AITopicManager implements IAITopicManager {
 
   // Mutex to prevent concurrent ensureDefaultChats calls
   private ensuringDefaultChats: Promise<void> | null = null;
+
+  // Default AI topic IDs (set when ensureDefaultChats creates them)
+  // Format: owner:name (same as group chats)
+  private _hiTopicId: string | null = null;
+  private _lamaTopicId: string | null = null;
 
   constructor(
     private topicModel: TopicModel,
@@ -106,6 +117,75 @@ export class AITopicManager implements IAITopicManager {
     return this._topicAIMap.get(topicId) || null;
   }
 
+  // ============================================================
+  // Default AI Topic Helpers
+  // ============================================================
+
+  /**
+   * Check if a topic is the Hi default chat
+   * Uses stable format: owner:Hi (not owner:aiPersonId)
+   */
+  isHiTopic(topicId: string): boolean {
+    // Check cached ID first
+    if (this._hiTopicId !== null && topicId === this._hiTopicId) {
+      return true;
+    }
+    // Fallback: check stable format pattern
+    return topicId.endsWith(':Hi');
+  }
+
+  /**
+   * Check if a topic is the LAMA (private memory) default chat
+   * Uses stable format: owner:LAMA (not owner:privateAiPersonId)
+   */
+  isLamaTopic(topicId: string): boolean {
+    // Check cached ID first
+    if (this._lamaTopicId !== null && topicId === this._lamaTopicId) {
+      return true;
+    }
+    // Fallback: check stable format pattern
+    return topicId.endsWith(':LAMA');
+  }
+
+  /**
+   * Check if a topic is a default AI topic (Hi or LAMA)
+   */
+  isDefaultAITopic(topicId: string): boolean {
+    return this.isHiTopic(topicId) || this.isLamaTopic(topicId);
+  }
+
+  /**
+   * Get the Hi topic ID (null if not created yet)
+   */
+  getHiTopicId(): string | null {
+    return this._hiTopicId;
+  }
+
+  /**
+   * Get the LAMA topic ID (null if not created yet)
+   */
+  getLamaTopicId(): string | null {
+    return this._lamaTopicId;
+  }
+
+  /**
+   * Check if a topic uses the private AI (for memory/context isolation)
+   * Currently only LAMA uses the private AI
+   */
+  isPrivateAITopic(topicId: string): boolean {
+    return this.isLamaTopic(topicId);
+  }
+
+  /**
+   * Get the default topic type for a topic ID
+   * @returns 'hi' | 'lama' | null
+   */
+  getDefaultTopicType(topicId: string): 'hi' | 'lama' | null {
+    if (this.isHiTopic(topicId)) return 'hi';
+    if (this.isLamaTopic(topicId)) return 'lama';
+    return null;
+  }
+
   /**
    * Set loading state for a topic
    */
@@ -122,15 +202,19 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Get topic display name
+   * @deprecated Use TopicV2.screenName instead. This method will be removed after TopicV2 migration.
    */
   getTopicDisplayName(topicId: string): string | undefined {
+    MessageBus.send('debug', '[DEPRECATED] getTopicDisplayName - use TopicV2.screenName instead');
     return this._topicDisplayNames[topicId];
   }
 
   /**
    * Set topic display name
+   * @deprecated Use TopicModelV2.setScreenName() instead. This method will be removed after TopicV2 migration.
    */
   setTopicDisplayName(topicId: string, name: string): void {
+    MessageBus.send('debug', '[DEPRECATED] setTopicDisplayName - use TopicModelV2.setScreenName() instead');
     this._topicDisplayNames[topicId] = name;
   }
 
@@ -204,11 +288,23 @@ export class AITopicManager implements IAITopicManager {
   /**
    * Ensure default AI chats exist (Hi and LAMA)
    * This is called during initialization and when default model changes
+   *
+   * @param aiPersonId - The AI Person ID for Hi chat (from AI creation)
+   * @param privateAIPersonId - The AI Person ID for LAMA chat (with -private suffix)
+   * @param onTopicCreated - Callback when a topic is created
    */
   async ensureDefaultChats(
-    aiManager: any, // AIManager
+    aiPersonId: SHA256IdHash<Person>,
+    privateAIPersonId: SHA256IdHash<Person>,
     onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
+    if (!aiPersonId) {
+      throw new Error('[AITopicManager] ensureDefaultChats requires aiPersonId - AI creation must complete first');
+    }
+    if (!privateAIPersonId) {
+      throw new Error('[AITopicManager] ensureDefaultChats requires privateAIPersonId - AI creation must complete first');
+    }
+
     // If already ensuring, return the existing promise (prevents race condition)
     if (this.ensuringDefaultChats) {
       MessageBus.send('debug', 'ensureDefaultChats already in progress, waiting...');
@@ -216,7 +312,7 @@ export class AITopicManager implements IAITopicManager {
     }
 
     // Create and store the promise
-    this.ensuringDefaultChats = this.doEnsureDefaultChats(aiManager, onTopicCreated);
+    this.ensuringDefaultChats = this.doEnsureDefaultChats(aiPersonId, privateAIPersonId, onTopicCreated);
 
     try {
       await this.ensuringDefaultChats;
@@ -256,9 +352,14 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Internal implementation of ensureDefaultChats (called by mutex wrapper)
+   *
+   * @param aiPersonId - The AI Person ID for Hi chat
+   * @param privateAIPersonId - The AI Person ID for LAMA chat (with -private suffix)
+   * @param onTopicCreated - Callback when a topic is created
    */
   private async doEnsureDefaultChats(
-    aiManager: any,
+    aiPersonId: SHA256IdHash<Person>,
+    privateAIPersonId: SHA256IdHash<Person>,
     onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
     MessageBus.send('debug', 'Ensuring default AI chats...');
@@ -267,21 +368,22 @@ export class AITopicManager implements IAITopicManager {
       throw new Error('No default model set - cannot create default chats');
     }
 
-    // Get existing AI Person ID - it MUST exist (ensureAIForModel creates it before this is called)
-    // Don't call createLLM/createAI here - that's redundant and causes duplicate Assemblies
-    const aiId = `started-as-${this.defaultModelId}`;
-    const aiPersonId = aiManager.getPersonId(`ai:${aiId}`);
-    if (!aiPersonId) {
-      // Fail fast - AI Person should have been created by ensureAIForModel
-      throw new Error(`[AITopicManager] AI Person not found for ${aiId} - ensureAIForModel must be called first`);
-    }
-    MessageBus.send('debug', `Using existing AI Person for ${this.defaultModelId}`);
+    // Two separate AI Persons for two separate chats (using owned channel format):
+    // - Hi: owner=user, name="Hi" (stable topic ID)
+    // - LAMA: owner=user, name="LAMA" (stable topic ID)
+    // The AI person is tracked separately via registerAITopic() and can change on model switch
+    console.log(`[AITopicManager] Hi chat AI Person: ${aiPersonId}`);
+    console.log(`[AITopicManager] LAMA chat AI Person: ${privateAIPersonId}`);
 
     // Create Hi chat (static welcome message - no LLM generation)
+    console.log('[AITopicManager] Creating Hi chat...');
     await this.ensureHiChat(this.defaultModelId, aiPersonId, onTopicCreated);
+    console.log('[AITopicManager] Hi chat done');
 
-    // Create LAMA chat (LLM-generated welcome message)
-    await this.ensureLamaChat(this.defaultModelId, aiPersonId, onTopicCreated);
+    // Create LAMA chat (LLM-generated welcome message) - uses PRIVATE AI Person
+    console.log('[AITopicManager] Creating LAMA chat...');
+    await this.ensureLamaChat(this.defaultModelId, privateAIPersonId, onTopicCreated);
+    console.log('[AITopicManager] LAMA chat done');
   }
 
   /**
@@ -292,6 +394,9 @@ export class AITopicManager implements IAITopicManager {
   /**
    * Ensure Hi chat exists with static welcome message
    * NOTE: Hi chat uses a STATIC welcome message - no LLM generation
+   *
+   * Creates a topic with owned channel format (owner:name).
+   * This allows natural conversion to group chat when participants are added.
    */
   private async ensureHiChat(
     modelId: string,
@@ -300,30 +405,32 @@ export class AITopicManager implements IAITopicManager {
   ): Promise<void> {
     MessageBus.send('debug', 'Ensuring Hi chat...');
 
-    if (!this.topicGroupManager) {
-      throw new Error('topicGroupManager not initialized - cannot create topics');
-    }
-
     try {
-      const topicId = 'hi';
+      // Get user's person ID
+      const userPersonId = await this.leuteModel.myMainIdentity();
+
+      // Use stable owned channel format: owner:name (name is "Hi", not aiPersonId)
+      // This ensures the same topic is found even when AI person changes on model switch
+      const topicId = `${userPersonId}:Hi`;
+
+      MessageBus.send('debug', `Hi chat topic ID: ${topicId.substring(0, 30)}...`);
+
       let topicRoom: any;
       let needsWelcome = false;
 
-      // Check if topic already exists in storage (not just collection cache)
-      let topicExists = false;
-      try {
-        await this.topicModel.enterTopicRoom(topicId);
-        topicExists = true;
-      } catch (e) {
-        // Topic doesn't exist in storage
-      }
+      // Check if topic already exists
+      let topic: any = await this.topicModel.findTopic(topicId);
 
-      if (!topicExists) {
-        // Topic doesn't exist, create it
-        // CRITICAL: Include BOTH user and AI in participants so both get channels
-        const userPersonId = await this.leuteModel.myMainIdentity();
-        await this.topicGroupManager.createGroupTopic('Hi', topicId, [userPersonId, aiPersonId]);
+      if (!topic) {
+        // Create topic with owned channel - pass userPersonId as owner so posting works
+        topic = await this.topicModel.createTopic('Hi', [userPersonId, aiPersonId], topicId, userPersonId);
         needsWelcome = true;
+
+        // Create Group for this topic so ChatPlan can find participants
+        if (this.topicGroupManager) {
+          MessageBus.send('debug', 'Creating Group for Hi chat');
+          await this.topicGroupManager.getOrCreateConversationGroup(topicId, aiPersonId);
+        }
 
         // Create Assembly for this topic
         if (this.assemblyManager) {
@@ -331,10 +438,9 @@ export class AITopicManager implements IAITopicManager {
           await this.assemblyManager.createChatAssembly(topicId, 'Hi');
         }
       } else {
-        // Topic exists - ensure AI participant is in the group
-        MessageBus.send('debug', 'Hi chat exists, ensuring AI participant is in group...');
-        await this.topicGroupManager.addParticipantsToTopic(topicId, [aiPersonId]);
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        // Topic exists - update AI person mapping (may have changed on model switch)
+        MessageBus.send('debug', `Hi chat exists, updating AI person mapping to ${aiPersonId.substring(0, 8)}...`);
+        topicRoom = await this.topicModel.enterTopicRoom(topic.id);
         const messages = await topicRoom.retrieveAllMessages();
         needsWelcome = messages.length === 0;
       }
@@ -343,9 +449,10 @@ export class AITopicManager implements IAITopicManager {
         topicRoom = await this.topicModel.enterTopicRoom(topicId);
       }
 
-      // Register as AI topic
+      // Register as AI topic with display name
       this.registerAITopic(topicId, aiPersonId);
       this.setTopicDisplayName(topicId, 'Hi');
+      this._hiTopicId = topicId;  // Track as default Hi topic
 
       // Post static welcome message directly (NO LLM generation for Hi chat)
       if (needsWelcome) {
@@ -364,7 +471,8 @@ export class AITopicManager implements IAITopicManager {
         }
 
         const welcomeMessage = getWelcomeMessage(modelProvider);
-        await topicRoom.sendMessage(welcomeMessage, aiPersonId, aiPersonId);
+        // Owned channels use current user as channel owner (default)
+        await topicRoom.sendMessage(welcomeMessage, aiPersonId);
         MessageBus.send('debug', 'Static welcome message posted to Hi chat');
       } else {
         MessageBus.send('debug', 'Hi chat already exists');
@@ -378,6 +486,9 @@ export class AITopicManager implements IAITopicManager {
   /**
    * Ensure LAMA chat exists (uses private model variant)
    * NOTE: LAMA chat generates DYNAMIC welcome message via LLM (unlike Hi chat)
+   *
+   * Creates a topic with owned channel format (owner:name).
+   * This allows natural conversion to group chat when participants are added.
    */
   private async ensureLamaChat(
     _privateModelId: string,
@@ -386,30 +497,32 @@ export class AITopicManager implements IAITopicManager {
   ): Promise<void> {
     MessageBus.send('debug', `Ensuring LAMA chat with AI Person: ${privateAiPersonId.toString().substring(0, 8)}...`);
 
-    if (!this.topicGroupManager) {
-      throw new Error('topicGroupManager not initialized - cannot create topics');
-    }
-
     try {
-      const topicId = 'lama';
+      // Get user's person ID
+      const userPersonId = await this.leuteModel.myMainIdentity();
+
+      // Use stable owned channel format: owner:name (name is "LAMA", not privateAiPersonId)
+      // This ensures the same topic is found even when AI person changes on model switch
+      const topicId = `${userPersonId}:LAMA`;
+
+      MessageBus.send('debug', `LAMA chat topic ID: ${topicId.substring(0, 30)}...`);
+
       let topicRoom: any;
       let needsWelcome = false;
 
-      // Check if topic already exists in storage (not just collection cache)
-      let topicExists = false;
-      try {
-        await this.topicModel.enterTopicRoom(topicId);
-        topicExists = true;
-      } catch (e) {
-        // Topic doesn't exist in storage
-      }
+      // Check if topic already exists
+      let topic: any = await this.topicModel.findTopic(topicId);
 
-      if (!topicExists) {
-        // Topic doesn't exist, create it with the PRIVATE AI contact
-        // CRITICAL: Include BOTH user and AI in participants so both get channels
-        const userPersonId = await this.leuteModel.myMainIdentity();
-        await this.topicGroupManager.createGroupTopic('LAMA', topicId, [userPersonId, privateAiPersonId]);
+      if (!topic) {
+        // Create topic with owned channel - pass userPersonId as owner so posting works
+        topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], topicId, userPersonId);
         needsWelcome = true;
+
+        // Create Group for this topic so ChatPlan can find participants
+        if (this.topicGroupManager) {
+          MessageBus.send('debug', 'Creating Group for LAMA chat');
+          await this.topicGroupManager.getOrCreateConversationGroup(topicId, privateAiPersonId);
+        }
 
         // Create Assembly for this topic
         if (this.assemblyManager) {
@@ -417,10 +530,9 @@ export class AITopicManager implements IAITopicManager {
           await this.assemblyManager.createChatAssembly(topicId, 'LAMA');
         }
       } else {
-        // Topic exists - ensure AI participant is in the group
-        MessageBus.send('debug', 'LAMA chat exists, ensuring AI participant is in group...');
-        await this.topicGroupManager.addParticipantsToTopic(topicId, [privateAiPersonId]);
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        // Topic exists - update AI person mapping (may have changed on model switch)
+        MessageBus.send('debug', `LAMA chat exists, updating AI person mapping to ${privateAiPersonId.substring(0, 8)}...`);
+        topicRoom = await this.topicModel.enterTopicRoom(topic.id);
         const messages = await topicRoom.retrieveAllMessages();
         needsWelcome = messages.length === 0;
       }
@@ -429,9 +541,10 @@ export class AITopicManager implements IAITopicManager {
         topicRoom = await this.topicModel.enterTopicRoom(topicId);
       }
 
-      // Register as AI topic
+      // Register as AI topic with display name
       this.registerAITopic(topicId, privateAiPersonId);
       this.setTopicDisplayName(topicId, 'LAMA');
+      this._lamaTopicId = topicId;  // Track as default LAMA topic
 
       // Trigger LLM-generated welcome message via callback (fire and forget - don't block)
       if (needsWelcome && onTopicCreated) {
@@ -488,7 +601,7 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Scan existing conversations for AI participants and register them
-   * Uses channel participants as source of truth
+   * Uses Topic participants as source of truth
    */
   async scanExistingConversations(aiManager: any): Promise<number> {
     MessageBus.send('debug', 'SCAN START - Scanning existing conversations for AI participants...');
@@ -498,9 +611,9 @@ export class AITopicManager implements IAITopicManager {
       // ChannelManager.init() returns before channels are fully loaded asynchronously
       await this.waitForChannelsLoaded();
 
-      // Get all channels (now guaranteed to have loaded)
-      const allChannels = await this.channelManager.getMatchingChannelInfos();
-      MessageBus.send('debug', `Found ${allChannels.length} total channels`);
+      // Get all topics from TopicRegistry
+      const allTopics = await this.topicModel.topics.all();
+      MessageBus.send('debug', `Found ${allTopics.length} total topics`);
 
       // Log existing registered topics
       const existingTopics = Array.from(this._topicAIMap.keys());
@@ -511,34 +624,17 @@ export class AITopicManager implements IAITopicManager {
 
       let registeredCount = 0;
 
-      for (const channelInfo of allChannels) {
+      for (const topic of allTopics) {
         try {
-          // Channel ID is NOT the same as topic ID - we need to get the topic from the channel
-          // For AI topics, the channel.id is the topic ID (channels created by createGroupTopic use topic.id as channel.id)
-          const topicId = channelInfo.id;
+          // Get topicId from Topic object
+          const topicId = topic.id;
 
-          MessageBus.send('debug', `Checking channel/topic: ${topicId}`);
+          MessageBus.send('debug', `Checking topic: ${topicId}`);
 
           // Skip if already registered
           if (this._topicAIMap.has(topicId)) {
             const registeredAI = this._topicAIMap.get(topicId);
             MessageBus.send('debug', `  SKIP - already registered with AI Person: ${registeredAI?.toString().substring(0, 8)}...`);
-            continue;
-          }
-
-          // Try to enter the topic room to verify it exists
-          let topic;
-          try {
-            await this.topicModel.enterTopicRoom(topicId);
-            topic = await this.topicModel.topics.queryById(topicId);
-          } catch (e) {
-            // Topic doesn't exist or can't be accessed
-            MessageBus.send('debug', `  SKIP - topic doesn't exist or can't be accessed`);
-            continue;
-          }
-
-          if (!topic) {
-            MessageBus.send('debug', `  SKIP - topic not found in collection`);
             continue;
           }
 

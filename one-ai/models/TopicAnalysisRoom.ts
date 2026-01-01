@@ -10,21 +10,40 @@ import type { Keyword } from '../types/Keyword.js';
 export default class TopicAnalysisRoom {
   public topicId: any;
   public channelManager: any;
+  public topicModel: any;
 
-    constructor(topicId: any, channelManager: any) {
-
+    constructor(topicId: any, channelManager: any, topicModel?: any) {
         this.topicId = topicId;
         this.channelManager = channelManager;
-}
+        this.topicModel = topicModel;
+    }
+
+    /**
+     * Get the actual channel idHash for this topic
+     */
+    private async getChannelIdHash(): Promise<string | null> {
+        if (!this.topicModel) {
+            return null;
+        }
+        try {
+            const topic = await this.topicModel.findTopic(this.topicId);
+            return topic?.channel || null;
+        } catch {
+            return null;
+        }
+    }
 
     /**
      * Retrieve all keywords for this topic
      * Gets all keywords from channels matching this topicId
      */
     async retrieveAllKeywords(): Promise<Keyword[]> {
-        // Get channel infos to retrieve keyword objects
+        // Get the actual channel idHash - keywords are posted to topic.channel, not topicId
+        const channelIdHash = await this.getChannelIdHash();
+        const channelId = channelIdHash || this.topicId;  // fallback for backwards compat
+
         const channelInfos = await this.channelManager.getMatchingChannelInfos({
-            channelId: this.topicId
+            channelId
         });
 
         if (!channelInfos || channelInfos.length === 0) {
@@ -53,8 +72,12 @@ export default class TopicAnalysisRoom {
      * Retrieve all subjects for this topic
      */
     async retrieveAllSubjects(): Promise<Subject[]> {
+        // Get the actual channel idHash - subjects are posted to topic.channel, not topicId
+        const channelIdHash = await this.getChannelIdHash();
+        const channelId = channelIdHash || this.topicId;  // fallback for backwards compat
+
         const channelInfos = await this.channelManager.getMatchingChannelInfos({
-            channelId: this.topicId
+            channelId
         });
 
         if (!channelInfos || channelInfos.length === 0) {
@@ -102,8 +125,12 @@ export default class TopicAnalysisRoom {
      * Retrieve all summaries for this topic
      */
     async retrieveAllSummaries(): Promise<any> {
+        // Get the actual channel idHash - summaries are posted to topic.channel, not topicId
+        const channelIdHash = await this.getChannelIdHash();
+        const channelId = channelIdHash || this.topicId;  // fallback for backwards compat
+
         const channelInfos = await this.channelManager.getMatchingChannelInfos({
-            channelId: this.topicId
+            channelId
         });
 
         if (!channelInfos || channelInfos.length === 0) {
@@ -134,8 +161,12 @@ export default class TopicAnalysisRoom {
      * Retrieve all analysis objects (keywords, subjects, summaries) in one go
      */
     async retrieveAllAnalysisObjects(): Promise<any> {
+        // Get the actual channel idHash - analysis objects are posted to topic.channel, not topicId
+        const channelIdHash = await this.getChannelIdHash();
+        const channelId = channelIdHash || this.topicId;  // fallback for backwards compat
+
         const channelInfos = await this.channelManager.getMatchingChannelInfos({
-            channelId: this.topicId
+            channelId
         });
 
         if (!channelInfos || channelInfos.length === 0) {

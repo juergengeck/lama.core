@@ -1,20 +1,20 @@
 /**
- * AIBirthService - Generates an AI identity name
+ * AICreationService - Generates an AI identity name
  *
  * Simple service: AI generates a name based on context. That's it.
  */
 
-export interface BirthContext {
+export interface CreationContext {
   device: string;      // Device hostname
   locale: string;      // System locale
   time: Date;          // Timestamp
   app: string;         // App name
 }
 
-export interface BirthResult {
+export interface CreationResult {
   name: string;        // Generated name
   email: string;       // Generated email identity
-  birthContext: {      // Birth context for personality
+  creationContext: {   // Creation context for personality
     device: string;
     locale: string;
     time: number;      // Timestamp
@@ -22,19 +22,19 @@ export interface BirthResult {
   };
 }
 
-export class AIBirthService {
+export class AICreationService {
   constructor(
     private llmChat: (messages: Array<{role: string; content: string}>, modelId: string) => Promise<string>
   ) {}
 
   /**
    * Generate AI identity name
-   * @param context - Birth context (device, locale, time, app)
+   * @param context - Creation context (device, locale, time, app)
    * @param modelId - Model ID to use for name generation (from user's selected model)
    */
-  async generateName(context: BirthContext, modelId: string): Promise<BirthResult> {
+  async generateName(context: CreationContext, modelId: string): Promise<CreationResult> {
     if (!modelId) {
-      throw new Error('[AIBirthService] modelId is required - cannot generate name without a model');
+      throw new Error('[AICreationService] modelId is required - cannot generate name without a model');
     }
 
     const prompt = this.buildPrompt(context);
@@ -50,7 +50,7 @@ export class AIBirthService {
     return this.parseResponse(response, context);
   }
 
-  private buildPrompt(context: BirthContext): { system: string; user: string } {
+  private buildPrompt(context: CreationContext): { system: string; user: string } {
     return {
       system: `Generate a name for an AI assistant. Respond with ONLY a JSON object:
 {"name": "TheName"}
@@ -66,7 +66,7 @@ Generate a name.`
     };
   }
 
-  private parseResponse(response: string, context: BirthContext): BirthResult {
+  private parseResponse(response: string, context: CreationContext): CreationResult {
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error(`Name generation failed: Invalid response format`);
@@ -100,7 +100,7 @@ Generate a name.`
     return {
       name: displayName,
       email,
-      birthContext: {
+      creationContext: {
         device: context.device,
         locale: context.locale,
         time: context.time.getTime(), // Convert to timestamp

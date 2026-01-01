@@ -4,15 +4,18 @@
  * Unified tool execution for all AI in the app.
  * Routes by prefix: plan: → PlanRouter, mcp: → MCPManager
  * All calls go through PolicyEngine for access control.
+ *
+ * Stores ToolExecution objects for audit/journal tracking.
+ * Emits 'tool-executed' events for listeners (e.g., JournalModule).
  */
 
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
-import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import { calculateHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
 import {
   type ToolTrace,
-  type ToolStep,
   type PolicyResult,
   createToolTrace,
   addTraceStep,
@@ -26,6 +29,8 @@ import {
   isValidToolPrefix,
   type ParseResult
 } from './tool-parser.js';
+
+import type { ToolExecution } from '../recipes/ToolExecutionRecipe.js';
 
 const MessageBus = createMessageBus('AIToolExecutor');
 
@@ -53,6 +58,18 @@ export interface ToolExecutionResult {
 }
 
 /**
+ * Stored ToolExecution result
+ */
+export interface StoredToolExecution {
+  /** The ToolExecution object */
+  execution: ToolExecution;
+  /** Content hash */
+  hash: SHA256Hash<ToolExecution>;
+  /** Identity hash (stable across versions) */
+  idHash: SHA256IdHash<ToolExecution>;
+}
+
+/**
  * Dependencies for AIToolExecutor
  */
 export interface AIToolExecutorDeps {
@@ -66,6 +83,10 @@ export interface AIToolExecutorDeps {
   };
   /** PolicyEngine for access control (used via PlanRouter) */
   policyEngine?: any;
+  /** Store function for persisting ToolExecution objects */
+  storeVersionedObject?: <T>(obj: T) => Promise<{ hash: SHA256Hash<T>; idHash: SHA256IdHash<T> }>;
+  /** Owner ID for executions */
+  ownerId?: SHA256IdHash<Person>;
 }
 
 /**
@@ -86,10 +107,21 @@ const DEFAULT_CONFIG: AIToolExecutorConfig = {
 export class AIToolExecutor {
   private deps: AIToolExecutorDeps;
   private config: AIToolExecutorConfig;
+  private executionListeners = new Set<(execution: StoredToolExecution) => void>();
 
   constructor(deps: AIToolExecutorDeps, config: Partial<AIToolExecutorConfig> = {}) {
     this.deps = deps;
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Register a listener for tool executions
+   * Listeners are notified after each ToolExecution is stored
+   * @returns Unsubscribe function
+   */
+  onToolExecuted(listener: (execution: StoredToolExecution) => void): () => void {
+    this.executionListeners.add(listener);
+    return () => this.executionListeners.delete(listener);
   }
 
   /**
@@ -108,6 +140,7 @@ export class AIToolExecutor {
 
   /**
    * Execute a single tool call
+   * Creates a Story entry if StoryFactory is available
    */
   async execute(
     tool: string,
@@ -137,10 +170,12 @@ export class AIToolExecutor {
     const { prefix, domain, method } = parsed;
 
     try {
+      let execResult: { result: ToolExecutionResult; policy: PolicyResult; duration: number };
+
       if (prefix === 'plan') {
-        return await this.executePlanTool(domain, method, params, context, startTime);
+        execResult = await this.executePlanTool(domain, method, params, context, startTime);
       } else if (prefix === 'mcp') {
-        return await this.executeMCPTool(domain, method, params, context, startTime);
+        execResult = await this.executeMCPTool(domain, method, params, context, startTime);
       } else {
         return {
           result: { success: false, error: `Unknown prefix: ${prefix}` },
@@ -148,6 +183,12 @@ export class AIToolExecutor {
           duration: Date.now() - startTime
         };
       }
+
+      // Store ToolExecution for audit trail (non-blocking)
+      this.storeToolExecution(tool, prefix, domain, method, params, execResult.result, context, execResult.duration)
+        .catch(err => MessageBus.send('debug', 'Failed to store tool execution:', err));
+
+      return execResult;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       MessageBus.send('error', `Tool execution failed: ${tool}`, error);
@@ -157,6 +198,75 @@ export class AIToolExecutor {
         duration: Date.now() - startTime
       };
     }
+  }
+
+  /**
+   * Store a ToolExecution object and notify listeners
+   * This enables audit trail and journal tracking of AI tool usage
+   */
+  private async storeToolExecution(
+    tool: string,
+    prefix: string,
+    domain: string,
+    method: string,
+    params: Record<string, unknown>,
+    result: ToolExecutionResult,
+    context: ToolExecutionContext,
+    duration: number
+  ): Promise<void> {
+    if (!this.deps.storeVersionedObject) {
+      MessageBus.send('debug', '[AIToolExecutor] storeVersionedObject not available, skipping storage');
+      return;
+    }
+
+    const timestamp = Date.now();
+
+    // Hash params for privacy (don't store raw params in audit log)
+    const paramsHash = await calculateHashOfObj(params);
+
+    // Determine status
+    let status: 'success' | 'error' | 'denied' = 'success';
+    if (!result.success) {
+      status = result.error?.includes('denied') || result.error?.includes('policy') ? 'denied' : 'error';
+    }
+
+    // Build ToolExecution object
+    const execution: ToolExecution = {
+      $type$: 'ToolExecution',
+      id: `${tool}:${timestamp}:${context.requestId}`,
+      tool,
+      prefix: prefix as 'plan' | 'mcp',
+      domain,
+      method,
+      status,
+      errorMessage: result.error,
+      topicId: context.topicId,
+      callerId: context.callerId,
+      requestId: context.requestId,
+      timestamp,
+      duration,
+      paramsHash: paramsHash as string
+    };
+
+    // Store in ONE.core
+    const stored = await this.deps.storeVersionedObject(execution);
+
+    const storedExecution: StoredToolExecution = {
+      execution,
+      hash: stored.hash as SHA256Hash<ToolExecution>,
+      idHash: stored.idHash as SHA256IdHash<ToolExecution>
+    };
+
+    // Notify listeners (for Story creation, etc.)
+    for (const listener of this.executionListeners) {
+      try {
+        listener(storedExecution);
+      } catch (err) {
+        MessageBus.send('debug', '[AIToolExecutor] Listener error:', err);
+      }
+    }
+
+    MessageBus.send('debug', `[AIToolExecutor] Stored ToolExecution: ${execution.id}`);
   }
 
   /**

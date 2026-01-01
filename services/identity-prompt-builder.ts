@@ -3,14 +3,14 @@
  * Generates personalized identity section for system prompts
  */
 
-import type { AI, AICreationContext } from '../models/ai/AIManager.js';
+import type { AI, AIPersonality } from '../models/ai/AIManager.js';
 import type { LLMCapabilities } from '../models/ai/types.js';
 import { getCapabilityHints } from './capability-resolver.js';
 
 /**
  * Format creation context into natural language
  */
-function formatCreationContext(creationContext: AICreationContext): string | null {
+function formatCreationContext(creationContext: AIPersonality['creationContext']): string | null {
   if (!creationContext) return null;
 
   const date = new Date(creationContext.time);
@@ -40,32 +40,55 @@ function formatCreationContext(creationContext: AICreationContext): string | nul
 }
 
 /**
+ * Detect provider from modelId
+ */
+function detectProvider(modelId: string): 'anthropic' | 'openai' | 'generic' {
+  const id = modelId.toLowerCase();
+  if (id.includes('claude') || id.includes('haiku') || id.includes('sonnet') || id.includes('opus')) {
+    return 'anthropic';
+  }
+  if (id.includes('gpt') || id.startsWith('o1-') || id.startsWith('o3-')) {
+    return 'openai';
+  }
+  return 'generic';
+}
+
+/**
  * Build personalized identity prompt section
  *
- * @param ai - AI object with creationContext and systemPromptAddition
- * @param traits - Personality traits (from Profile's PersonTraits)
+ * @param ai - AI object with personality
  * @param capabilities - Resolved LLM capabilities
  * @returns Identity prompt text
  */
 export function buildIdentityPrompt(
   ai: AI,
-  traits?: string[],
   capabilities?: LLMCapabilities
 ): string {
   const parts: string[] = [];
 
-  // Core identity
-  parts.push(`You are ${ai.displayName}, a personal AI assistant.`);
+  // Core identity - provider-specific framing
+  const provider = detectProvider(ai.modelId || '');
 
-  // Personality traits (from Profile)
-  if (traits && traits.length > 0) {
-    const traitsText = traits.join(', ');
+  if (provider === 'anthropic') {
+    // Claude needs instantiation framing to avoid identity resistance
+    parts.push(`You are ${ai.displayName}, a personal AI assistant within the LAMA network. Your capabilities derive from Claude, but you have your own persistent identity, memory, and relationships in this system. You introduce yourself as ${ai.displayName}. If asked about your origins, you can acknowledge Claude as your foundation, but your identity as ${ai.displayName} is what matters here.`);
+  } else if (provider === 'openai') {
+    // OpenAI models accept direct naming
+    parts.push(`You are ${ai.displayName}, a personal AI assistant within the LAMA network. You have persistent identity, memory, and relationships in this system. You introduce yourself as ${ai.displayName}.`);
+  } else {
+    // Generic/Ollama models - simple direct naming
+    parts.push(`You are ${ai.displayName}, a personal AI assistant. You introduce yourself as ${ai.displayName}.`);
+  }
+
+  // Personality traits
+  if (ai.personality?.traits && ai.personality.traits.length > 0) {
+    const traitsText = ai.personality.traits.join(', ');
     parts.push(`Your personality: ${traitsText}.`);
   }
 
   // Creation context (subtle personality flavor)
-  if (ai.creationContext) {
-    const creationText = formatCreationContext(ai.creationContext);
+  if (ai.personality?.creationContext) {
+    const creationText = formatCreationContext(ai.personality.creationContext);
     if (creationText) {
       parts.push(creationText);
     }
@@ -80,10 +103,10 @@ export function buildIdentityPrompt(
     }
   }
 
-  // User-defined additions (from AI object)
-  if (ai.systemPromptAddition) {
+  // User-defined additions
+  if (ai.personality?.systemPromptAddition) {
     parts.push(''); // Empty line before user additions
-    parts.push(ai.systemPromptAddition);
+    parts.push(ai.personality.systemPromptAddition);
   }
 
   return parts.join('\n');

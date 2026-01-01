@@ -13,6 +13,9 @@
  */
 
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
+import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import type { SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { HashGroup, Person } from '@refinio/one.core/lib/recipes.js';
 import type { IAITaskManager } from './interfaces.js';
 import type { AITaskType, AITaskConfig } from './types.js';
 
@@ -20,15 +23,16 @@ export class AITaskManager implements IAITaskManager {
   // Task associations (topicId → task configs)
   private topicTaskAssociations: Map<string, AITaskConfig[]>;
 
-  // Subject channel ID (for IoM storage)
-  private subjectChannelId: string | null;
+  // Subject channel participants hash (for IoM storage)
+  private subjectChannelParticipants: SHA256Hash<HashGroup<Person>> | null;
 
   constructor(
     private channelManager: ChannelManager,
+    private leuteModel: LeuteModel,
     private topicAnalysisModel?: any // Optional - for subject/keyword extraction
   ) {
     this.topicTaskAssociations = new Map();
-    this.subjectChannelId = null;
+    this.subjectChannelParticipants = null;
   }
 
   /**
@@ -39,20 +43,13 @@ export class AITaskManager implements IAITaskManager {
     console.log('[AITaskManager] Initializing subject channel...');
 
     try {
-      // Check if subject channel already exists
-      const existingChannels = await this.channelManager.getMatchingChannelInfos({ channelId: 'ai-subjects' });
+      const myId = await this.leuteModel.myMainIdentity();
 
-      if (existingChannels.length > 0) {
-        this.subjectChannelId = 'ai-subjects';
-        console.log('[AITaskManager] Subject channel already exists');
-        return;
-      }
+      // Create or get subject channel with current user as participant
+      const {participantsHash} = await this.channelManager.createChannel([myId]);
 
-      // Create subject channel
-      const channelInfo = await this.channelManager.createChannel('ai-subjects');
-
-      this.subjectChannelId = (channelInfo as any).id;
-      console.log('[AITaskManager] Created subject channel:', this.subjectChannelId);
+      this.subjectChannelParticipants = participantsHash;
+      console.log('[AITaskManager] Subject channel ready:', participantsHash.substring(0, 8));
     } catch (error) {
       console.error('[AITaskManager] Failed to initialize subject channel:', error);
       throw error;

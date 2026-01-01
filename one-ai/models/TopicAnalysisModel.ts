@@ -46,6 +46,20 @@ export default class TopicAnalysisModel extends Model {
         return topicId;
     }
 
+    /**
+     * Get the actual channel hash for a topicId
+     * Topic.channel is the channelInfoIdHash needed for postToChannel
+     */
+    private async getChannelForTopic(topicId: string): Promise<string | null> {
+        try {
+            const topic = await this.topicModel.findTopic(topicId);
+            return topic?.channel || null;
+        } catch (error) {
+            MessageBus.send('alert', '[TopicAnalysisModel] Failed to get channel for topic:', topicId, error);
+            return null;
+        }
+    }
+
     async init(): Promise<any> {
         this.state.assertCurrentState('Uninitialised');
         // No need to create a separate channel - we'll use existing conversation channels
@@ -143,13 +157,20 @@ export default class TopicAnalysisModel extends Model {
         MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Subject with hash:', result.hash);
 
         // Also post to channel for sync (optional - if you want it to sync across instances)
-        // Use extracted topicIdHash (pure SHA256), not the full topicId (which may have ":name" suffix)
-        await this.channelManager.postToChannel(
-            topicIdHash,
-            subjectObj
-        );
-
-        MessageBus.send('debug', '[TopicAnalysisModel] ✅ Posted Subject to channel:', topicId);
+        // CRITICAL: Use Topic.channel (the actual channelInfoIdHash), NOT the topic ID
+        // The topicId is "owner:name" format, but postToChannel needs the channelInfoIdHash
+        try {
+            const topic = await this.topicModel.findTopic(topicId);
+            if (topic?.channel) {
+                await this.channelManager.postToChannel(topic.channel, subjectObj);
+                MessageBus.send('debug', '[TopicAnalysisModel] ✅ Posted Subject to channel:', topic.channel);
+            } else {
+                MessageBus.send('alert', '[TopicAnalysisModel] ⚠️ Could not find topic channel for:', topicId);
+            }
+        } catch (postError: any) {
+            MessageBus.send('alert', '[TopicAnalysisModel] Failed to post Subject to channel:', postError.message);
+            // Non-fatal - the Subject is stored, just not synced to channel
+        }
         return { ...subjectObj, idHash: result.idHash, hash: result.hash };
     }
 
@@ -253,7 +274,11 @@ export default class TopicAnalysisModel extends Model {
             // Store updated version FIRST
             await storeVersionedObject(updatedKeyword);
 
-            await this.channelManager.postToChannel(topicIdHash, updatedKeyword);
+            // Post to actual channel
+            const channel = await this.getChannelForTopic(topicId);
+            if (channel) {
+                await this.channelManager.postToChannel(channel, updatedKeyword);
+            }
             return updatedKeyword;
         }
 
@@ -317,7 +342,11 @@ export default class TopicAnalysisModel extends Model {
             // Store updated version FIRST
             await storeVersionedObject(updatedKeyword);
 
-            await this.channelManager.postToChannel(topicIdHash, updatedKeyword);
+            // Post to actual channel
+            const channel1 = await this.getChannelForTopic(topicId);
+            if (channel1) {
+                await this.channelManager.postToChannel(channel1, updatedKeyword);
+            }
             return updatedKeyword;
         }
 
@@ -338,7 +367,12 @@ export default class TopicAnalysisModel extends Model {
         const result = await storeVersionedObject(keywordObj);
 
         MessageBus.send('debug', '[TopicAnalysisModel] ✅ Created new keyword with subject:', { term: normalizedTerm, topicId, subjectIdHash, subjects: keywordObj.subjects, idHash: result.idHash });
-        await this.channelManager.postToChannel(topicIdHash, keywordObj);
+
+        // Post to actual channel
+        const channel2 = await this.getChannelForTopic(topicId);
+        if (channel2) {
+            await this.channelManager.postToChannel(channel2, keywordObj);
+        }
         return { ...keywordObj, idHash: result.idHash, hash: result.hash };
     }
 
@@ -381,7 +415,10 @@ export default class TopicAnalysisModel extends Model {
         MessageBus.send('debug', '[TopicAnalysisModel] ✅ Stored Summary for subject:', subjectIdHash, 'idHash:', result.idHash);
 
         // Post to the conversation's channel for sync
-        await this.channelManager.postToChannel(topicIdHash, summaryObj);
+        const channel = await this.getChannelForTopic(topicId);
+        if (channel) {
+            await this.channelManager.postToChannel(channel, summaryObj);
+        }
 
         return { ...summaryObj, idHash: result.idHash, hash: result.hash };
     }
@@ -423,7 +460,7 @@ export default class TopicAnalysisModel extends Model {
         }
 
         // Use TopicAnalysisRoom to retrieve subjects
-        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
+        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager, this.topicModel);
         const subjects: Subject[] = await analysisRoom.retrieveAllSubjects();
 
         // Cache the result
@@ -452,7 +489,7 @@ export default class TopicAnalysisModel extends Model {
 
         // WORKAROUND: Extract keywords from subjects instead of direct channel query
         // retrieveAllKeywords() hangs on multiChannelObjectIterator - likely malformed Keyword object
-        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
+        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager, this.topicModel);
         const subjects = await analysisRoom.retrieveAllSubjects();
         MessageBus.send('debug', `[TopicAnalysisModel] Found ${subjects.length} subjects for topic: ${topicId}`);
 
@@ -619,7 +656,7 @@ export default class TopicAnalysisModel extends Model {
         const normalizedTerm = term.toLowerCase().trim();
 
         // Use ONE.core's channel-based retrieval - same path as storage
-        const room = new TopicAnalysisRoom(topicId, this.channelManager);
+        const room = new TopicAnalysisRoom(topicId, this.channelManager, this.topicModel);
         const allKeywords: any = await (room as any).retrieveAllKeywords();
 
         // Find the keyword by term
@@ -693,7 +730,7 @@ export default class TopicAnalysisModel extends Model {
         this.state.assertCurrentState('Initialised');
 
         // Use TopicAnalysisRoom to retrieve summaries
-        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
+        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager, this.topicModel);
         const summaries: any = await (analysisRoom as any).retrieveAllSummaries();
 
         MessageBus.send('debug', '[TopicAnalysisModel] Retrieved summaries:', {
@@ -712,7 +749,7 @@ export default class TopicAnalysisModel extends Model {
         this.state.assertCurrentState('Initialised');
 
         // Use TopicAnalysisRoom to retrieve the latest summary directly
-        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager);
+        const analysisRoom = new TopicAnalysisRoom(topicId, this.channelManager, this.topicModel);
         const summary: any = await (analysisRoom as any).retrieveLatestSummary();
 
         MessageBus.send('debug', '[TopicAnalysisModel] Retrieved current summary:', {

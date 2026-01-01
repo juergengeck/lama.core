@@ -291,8 +291,30 @@ async function chatWithOllama(
             // CRITICAL: Never use thinking as content - it's internal reasoning
             if (json.message && json.message.thinking) {
               thinking = json.message.thinking
+              MessageBus.send('debug', `[Ollama] Found thinking in json.message.thinking: ${thinking.length} chars`)
             } else if (json.thinking) {
               thinking = json.thinking
+              MessageBus.send('debug', `[Ollama] Found thinking in json.thinking: ${thinking.length} chars`)
+            }
+
+            // Log all available fields for debugging reasoning models
+            if (!thinking && json.message) {
+              const msgKeys = typeof json.message === 'object' ? Object.keys(json.message) : ['(string)']
+              MessageBus.send('debug', `[Ollama] json.message keys: ${msgKeys.join(', ')}`)
+            }
+
+            // Also extract thinking from <think> or <thinking> tags in content (DeepSeek R1, gpt-oss style)
+            if (content) {
+              const thinkMatch = content.match(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/g)
+              if (thinkMatch) {
+                // Extract all thinking blocks
+                for (const match of thinkMatch) {
+                  const thinkContent = match.replace(/<\/?think(?:ing)?>/g, '')
+                  thinking += thinkContent
+                }
+                // Remove thinking tags from visible content
+                content = content.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/g, '').trim()
+              }
             }
 
             // Accumulate content for display
@@ -354,6 +376,18 @@ async function chatWithOllama(
           thinking = json.thinking
         }
 
+        // Also extract thinking from <think> or <thinking> tags in content (DeepSeek R1, gpt-oss style)
+        if (content) {
+          const thinkMatch = content.match(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/g)
+          if (thinkMatch) {
+            for (const match of thinkMatch) {
+              const thinkContent = match.replace(/<\/?think(?:ing)?>/g, '')
+              thinking += thinkContent
+            }
+            content = content.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/g, '').trim()
+          }
+        }
+
         // Accumulate content
         if (content) {
           fullResponse += content
@@ -407,6 +441,7 @@ async function chatWithOllama(
       }
     }
     MessageBus.send('debug', `Completed request ${requestId}`)
+    MessageBus.send('debug', `[Ollama] Response stats - content: ${fullResponse?.length || 0} chars, thinking: ${fullThinking?.length || 0} chars`)
 
     // Return structured response with thinking and context as metadata
     // If there's thinking or context, return object; otherwise return string for backwards compat

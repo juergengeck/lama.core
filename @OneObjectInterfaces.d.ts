@@ -16,6 +16,8 @@ declare module '@OneObjectInterfaces' {
         GlobalLLMSettings: GlobalLLMSettings;
         AISettings: AISettings;
         AppSettings: AppSettings;
+        AI: AI;
+        AIList: AIList;
         Subject: Subject; // Topic analysis
         Keyword: Keyword;
         ProposalConfig: ProposalConfig;
@@ -33,9 +35,22 @@ declare module '@OneObjectInterfaces' {
     // Add our custom ID object types
     export interface OneIdObjectInterfaces {
         LLM: LLM;
+        TTS: TTS;
+        STT: STT;
     }
 
     // Define our custom object interfaces
+    /**
+     * Ollama server configuration for multi-server support
+     */
+    export interface OllamaServerConfig {
+        id: string;              // Unique ID for this server
+        name: string;            // Display name ("Local", "Home Server", etc.)
+        baseUrl: string;         // Server URL (e.g., "http://localhost:11434")
+        authType?: 'none' | 'bearer';
+        enabled: boolean;        // Can disable without deleting
+    }
+
     export interface GlobalLLMSettings {
         $type$: 'GlobalLLMSettings';
         creator: string; // Person ID hash - this is the ID field (enables direct lookup)
@@ -47,6 +62,7 @@ declare module '@OneObjectInterfaces' {
         enableAutoSummary: boolean;
         enableAutoResponse: boolean;
         defaultPrompt: string;
+        ollamaServers?: OllamaServerConfig[];  // Multi-server support
     }
 
     export interface AISettings {
@@ -158,18 +174,103 @@ declare module '@OneObjectInterfaces' {
         encryptedAuthToken?: string;
     }
 
+    /**
+     * TTS (Text-to-Speech) model configuration
+     * Model weights are stored as blobs and referenced here
+     */
+    export interface TTS {
+        $type$: 'TTS';
+        name: string; // ID field - model identifier (e.g., 'chatterbox')
+        huggingFaceRepo: string; // HuggingFace repo (e.g., 'onnx-community/chatterbox-ONNX')
+        displayName?: string; // Human-readable name for UI
+        modelType: 'local' | 'remote';
+        sampleRate: number; // Audio output sample rate (e.g., 24000)
+        requiresReferenceAudio?: boolean; // Voice cloning needs reference
+        defaultVoiceUrl?: string; // Default voice audio URL
+        status: 'not_installed' | 'downloading' | 'installed' | 'loading' | 'ready' | 'error';
+        sizeBytes?: number; // Total model size
+        downloadProgress?: number; // 0-100 during download
+        errorMessage?: string; // Error details if status is 'error'
+        // Blob references for model files
+        modelBlobs?: import('@refinio/one.core/lib/util/type-checks.js').SHA256Hash<import('@refinio/one.core/lib/recipes.js').BLOB>[];
+        blobMetadata?: string; // JSON mapping filename -> blob hash
+        provider?: string; // e.g., 'transformers.js', 'onnx-runtime'
+        architecture?: string; // e.g., 'chatterbox', 'vits'
+        capabilities?: Array<'voice-cloning' | 'multilingual' | 'streaming'>;
+        owner?: string; // Person/Instance ID hash
+        created: number;
+        modified: number;
+        lastUsed?: number;
+        usageCount?: number;
+        deleted?: boolean;
+    }
+
+    /**
+     * STT (Speech-to-Text) model configuration (Whisper, etc.)
+     * Model weights are stored as blobs and referenced here
+     */
+    export interface STT {
+        $type$: 'STT';
+        name: string; // ID field - model identifier (e.g., 'whisper-tiny')
+        huggingFaceRepo: string; // HuggingFace repo (e.g., 'onnx-community/whisper-tiny')
+        displayName?: string; // Human-readable name for UI
+        modelType: 'local' | 'remote';
+        sampleRate: number; // Expected input sample rate (e.g., 16000)
+        languages?: string[]; // Supported languages (ISO 639-1 codes)
+        supportsTranslation?: boolean;
+        status: 'not_installed' | 'downloading' | 'installed' | 'loading' | 'ready' | 'error';
+        sizeBytes?: number; // Total model size
+        downloadProgress?: number; // 0-100 during download
+        errorMessage?: string; // Error details if status is 'error'
+        // Blob references for model files
+        modelBlobs?: import('@refinio/one.core/lib/util/type-checks.js').SHA256Hash<import('@refinio/one.core/lib/recipes.js').BLOB>[];
+        blobMetadata?: string; // JSON mapping filename -> blob hash
+        provider?: string; // e.g., 'transformers.js', 'onnx-runtime'
+        architecture?: string; // e.g., 'whisper', 'wav2vec2'
+        sizeVariant?: string; // e.g., 'tiny', 'base', 'small', 'medium', 'large'
+        capabilities?: Array<'multilingual' | 'translation' | 'timestamps' | 'streaming'>;
+        owner?: string; // Person/Instance ID hash
+        created: number;
+        modified: number;
+        lastUsed?: number;
+        usageCount?: number;
+        deleted?: boolean;
+    }
+
     export interface AI {
         $type$: 'AI';
-        aiId: string; // ID field - AI identifier (e.g., "started-as-gpt-oss-20b")
+        aiId: string; // ID field - AI identifier (e.g., "dreizehn" from AI creation email prefix)
         displayName: string;
         personId: string; // AI Person ID
-        llmProfileId: string; // LLM Profile ID hash that this AI delegates to
+        llmId?: string; // Optional LLM ID hash; undefined = use app default
         modelId: string; // Model identifier (e.g., "gpt-oss:20b")
         owner: string; // Owner Person/Instance ID
         created: number;
         modified: number;
         active: boolean;
         deleted: boolean;
+        // AI behavior flags (global defaults, can be overridden per-topic)
+        analyse?: boolean; // Run analytics extraction (default: true)
+        respond?: boolean; // Generate AI responses (default: true)
+        mute?: boolean; // Suppress notifications (default: false)
+        ignore?: boolean; // Skip entirely (default: false)
+        personality?: {
+            creationContext?: {
+                device: string;
+                locale: string;
+                time: number;
+                app: string;
+            };
+            traits?: string[];
+            systemPromptAddition?: string;
+        };
+    }
+
+    export interface AIList {
+        $type$: 'AIList';
+        id: string; // ID field - fixed value 'ai-list' (singleton per user)
+        aiIds: Set<string>; // Set of AI IdHashes for easy enumeration
+        modified: number;
     }
 
     export interface Subject {

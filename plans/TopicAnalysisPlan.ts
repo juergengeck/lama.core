@@ -8,11 +8,15 @@
 // Type imports commented out - using ambient services with any types
 // import type { TopicAnalysisModel } from '../main/core/one-ai/models/TopicAnalysisModel.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Person } from '@refinio/one.core/lib/recipes.js';
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 import type { Subject } from '../one-ai/types/Subject.js';
 import type { Keyword } from '../one-ai/types/Keyword.js';
+import { shouldAnalyseTopic } from '../models/ai/AISettingsResolver.js';
+import type { AI } from '../models/ai/AIManager.js';
 
 const MessageBus = createMessageBus('TopicAnalysisPlan');
 
@@ -214,12 +218,57 @@ export class TopicAnalysisPlan {
         return { success: false, error: 'Topic Analysis Model not initialized' };
       }
 
+      // Check if analysis should run based on AI participant settings
+      if (this.topicModel && this.nodeOneCore?.aiAssistantModel) {
+        try {
+          // Get the Topic object to check aiParticipants
+          const topic = await this.topicModel.findTopic(request.topicId);
+          if (topic && topic.aiParticipants && topic.aiParticipants.size > 0) {
+            // Get AIManager to resolve AI objects
+            const aiManager = this.nodeOneCore.aiAssistantModel.getAIManager?.();
+            if (aiManager) {
+              const getAI = async (personId: SHA256IdHash<Person>): Promise<AI | null> => {
+                return aiManager.getAI(personId);
+              };
+              const shouldAnalyse = await shouldAnalyseTopic(topic.aiParticipants, getAI);
+              if (!shouldAnalyse) {
+                MessageBus.send('debug', `Topic ${request.topicId} has AI participants but none have analyse=true, skipping`);
+                return {
+                  success: true,
+                  data: {
+                    subjects: [],
+                    keywords: [],
+                    summary: null
+                  }
+                };
+              }
+            }
+          }
+          // If no aiParticipants or no AIManager, proceed with analysis (backwards compatibility)
+        } catch (settingsError) {
+          // Log but don't fail - settings check is not critical
+          MessageBus.send('debug', `Could not check AI settings, proceeding with analysis: ${settingsError}`);
+        }
+      }
+
       let messages = request.messages || [];
 
       // If no messages provided, retrieve from conversation
       if (messages.length === 0 && this.topicModel) {
         try {
-          const topicRoom: any = await this.topicModel.enterTopicRoom(request.topicId);
+          const topic = await this.topicModel.findTopic(request.topicId);
+          if (!topic) {
+            MessageBus.send('debug', `Topic does not exist, skipping analysis: ${request.topicId}`);
+            return {
+              success: true,
+              data: {
+                subjects: [],
+                keywords: [],
+                summary: null
+              }
+            };
+          }
+          const topicRoom: any = await this.topicModel.enterTopicRoom(topic.id);
           const messagesIterable: any = await topicRoom.retrieveAllMessages();
           messages = [];
           for await (const msg of messagesIterable) {
@@ -254,14 +303,41 @@ export class TopicAnalysisPlan {
         throw new Error('LLM Manager not available');
       }
 
-      // Get model ID from AI assistant model (source of truth)
+      // Get model ID for analysis
+      // Priority: 1. Topic's AI model, 2. Default model, 3. Any available model
       let modelId: string | null = null;
+
+      // Try to get model from topic's AI participant
       if (this.nodeOneCore?.aiAssistantModel) {
         modelId = await this.nodeOneCore.aiAssistantModel.getModelIdForTopic(request.topicId);
       }
 
+      // Fall back to default model
+      if (!modelId && this.nodeOneCore?.aiAssistantModel?.getDefaultModel) {
+        const defaultModel = await this.nodeOneCore.aiAssistantModel.getDefaultModel();
+        modelId = defaultModel?.id || defaultModel;
+      }
+
+      // Fall back to any available model from LLMManager
       if (!modelId) {
-        throw new Error('No AI model configured for this topic');
+        const availableModels = this.llmManager.getModels?.() || [];
+        if (availableModels.length > 0) {
+          // Prefer ollama/local models for analysis
+          const localModel = availableModels.find((m: any) => m.provider === 'ollama' || m.provider === 'lmstudio');
+          modelId = localModel?.id || availableModels[0]?.id;
+        }
+      }
+
+      if (!modelId) {
+        MessageBus.send('debug', 'No AI model available for analysis, skipping');
+        return {
+          success: true,
+          data: {
+            subjects: [],
+            keywords: [],
+            summary: null
+          }
+        };
       }
 
       // Prepare conversation context for analysis

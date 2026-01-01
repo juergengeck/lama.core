@@ -35,7 +35,10 @@ export class ChatModule implements Module {
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicModel', required: true },
     { targetType: 'OneCore', required: true },
-    { targetType: 'ExportPlan', required: true }
+    { targetType: 'ExportPlan', required: true },
+    // AIAssistantPlan is needed for AI contact detection in ContactsPlan
+    // It sets oneCore.aiAssistantModel which ContactsPlan uses
+    { targetType: 'AIAssistantPlan', required: false }
   ];
 
   static supplies = [
@@ -94,6 +97,8 @@ export class ChatModule implements Module {
     );
 
     // Chat plans (platform-agnostic from chat.core)
+    // Check if AIModule has set aiAssistantModel on oneCore
+    console.log('[ChatModule] oneCore.aiAssistantModel available:', !!(oneCore as any)?.aiAssistantModel);
     this.chatPlan = new ChatPlan(oneCore);
     this.contactsPlan = new ContactsPlan(oneCore);
     this.feedForwardPlan = new FeedForwardPlan(oneCore);
