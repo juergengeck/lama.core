@@ -30,6 +30,8 @@ export interface SystemPromptContext {
   aiManager?: any;
   /** LLM Manager for capability resolution */
   llmManager?: any;
+  /** Character Plan for fetching traits from profile */
+  characterPlan?: any;
   [key: string]: any;
 }
 
@@ -74,6 +76,19 @@ export class SystemPromptBuilder {
             return '';
           }
 
+          // Fetch traits from profile via characterPlan if available
+          let traits: string[] | undefined;
+          if (context.characterPlan) {
+            try {
+              const charResult = await context.characterPlan.getCharacter({ personId: context.personId });
+              if (charResult.success && charResult.character?.traits) {
+                traits = charResult.character.traits;
+              }
+            } catch (charError) {
+              console.warn('[SystemPromptBuilder] Failed to get character traits:', charError);
+            }
+          }
+
           // Resolve capabilities
           let capabilities = undefined;
           if (context.llmManager && ai.modelId) {
@@ -88,7 +103,7 @@ export class SystemPromptBuilder {
             }
           }
 
-          return buildIdentityPrompt(ai, capabilities);
+          return buildIdentityPrompt(ai, traits, capabilities);
         } catch (error) {
           console.warn('[SystemPromptBuilder] Failed to build AI identity:', error);
           return '';

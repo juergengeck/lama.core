@@ -49,7 +49,8 @@ export class AIPromptBuilder implements IAIPromptBuilder {
     private llmManager: any, // LLMManager interface
     private topicManager: any, // AITopicManager
     private aiManager: any, // AIManager for Person → LLM resolution
-    private contextEnrichmentService?: any // Optional - for past conversation hints
+    private contextEnrichmentService?: any, // Optional - for past conversation hints
+    private characterPlan?: any // Optional - for fetching character traits from profile
   ) {
     this.lastRestartPoint = new Map();
     this.topicRestartSummaries = new Map();
@@ -156,13 +157,14 @@ export class AIPromptBuilder implements IAIPromptBuilder {
       console.warn('[AIPromptBuilder] Could not get messages for subject extraction:', error);
     }
 
-    // Build context for SystemPromptBuilder with aiManager and llmManager
+    // Build context for SystemPromptBuilder with aiManager, llmManager, and characterPlan
     const context = {
       topicId,
       personId: aiPersonId,
       currentSubjects,
       aiManager: this.aiManager,
-      llmManager: this.llmManager
+      llmManager: this.llmManager,
+      characterPlan: this.characterPlan
     };
 
     // Use llmManager's SystemPromptBuilder if available, otherwise fall back to Phase 1 prompt
