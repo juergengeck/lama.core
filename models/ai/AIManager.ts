@@ -507,8 +507,9 @@ export class AIManager {
    *
    * @param aiPersonId - AI Person ID
    * @param newModelId - New model ID (e.g., "claude-sonnet-4", "gpt-4")
+   * @returns Store result with hash of the new AI version
    */
-  async updateModelId(aiPersonId: SHA256IdHash<Person>, newModelId: string): Promise<void> {
+  async updateModelId(aiPersonId: SHA256IdHash<Person>, newModelId: string): Promise<{ hash: SHA256Hash<AI> }> {
     MessageBus.send('debug', `Updating AI modelId for ${aiPersonId.toString().substring(0, 8)}... to ${newModelId}`);
 
     const aiObject = this.aiByPerson.get(aiPersonId);
@@ -523,10 +524,44 @@ export class AIManager {
       modified: Date.now()
     };
 
-    await this.deps.storeVersionedObject(updatedAI);
+    const result = await this.deps.storeVersionedObject(updatedAI);
     this.aiByPerson.set(aiPersonId, updatedAI);
 
     MessageBus.send('debug', `AI modelId updated to ${newModelId}`);
+    return { hash: result.hash as SHA256Hash<AI> };
+  }
+
+  /**
+   * Update AI's systemPromptAddition
+   * Creates a new AI version with the updated system prompt
+   *
+   * @param aiPersonId - AI Person ID
+   * @param systemPromptAddition - New system prompt addition (or undefined to remove)
+   * @returns Store result with hash of the new AI version
+   */
+  async updateSystemPromptAddition(
+    aiPersonId: SHA256IdHash<Person>,
+    systemPromptAddition: string | undefined
+  ): Promise<{ hash: SHA256Hash<AI> }> {
+    MessageBus.send('debug', `Updating AI systemPromptAddition for ${aiPersonId.toString().substring(0, 8)}...`);
+
+    const aiObject = this.aiByPerson.get(aiPersonId);
+    if (!aiObject) {
+      throw new Error(`[AIManager] AI not found for Person ${aiPersonId.toString().substring(0, 8)}...`);
+    }
+
+    // Update AI object with new systemPromptAddition
+    const updatedAI: AI = {
+      ...aiObject,
+      systemPromptAddition,
+      modified: Date.now()
+    };
+
+    const result = await this.deps.storeVersionedObject(updatedAI);
+    this.aiByPerson.set(aiPersonId, updatedAI);
+
+    MessageBus.send('debug', `AI systemPromptAddition updated`);
+    return { hash: result.hash as SHA256Hash<AI> };
   }
 
   /**
