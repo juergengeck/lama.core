@@ -12,6 +12,29 @@ import { getInstanceIdHash, getInstanceOwnerIdHash, getInstanceOwnerEmail } from
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 
 /**
+ * Holder for TopicGroupManager - allows late binding of CHUM filters
+ * TopicGroupManager is created by ChatModule AFTER ConnectionsModel,
+ * so we use a holder that delegates to TopicGroupManager when available.
+ *
+ * Without filters:
+ * - Outbound: Access/IdAccess NOT shared (default CHUM behavior)
+ * - Inbound: Access/IdAccess REJECTED (default CHUM behavior)
+ *
+ * With filters delegating to TopicGroupManager:
+ * - Outbound: Allow Access/IdAccess we created for sharing
+ * - Inbound: Allow Access/IdAccess from paired peers (trust established via pairing)
+ */
+export interface TopicGroupManagerHolder {
+  manager?: {
+    isAllowedOutbound(hash: string): boolean;
+    isAllowedInbound(hash: string): boolean;
+  };
+}
+
+// Global holder populated by ChatModule when TopicGroupManager is created
+export const coreModuleTopicGroupManagerHolder: TopicGroupManagerHolder = {};
+
+/**
  * CoreModule - ONE.core foundation models
  *
  * Root module with NO dependencies. Provides:
@@ -119,6 +142,57 @@ export class CoreModule implements Module {
         this.leuteModel = new LeuteModel(this.commServerUrl, false);
         this.channelManager = new ChannelManager(this.leuteModel);
         this.topicModel = new TopicModel(this.channelManager, this.leuteModel);
+
+        // CRITICAL: Object filter for CHUM sync (what we SEND to peers)
+        // Without this, Access/IdAccess are NOT shared (default CHUM behavior)
+        // and remote peers can't access Topics/Channels we share with them
+        const objectFilter = async (hash: any, type: string): Promise<boolean> => {
+          // HashGroup/Group are metadata - always allow (trusted CHUM peer)
+          if (type === 'HashGroup' || type === 'Group') {
+            return true;
+          }
+
+          // Access/IdAccess grant permissions - check TopicGroupManager allowlist
+          if (type === 'Access' || type === 'IdAccess') {
+            if (coreModuleTopicGroupManagerHolder.manager) {
+              const allowed = coreModuleTopicGroupManagerHolder.manager.isAllowedOutbound(String(hash));
+              console.log(`[CoreModule] objectFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)} (allowlist)`);
+              return allowed;
+            }
+            // TopicGroupManager not ready yet - allow (permissive during init)
+            console.log(`[CoreModule] objectFilter: ✅ ${type} ${String(hash).substring(0, 8)} (TGM not ready)`);
+            return true;
+          }
+
+          // All other object types allowed freely
+          return true;
+        };
+
+        // CRITICAL: Import filter for CHUM sync (what we ACCEPT from peers)
+        // Without this, Access/IdAccess are REJECTED (default CHUM behavior)
+        // and we can't receive access grants from peers
+        const importFilter = async (hash: any, type: string): Promise<boolean> => {
+          // Access/IdAccess grant permissions - check TopicGroupManager allowlist
+          if (type === 'Access' || type === 'IdAccess') {
+            if (coreModuleTopicGroupManagerHolder.manager) {
+              const allowed = coreModuleTopicGroupManagerHolder.manager.isAllowedInbound(String(hash));
+              console.log(`[CoreModule] importFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)} (allowlist)`);
+              return allowed;
+            }
+            // TopicGroupManager not ready yet - allow (permissive during init)
+            console.log(`[CoreModule] importFilter: ✅ ${type} ${String(hash).substring(0, 8)} (TGM not ready)`);
+            return true;
+          }
+
+          // HashGroup/Group are metadata - allow from authenticated CHUM peers
+          if (type === 'HashGroup' || type === 'Group') {
+            return true;
+          }
+
+          // All other object types allowed freely
+          return true;
+        };
+
         this.connections = new ConnectionsModel(this.leuteModel, {
           commServerUrl: this.commServerUrl,
           acceptIncomingConnections: true,
@@ -127,7 +201,9 @@ export class CoreModule implements Module {
           allowPairing: true,                 // Enable pairing protocol
           establishOutgoingConnections: true, // Auto-connect to discovered endpoints
           allowDebugRequests: true,
-          pairingTokenExpirationDuration: 60000 * 15  // 15 minutes
+          pairingTokenExpirationDuration: 60000 * 15,  // 15 minutes
+          objectFilter,                        // What we SEND to peers
+          importFilter                         // What we ACCEPT from peers
         });
         this.settings = new PropertyTreeStore('lama.browser.settings');
 

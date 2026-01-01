@@ -20,6 +20,9 @@ import type { ExportPlan } from '@chat/core/plans/ExportPlan.js';
 // Chat core models
 import TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 
+// Wire TopicGroupManager to CoreModule's holder for CHUM filter delegation
+import { coreModuleTopicGroupManagerHolder } from './CoreModule.js';
+
 /**
  * ChatModule - Chat functionality
  *
@@ -95,6 +98,12 @@ export class ChatModule implements Module {
         calculateHashOfObj
       }
     );
+
+    // CRITICAL: Wire TopicGroupManager to CoreModule's holder for CHUM filter delegation
+    // This allows CoreModule's objectFilter/importFilter to delegate Access/IdAccess
+    // decisions to TopicGroupManager (which was created AFTER ConnectionsModel)
+    coreModuleTopicGroupManagerHolder.manager = this.topicGroupManager;
+    console.log('[ChatModule] TopicGroupManager wired to CoreModule holder for CHUM filters');
 
     // Chat plans (platform-agnostic from chat.core)
     // Check if AIModule has set aiAssistantModel on oneCore
