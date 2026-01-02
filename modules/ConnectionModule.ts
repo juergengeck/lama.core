@@ -4,6 +4,7 @@ import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js'
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
+import type TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 import ProfileModel from '@refinio/one.models/lib/models/Leute/ProfileModel.js';
 import {ConnectionPlan, type PairingEventCallbacks} from '@connection/core/plans/ConnectionPlan.js';
 import type {TrustPlanDependencies} from '@connection/core/plans/TrustPlan.js';
@@ -34,7 +35,8 @@ export class ConnectionModule implements Module {
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicModel', required: true },
     { targetType: 'ConnectionsModel', required: true },
-    { targetType: 'TrustPlan', required: true }
+    { targetType: 'TrustPlan', required: true },
+    { targetType: 'TopicGroupManager', required: false }  // Optional, for mesh propagation
   ];
 
   static supplies = [
@@ -50,6 +52,7 @@ export class ConnectionModule implements Module {
     topicModel?: TopicModel;
     connectionsModel?: ConnectionsModel;
     trustPlan?: TrustPlan;
+    topicGroupManager?: TopicGroupManager;
   } = {};
 
   // Connection Plans
@@ -147,6 +150,16 @@ export class ConnectionModule implements Module {
       this.connectionPlan.registerPairingHandler(this.deps.connectionsModel);
     } else {
       console.error('[ConnectionModule] ❌ Cannot register pairing handler - no ConnectionsModel!');
+    }
+
+    // Wire up mesh propagation support (for automatic group sharing to new P2P connections)
+    if (this.deps.topicGroupManager) {
+      this.connectionPlan.setTopicGroupManager(this.deps.topicGroupManager);
+      console.log('[ConnectionModule] TopicGroupManager wired to ConnectionPlan for mesh propagation');
+    }
+    if (this.deps.oneCore?.paranoiaLevel !== undefined) {
+      this.connectionPlan.setParanoiaLevel(this.deps.oneCore.paranoiaLevel);
+      console.log('[ConnectionModule] Paranoia level set:', this.deps.oneCore.paranoiaLevel);
     }
 
     // Group chat plan dependencies (platform-agnostic from connection.core)
