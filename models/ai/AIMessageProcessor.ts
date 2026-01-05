@@ -39,7 +39,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   // Welcome generation tracking (topicId → promise)
   private welcomeGenerationInProgress: Map<string, Promise<any>>;
 
-  // Message processing tracking (topicId → promise) - prevents duplicate processing
+  // Message processing tracking (topicId:aiPersonId → promise) - prevents duplicate processing per AI
   private processingInProgress: Map<string, Promise<any>>;
 
   // Available LLM models
@@ -137,6 +137,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     aiPersonIdOverride?: SHA256IdHash<Person>
   ): Promise<string | null> {
     const t0 = Date.now()
+    console.log(`[AIMessageProcessor] processMessage called for topic ${topicId.substring(0, 16)}... message: "${message.substring(0, 20)}..."`);
     MessageBus.send('debug', `Processing message for topic ${topicId}`);
 
     // Check if welcome generation is in progress for this topic
@@ -159,19 +160,21 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       return null; // Don't process now, will be processed after welcome
     }
 
-    // Check if message processing is already in progress for this topic
-    // This prevents duplicate processing when AI's own stored message triggers channel update
-    if (this.processingInProgress.has(topicId)) {
-      MessageBus.send('debug', `Message processing already in progress for ${topicId}, skipping duplicate`);
-      return null;
-    }
-
     try {
       // Get the AI Person ID for this topic
       // Use override (from settings-based routing) or fall back to topicManager (legacy)
       const aiPersonId = aiPersonIdOverride ?? this.topicManager.getAIPersonForTopic(topicId);
       if (!aiPersonId) {
         MessageBus.send('debug', 'No AI Person registered for this topic');
+        return null;
+      }
+
+      // Check if message processing is already in progress for THIS AI in THIS topic
+      // This prevents duplicate processing when AI's own stored message triggers channel update
+      // Key is topicId:aiPersonId to allow multiple AIs to process the same topic simultaneously
+      const processingKey = `${topicId}:${aiPersonId}`;
+      if (this.processingInProgress.has(processingKey)) {
+        MessageBus.send('debug', `Message processing already in progress for AI ${aiPersonId.toString().substring(0, 8)} in ${topicId}, skipping duplicate`);
         return null;
       }
 
@@ -215,9 +218,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       const model = this.llmManager?.getModel(modelId);
       const modelName = model?.name || model?.displayName;
 
-      // Mark this topic as having processing in progress
+      // Mark this AI as having processing in progress for this topic
       // This prevents duplicate processing when AI's stored message triggers channel update
-      this.processingInProgress.set(topicId, Promise.resolve());
+      this.processingInProgress.set(processingKey, Promise.resolve());
 
       // Emit thinking indicator via platform
       if (this.platform) {
@@ -343,7 +346,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                   this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
                 }
                 // Clear processing flag - message is stored and complete event sent
-                this.processingInProgress.delete(topicId);
+                this.processingInProgress.delete(processingKey);
               } else {
                 MessageBus.send('error', `Could not enter topic room ${topicId}`);
                 // Still emit completion so UI clears processing state
@@ -352,7 +355,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                   this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
                 }
                 // Clear processing flag even on error
-                this.processingInProgress.delete(topicId);
+                this.processingInProgress.delete(processingKey);
               }
             } catch (error) {
               MessageBus.send('error', 'Failed to store AI response:', error);
@@ -362,7 +365,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                 this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
               }
               // Clear processing flag even on error
-              this.processingInProgress.delete(topicId);
+              this.processingInProgress.delete(processingKey);
               // Don't throw - the response was already streamed to UI
             }
           }
@@ -378,8 +381,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     } catch (error) {
       MessageBus.send('error', 'Failed to process message:', error);
 
-      // Clear processing flag on error
-      this.processingInProgress.delete(topicId);
+      // Clear processing flag on error (processingKey may not be defined if error happened early)
+      const errorKey = `${topicId}:${aiPersonIdOverride || 'unknown'}`;
+      this.processingInProgress.delete(errorKey);
 
       // Emit error via platform
       if (this.platform) {
@@ -549,7 +553,9 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         disableTools: true, // Disable MCP tools for welcome messages
       };
 
+      MessageBus.send('debug', `Calling llmManager.chat for welcome, llmManager exists: ${!!this.llmManager}, modelId: ${modelId}`);
       const response = await this.llmManager?.chat(history, modelId, chatOptions);
+      MessageBus.send('debug', `llmManager.chat returned: ${response ? 'response' : 'undefined'}, type: ${typeof response}`);
 
       // Extract content from structured response if needed
       const finalResponse = typeof response === 'object' && response.content

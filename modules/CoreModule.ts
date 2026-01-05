@@ -1,85 +1,87 @@
 import LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
-import ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
 import PropertyTreeStore from '@refinio/one.models/lib/models/SettingsModel.js';
 import { objectEvents } from '@refinio/one.models/lib/misc/ObjectEventDispatcher.js';
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import type { Module } from '@refinio/api';
 import { initializePlanObjectManager, registerStandardPlans } from '@refinio/api/plan-system';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
-import { getInstanceIdHash, getInstanceOwnerIdHash, getInstanceOwnerEmail } from '@refinio/one.core/lib/instance.js';
+import { getInstanceOwnerIdHash, getInstanceOwnerEmail } from '@refinio/one.core/lib/instance.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 
-/**
- * Holder for TopicGroupManager - allows late binding of CHUM filters
- * TopicGroupManager is created by ChatModule AFTER ConnectionsModel,
- * so we use a holder that delegates to TopicGroupManager when available.
- *
- * Without filters:
- * - Outbound: Access/IdAccess NOT shared (default CHUM behavior)
- * - Inbound: Access/IdAccess REJECTED (default CHUM behavior)
- *
- * With filters delegating to TopicGroupManager:
- * - Outbound: Allow Access/IdAccess we created for sharing
- * - Inbound: Allow Access/IdAccess from paired peers (trust established via pairing)
- */
-export interface TopicGroupManagerHolder {
-  manager?: {
-    isAllowedOutbound(hash: string): boolean;
-    isAllowedInbound(hash: string): boolean;
-  };
-}
-
-// Global holder populated by ChatModule when TopicGroupManager is created
-export const coreModuleTopicGroupManagerHolder: TopicGroupManagerHolder = {};
+// ============================================================================
+// MODULE-LEVEL SINGLETONS
+// These survive across CoreModule instance recreation (e.g., hot reload,
+// multiple Model constructions). React components subscribe to these once
+// and they remain valid even if CoreModule is re-instantiated.
+// ============================================================================
+let globalInitialized = false;
+let globalOnTopicUpdated: OEvent<(topicId: string) => void> | null = null;
+let globalModels: {
+  leuteModel?: LeuteModel;
+  channelManager?: ChannelManager;
+  topicModel?: TopicModel;
+  settings?: PropertyTreeStore;
+} = {};
 
 /**
  * CoreModule - ONE.core foundation models
  *
- * Root module with NO dependencies. Provides:
+ * CONSOLIDATED architecture - this is THE single place for basic model initialization.
+ * All platforms (lama.cube, lama.browser, lama.ios) use CoreModule.
+ *
+ * Provides:
  * - LeuteModel (people/contacts/profiles)
  * - ChannelManager (channel operations)
  * - TopicModel (chat/messaging)
- * - ConnectionsModel (P2P connections)
  * - Settings (encrypted storage)
+ *
+ * NOTE: ConnectionsModel is created by ConnectionModule which properly demands
+ * TopicGroupManager for CHUM filters. This avoids circular dependencies.
  */
 export class CoreModule implements Module {
   readonly name = 'CoreModule';
 
-  // Demand OneCore to ensure Instance is ready before initializing models
   static demands = [
-    { targetType: 'OneCore', required: true }
+    { targetType: 'OneCore', required: true },
+    { targetType: 'Settings', required: false }  // Optional: platform can supply pre-configured settings
   ];
 
   static supplies = [
     { targetType: 'LeuteModel' },
     { targetType: 'ChannelManager' },
     { targetType: 'TopicModel' },
-    { targetType: 'ConnectionsModel' },
     { targetType: 'Settings' },
     { targetType: 'PlanObjectManager' }
+    // Note: ConnectionsModel is supplied by ConnectionModule
     // Note: StoryFactory is supplied by ModuleRegistry.setStorageFunction()
   ];
 
   private deps: {
     oneCore?: any;
-    leuteModel?: LeuteModel;
-    channelManager?: ChannelManager;
-    topicModel?: TopicModel;
-    connectionsModel?: ConnectionsModel;
     settings?: PropertyTreeStore;
   } = {};
 
   public leuteModel!: LeuteModel;
   public channelManager!: ChannelManager;
   public topicModel!: TopicModel;
-  public connections!: ConnectionsModel;
   public settings!: PropertyTreeStore;
 
-  /** Emits topicId when messages in that topic are updated (via CHUM or local) */
-  public onTopicUpdated = new OEvent<(topicId: string) => void>();
+  /**
+   * Emits topicId when messages in that topic are updated (via CHUM or local)
+   * NOTE: This getter returns a MODULE-LEVEL singleton that survives instance recreation.
+   * React components subscribe once and the subscription remains valid.
+   */
+  public get onTopicUpdated(): OEvent<(topicId: string) => void> {
+    if (!globalOnTopicUpdated) {
+      globalOnTopicUpdated = new OEvent<(topicId: string) => void>();
+    }
+    return globalOnTopicUpdated;
+  }
   private channelUpdateUnsubscribe: (() => void) | null = null;
+  private newTopicUnsubscribe: (() => void) | null = null;
+  private initialized = false;
 
   constructor(private commServerUrl: string) {}
 
@@ -88,132 +90,69 @@ export class CoreModule implements Module {
       throw new Error('[CoreModule] OneCore dependency not injected - Instance not ready');
     }
 
+    // GLOBAL singleton guard - prevents ANY CoreModule instance from reinitializing
+    // This is critical because React components subscribe to globalOnTopicUpdated,
+    // and we must not create duplicate model instances or listeners
+    if (globalInitialized) {
+      console.log('[CoreModule] GLOBAL GUARD: Already initialized, reusing existing models');
+      // Copy global models to this instance so getters work
+      this.leuteModel = globalModels.leuteModel!;
+      this.channelManager = globalModels.channelManager!;
+      this.topicModel = globalModels.topicModel!;
+      this.settings = globalModels.settings!;
+      this.initialized = true;
+      return;
+    }
+
+    // Instance-level guard (belt and suspenders)
+    if (this.initialized) {
+      console.log('[CoreModule] Already initialized, skipping');
+      return;
+    }
+
     try {
-      console.log('[CoreModule] OneCore dependency injected - Instance ready');
+      console.log('[CoreModule] Initializing - THE single source of model creation');
 
       // CRITICAL: Initialize ObjectEventDispatcher BEFORE models
       // This enables CHUM sync notifications - without this, imported ChannelInfo
       // objects don't trigger events, and messages from remote peers never appear
-      // Note: Only initialize if not already done (pre-supplied models case)
-      try {
+      // Check if already initialized (guards against module duplication issues)
+      if (objectEvents.isInitialized()) {
+        console.log('[CoreModule] ObjectEventDispatcher already initialized, skipping');
+      } else {
         console.log('[CoreModule] Initializing ObjectEventDispatcher...');
         await objectEvents.init();
         console.log('[CoreModule] ObjectEventDispatcher initialized');
-      } catch (e: any) {
-        if (e.message?.includes('already initialized')) {
-          console.log('[CoreModule] ObjectEventDispatcher already initialized (pre-supplied models)');
-        } else {
-          throw e;
-        }
       }
 
       // Initialize PlanObjectManager (other modules may depend on it)
-      // Note: PlanRecipe is already registered via Model.ts MultiUser recipes
       console.log('[CoreModule] Initializing PlanObjectManager...');
       initializePlanObjectManager({ storeVersionedObject });
       await registerStandardPlans();
       console.log('[CoreModule] PlanObjectManager initialized and standard Plans registered');
-      // Note: StoryFactory is created by ModuleRegistry.setStorageFunction() - NOT here
-      // All modules share that single instance via the registry
 
-      // Use pre-supplied models if available, otherwise create new ones
-      // This allows platforms like lama.cube to supply nodeOneCore's models
-      // instead of creating duplicates (which causes issues like duplicate PairingManagers)
-      // Note: Check oneCore for models since that's what we demand (not individual models)
-      const oneCore = this.deps.oneCore;
-      const modelsSupplied = oneCore?.leuteModel && oneCore?.channelManager &&
-                             oneCore?.topicModel && oneCore?.connectionsModel;
+      // Create and initialize ONE.core models
+      // This is THE single place for basic model creation
+      // NOTE: ConnectionsModel is created by ConnectionModule with proper TopicGroupManager filters
+      console.log('[CoreModule] Creating ONE.core models');
+      this.leuteModel = new LeuteModel(this.commServerUrl, false);
+      this.channelManager = new ChannelManager(this.leuteModel);
+      this.topicModel = new TopicModel(this.channelManager, this.leuteModel);
 
-      if (modelsSupplied) {
-        console.log('[CoreModule] Using pre-supplied models from platform');
-        this.leuteModel = oneCore.leuteModel;
-        this.channelManager = oneCore.channelManager;
-        this.topicModel = oneCore.topicModel;
-        this.connections = oneCore.connectionsModel;
-        this.settings = this.deps.settings || new PropertyTreeStore('lama.browser.settings');
-
-        // Models already initialized by platform - only init settings if we created it
-        if (!this.deps.settings) {
-          await this.settings.init();
-        }
+      // Use supplied Settings or create default
+      if (this.deps.settings) {
+        this.settings = this.deps.settings;
+        console.log('[CoreModule] Using supplied Settings');
       } else {
-        // Create and initialize ONE.core models (browser platform case)
-        console.log('[CoreModule] Creating new ONE.core models');
-        this.leuteModel = new LeuteModel(this.commServerUrl, false);
-        this.channelManager = new ChannelManager(this.leuteModel);
-        this.topicModel = new TopicModel(this.channelManager, this.leuteModel);
-
-        // CRITICAL: Object filter for CHUM sync (what we SEND to peers)
-        // Without this, Access/IdAccess are NOT shared (default CHUM behavior)
-        // and remote peers can't access Topics/Channels we share with them
-        const objectFilter = async (hash: any, type: string): Promise<boolean> => {
-          // HashGroup/Group are metadata - always allow (trusted CHUM peer)
-          if (type === 'HashGroup' || type === 'Group') {
-            return true;
-          }
-
-          // Access/IdAccess grant permissions - check TopicGroupManager allowlist
-          if (type === 'Access' || type === 'IdAccess') {
-            if (coreModuleTopicGroupManagerHolder.manager) {
-              const allowed = coreModuleTopicGroupManagerHolder.manager.isAllowedOutbound(String(hash));
-              console.log(`[CoreModule] objectFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)} (allowlist)`);
-              return allowed;
-            }
-            // TopicGroupManager not ready yet - allow (permissive during init)
-            console.log(`[CoreModule] objectFilter: ✅ ${type} ${String(hash).substring(0, 8)} (TGM not ready)`);
-            return true;
-          }
-
-          // All other object types allowed freely
-          return true;
-        };
-
-        // CRITICAL: Import filter for CHUM sync (what we ACCEPT from peers)
-        // Without this, Access/IdAccess are REJECTED (default CHUM behavior)
-        // and we can't receive access grants from peers
-        const importFilter = async (hash: any, type: string): Promise<boolean> => {
-          // Access/IdAccess grant permissions - check TopicGroupManager allowlist
-          if (type === 'Access' || type === 'IdAccess') {
-            if (coreModuleTopicGroupManagerHolder.manager) {
-              const allowed = coreModuleTopicGroupManagerHolder.manager.isAllowedInbound(String(hash));
-              console.log(`[CoreModule] importFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)} (allowlist)`);
-              return allowed;
-            }
-            // TopicGroupManager not ready yet - allow (permissive during init)
-            console.log(`[CoreModule] importFilter: ✅ ${type} ${String(hash).substring(0, 8)} (TGM not ready)`);
-            return true;
-          }
-
-          // HashGroup/Group are metadata - allow from authenticated CHUM peers
-          if (type === 'HashGroup' || type === 'Group') {
-            return true;
-          }
-
-          // All other object types allowed freely
-          return true;
-        };
-
-        this.connections = new ConnectionsModel(this.leuteModel, {
-          commServerUrl: this.commServerUrl,
-          acceptIncomingConnections: true,
-          acceptUnknownInstances: true,       // Accept new instances via pairing
-          acceptUnknownPersons: false,        // Require pairing for new persons
-          allowPairing: true,                 // Enable pairing protocol
-          establishOutgoingConnections: true, // Auto-connect to discovered endpoints
-          allowDebugRequests: true,
-          pairingTokenExpirationDuration: 60000 * 15,  // 15 minutes
-          objectFilter,                        // What we SEND to peers
-          importFilter                         // What we ACCEPT from peers
-        });
-        this.settings = new PropertyTreeStore('lama.browser.settings');
-
-        // Initialize all models (state machine transitions)
-        await this.leuteModel.init();
-        await this.channelManager.init();
-        await this.topicModel.init();
-        await this.connections.init();
+        this.settings = new PropertyTreeStore('lama.settings');
         await this.settings.init();
+        console.log('[CoreModule] Created default Settings');
       }
+
+      // Initialize all models (state machine transitions)
+      await this.leuteModel.init();
+      await this.channelManager.init();
+      await this.topicModel.init();
 
       // Note: ownerId and instanceId are available via ONE.core's getInstanceOwnerIdHash() and
       // getInstanceIdHash() after login. No need to set them on oneCore - Model accesses them directly.
@@ -255,27 +194,67 @@ export class CoreModule implements Module {
         _timeOfEarliestChange: any,
         _data: any
       ) => {
-        console.log(`[CoreModule] 📡 channelManager.onUpdated FIRED! channelInfoIdHash: ${String(channelInfoIdHash).substring(0, 16)}`);
         try {
+          // DEBUG: Log incoming channel update
+          console.log('[CoreModule] 📬 onUpdated fired');
+          console.log('[CoreModule]   channelInfoIdHash:', channelInfoIdHash?.substring(0, 16));
+          console.log('[CoreModule]   participants:', _channelParticipants?.substring(0, 16));
+          console.log('[CoreModule]   owner:', _channelOwner?.substring(0, 16) || 'null');
+
           // Find topic that matches this channelInfoIdHash
           const allTopics = await this.topicModel.topics.all();
-          console.log(`[CoreModule] 📋 Checking ${allTopics.length} topics for matching channel`);
+
+          // DEBUG: Log all topic channels for comparison
+          console.log('[CoreModule]   topics count:', allTopics.length);
+          for (const t of allTopics) {
+            const matches = t.channel === channelInfoIdHash;
+            console.log('[CoreModule]   topic:', t.id?.substring(0, 20),
+              '| channel:', t.channel?.substring(0, 16),
+              '| match:', matches ? '✅' : '❌');
+          }
+
           const matchingTopic = allTopics.find((t: Topic) => t.channel === channelInfoIdHash);
 
           if (matchingTopic) {
-            console.log(`[CoreModule] 🔔 Channel update for topic: ${matchingTopic.id}`);
-            console.log(`[CoreModule] 📢 onTopicUpdated has ${this.onTopicUpdated.listenerCount()} listeners`);
+            console.log('[CoreModule]   ✅ Found matching topic:', matchingTopic.id?.substring(0, 20));
             this.onTopicUpdated.emit(matchingTopic.id);
           } else {
-            console.log(`[CoreModule] ❌ No matching topic for channel ${String(channelInfoIdHash).substring(0, 16)}`);
+            console.log('[CoreModule]   ❌ NO matching topic found - onNewTopicEvent will catch up');
           }
+          // If no matching topic, the onNewTopicEvent handler will catch up when the topic is added
         } catch (error) {
           console.error('[CoreModule] Error in channel update listener:', error);
         }
       });
-      console.log('[CoreModule] ✅ Channel update listener started, listenerCount:', this.channelManager.onUpdated.listenerCount?.() ?? 'N/A');
 
-      console.log('[CoreModule] Initialized');
+      // Listen for new Topics being added to the registry
+      // When a Topic is added (either locally created or synced via CHUM),
+      // emit onTopicUpdated to catch up any messages that arrived before the Topic existed
+      this.newTopicUnsubscribe = this.topicModel.onNewTopicEvent(() => {
+        console.log('[CoreModule] 🆕 onNewTopicEvent fired - refreshing all topics');
+        // Emit update for all topics - the UI will refresh and show any pending messages
+        this.topicModel.topics.all().then((topics: Topic[]) => {
+          console.log('[CoreModule]   topics count:', topics.length);
+          for (const topic of topics) {
+            console.log('[CoreModule]   emitting update for topic:', topic.id?.substring(0, 20),
+              '| channel:', topic.channel?.substring(0, 16));
+            this.onTopicUpdated.emit(topic.id);
+          }
+        }).catch((error: any) => {
+          console.error('[CoreModule] Error getting topics after new topic event:', error);
+        });
+      });
+
+      // Store models globally so future CoreModule instances can reuse them
+      globalModels = {
+        leuteModel: this.leuteModel,
+        channelManager: this.channelManager,
+        topicModel: this.topicModel,
+        settings: this.settings
+      };
+      globalInitialized = true;
+      this.initialized = true;
+      console.log('[CoreModule] Initialized (global singleton established)');
     } catch (error) {
       console.error('[CoreModule] Initialization failed:', error);
       throw error;
@@ -316,9 +295,13 @@ export class CoreModule implements Module {
         this.channelUpdateUnsubscribe();
         this.channelUpdateUnsubscribe = null;
       }
+      if (this.newTopicUnsubscribe) {
+        this.newTopicUnsubscribe();
+        this.newTopicUnsubscribe = null;
+      }
 
       // Shutdown in reverse order (one.models classes have shutdown)
-      if (this.connections) await this.connections.shutdown?.();
+      // Note: ConnectionsModel is shutdown by ConnectionModule
       if (this.topicModel) await this.topicModel.shutdown?.();
       if (this.channelManager) await this.channelManager.shutdown?.();
       if (this.leuteModel) await this.leuteModel.shutdown?.();
@@ -327,7 +310,14 @@ export class CoreModule implements Module {
       // Shutdown ObjectEventDispatcher last (was initialized first)
       await objectEvents.shutdown();
 
-      console.log('[CoreModule] Shutdown complete');
+      // Reset global singleton state
+      globalInitialized = false;
+      globalModels = {};
+      // Note: We do NOT reset globalOnTopicUpdated - React components may still
+      // hold references to it. They'll just receive no more events until resubscribe.
+
+      this.initialized = false;
+      console.log('[CoreModule] Shutdown complete (global singleton reset)');
     } catch (error) {
       console.error('[CoreModule] Shutdown failed:', error);
       throw error;
@@ -343,9 +333,9 @@ export class CoreModule implements Module {
     registry.supply('LeuteModel', this.leuteModel);
     registry.supply('ChannelManager', this.channelManager);
     registry.supply('TopicModel', this.topicModel);
-    registry.supply('ConnectionsModel', this.connections);
     registry.supply('Settings', this.settings);
     registry.supply('PlanObjectManager', true); // Signal that PlanObjectManager is ready
+    // Note: ConnectionsModel is supplied by ConnectionModule
     // Note: StoryFactory is already supplied by ModuleRegistry - not here
   }
 }

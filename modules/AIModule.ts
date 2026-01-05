@@ -94,7 +94,8 @@ export class AIModule implements Module {
     { targetType: 'OneCore', required: true },
     { targetType: 'TopicAnalysisModel', required: true },
     { targetType: 'StoryFactory', required: true },
-    { targetType: 'MCPManager', required: false }  // Optional - auto-wires AIToolExecutor when available
+    { targetType: 'MCPManager', required: false },  // Optional - auto-wires AIToolExecutor when available
+    { targetType: 'LLMManager', required: false }   // Optional - platform can supply pre-initialized LLMManager
   ];
 
   static supplies = [
@@ -127,6 +128,7 @@ export class AIModule implements Module {
     topicAnalysisModel?: any;
     storyFactory?: StoryFactory;
     mCPManager?: any;  // Optional - enables AIToolExecutor when supplied (note: capital CP from MCPManager)
+    lLMManager?: LLMManager;  // Optional - platform can supply pre-initialized LLMManager with models
   } = {};
 
   // AI Plans
@@ -175,8 +177,15 @@ export class AIModule implements Module {
 
     const { leuteModel, channelManager, topicModel, settings, topicGroupManager, trustPlan, oneCore } = this.deps;
 
-    // LLM management - uses injected platform
-    this.llmManager = new LLMManager(this.llmPlatform);
+    // LLM management - use supplied LLMManager if available
+    // Otherwise create a new one
+    if (this.deps.lLMManager) {
+      console.log('[AIModule] Using pre-supplied LLMManager');
+      this.llmManager = this.deps.lLMManager;
+    } else {
+      console.log('[AIModule] Creating new LLMManager');
+      this.llmManager = new LLMManager(this.llmPlatform);
+    }
 
     // Set channelManager on llmManager for LLM storage access (legacy fallback)
     this.llmManager.channelManager = channelManager;
@@ -197,6 +206,33 @@ export class AIModule implements Module {
 
     // Wire GlobalLLMSettingsManager to LLMManager for multi-server discovery
     this.llmManager.setGlobalSettingsManager(this.globalLLMSettingsManager);
+
+    // Discover Ollama models from configured servers
+    // This is critical for fresh installs where no models are stored yet
+    try {
+      console.log('[AIModule] Discovering Ollama models...');
+      let discovered = false;
+
+      // Try multi-server discovery first (uses GlobalLLMSettingsManager)
+      if (this.llmManager.discoverFromAllOllamaServers) {
+        try {
+          await this.llmManager.discoverFromAllOllamaServers();
+          discovered = true;
+        } catch (multiServerError) {
+          // Multi-server failed (common on fresh installs with no settings)
+          console.log('[AIModule] Multi-server discovery failed, falling back to localhost');
+        }
+      }
+
+      // Fallback to localhost discovery if multi-server failed or unavailable
+      if (!discovered && this.llmManager.discoverOllamaModels) {
+        await this.llmManager.discoverOllamaModels();
+      }
+
+      console.log('[AIModule] Ollama models discovered');
+    } catch (error) {
+      console.warn('[AIModule] Ollama discovery failed (non-fatal):', error);
+    }
 
     // Discover and register installed local models (if platform supports it)
     if (this.llmPlatform.getInstalledTextGenModels) {

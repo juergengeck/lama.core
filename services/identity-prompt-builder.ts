@@ -57,11 +57,13 @@ function detectProvider(modelId: string): 'anthropic' | 'openai' | 'generic' {
  * Build personalized identity prompt section
  *
  * @param ai - AI object with personality
+ * @param traitsOverride - Optional traits from profile (overrides ai.personality.traits)
  * @param capabilities - Resolved LLM capabilities
  * @returns Identity prompt text
  */
 export function buildIdentityPrompt(
   ai: AI,
+  traitsOverride?: string[],
   capabilities?: LLMCapabilities
 ): string {
   const parts: string[] = [];
@@ -80,9 +82,10 @@ export function buildIdentityPrompt(
     parts.push(`You are ${ai.displayName}, a personal AI assistant. You introduce yourself as ${ai.displayName}.`);
   }
 
-  // Personality traits
-  if (ai.personality?.traits && ai.personality.traits.length > 0) {
-    const traitsText = ai.personality.traits.join(', ');
+  // Personality traits - prefer override (from profile) over ai.personality.traits
+  const traits = traitsOverride ?? ai.personality?.traits;
+  if (traits && traits.length > 0) {
+    const traitsText = traits.join(', ');
     parts.push(`Your personality: ${traitsText}.`);
   }
 

@@ -456,7 +456,7 @@ export class AIManager {
       MessageBus.send('debug', `LLM ${modelId} already cached`);
       // Calculate and return ID hash - mark as cached to skip Story creation
       const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
-      const idHash = await calculateIdHashOfObj({ $type$: 'LLM', name, server: server || '' } as any);
+      const idHash = await calculateIdHashOfObj({ $type$: 'LLM', modelId, name, server: server || '' } as any);
       return { idHash, name, _cached: true } as any;
     }
 

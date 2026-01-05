@@ -1,9 +1,9 @@
-// packages/lama.browser/browser-ui/src/modules/ConnectionModule.ts
+// packages/lama.core/modules/ConnectionModule.ts
 import type { Module } from '@refinio/api';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
-import type ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
+import ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
 import type TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 import ProfileModel from '@refinio/one.models/lib/models/Leute/ProfileModel.js';
 import {ConnectionPlan, type PairingEventCallbacks} from '@connection/core/plans/ConnectionPlan.js';
@@ -34,12 +34,12 @@ export class ConnectionModule implements Module {
     { targetType: 'LeuteModel', required: true },
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicModel', required: true },
-    { targetType: 'ConnectionsModel', required: true },
     { targetType: 'TrustPlan', required: true },
-    { targetType: 'TopicGroupManager', required: false }  // Optional, for mesh propagation
+    { targetType: 'TopicGroupManager', required: true }  // Required for CHUM filters and mesh propagation
   ];
 
   static supplies = [
+    { targetType: 'ConnectionsModel' },  // Created here with proper TopicGroupManager filters
     { targetType: 'ConnectionPlan' },
     { targetType: 'GroupChatPlan' },
     { targetType: 'DiscoveryService' }
@@ -50,14 +50,16 @@ export class ConnectionModule implements Module {
     leuteModel?: LeuteModel;
     channelManager?: ChannelManager;
     topicModel?: TopicModel;
-    connectionsModel?: ConnectionsModel;
     trustPlan?: TrustPlan;
-    topicGroupManager?: TopicGroupManager;
+    topicGroupManager?: TopicGroupManager;  // Set via setDependency before init
   } = {};
 
+  // ConnectionsModel - created here with proper TopicGroupManager filters
+  public connectionsModel!: ConnectionsModel;
+
   // Connection Plans
-  public connectionPlan: ConnectionPlan;
-  public groupChatPlan: GroupChatPlan;
+  public connectionPlan!: ConnectionPlan;
+  public groupChatPlan!: GroupChatPlan;
 
   // Discovery Service
   public discoveryService: DiscoveryService;
@@ -75,7 +77,7 @@ export class ConnectionModule implements Module {
 
   constructor(
     private commServerUrl: string,
-    private webUrl: string
+    private webUrl?: string
   ) {}
 
   /**
@@ -95,6 +97,70 @@ export class ConnectionModule implements Module {
       throw new Error('[ConnectionModule] OneCore dependency not injected - Instance not ready');
     }
 
+    console.log('[ConnectionModule] Initializing...');
+
+    // ==========================================================================
+    // CREATE ConnectionsModel with proper TopicGroupManager filters
+    // ==========================================================================
+    // This is THE single place for ConnectionsModel creation.
+    // TopicGroupManager is a required dependency - guaranteed to be available.
+    // The filters delegate to TopicGroupManager for Access/IdAccess control.
+    console.log('[ConnectionModule] Creating ConnectionsModel with TopicGroupManager filters...');
+
+    const topicGroupManager = this.deps.topicGroupManager!;
+
+    // Object filter - controls what we send to peers
+    const objectFilter = async (hash: any, type: string): Promise<boolean> => {
+      // HashGroup/Group are metadata - always allow
+      if (type === 'HashGroup' || type === 'Group') {
+        return true;
+      }
+      // Access/IdAccess grant permissions - check TopicGroupManager allowlist
+      if (type === 'Access' || type === 'IdAccess') {
+        const allowed = topicGroupManager.isAllowedOutbound?.(String(hash)) ?? true;
+        console.log(`[ConnectionModule] objectFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)}`);
+        return allowed;
+      }
+      // All other object types allowed freely
+      return true;
+    };
+
+    // Import filter - controls what we accept from peers
+    const importFilter = async (hash: any, type: string): Promise<boolean> => {
+      // Access/IdAccess grant permissions - check TopicGroupManager allowlist
+      if (type === 'Access' || type === 'IdAccess') {
+        const allowed = topicGroupManager.isAllowedInbound?.(String(hash)) ?? true;
+        console.log(`[ConnectionModule] importFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)}`);
+        return allowed;
+      }
+      // HashGroup/Group are metadata - allow from authenticated CHUM peers
+      if (type === 'HashGroup' || type === 'Group') {
+        return true;
+      }
+      // All other object types allowed freely
+      return true;
+    };
+
+    // Create filter factories (per-peer customization not needed)
+    const objectFilterFactory = (_remotePersonId: any) => objectFilter;
+    const importFilterFactory = (_remotePersonId: any) => importFilter;
+
+    this.connectionsModel = new ConnectionsModel(this.deps.leuteModel!, {
+      commServerUrl: this.commServerUrl,
+      objectFilterFactory,
+      importFilterFactory
+    });
+
+    await this.connectionsModel.init();
+    console.log('[ConnectionModule] ConnectionsModel created and initialized');
+
+    // NOTE: No need to set oneCore.connectionsModel directly.
+    // Model.connectionsModel is a getter that returns this.modules.get('connection').connectionsModel
+    // After ConnectionModule initializes, oneCore.connectionsModel (via getter) returns this.connectionsModel
+
+    // ==========================================================================
+    // Connection Plans
+    // ==========================================================================
     console.log('[ConnectionModule] Initializing connection plans...');
 
     // Prepare TrustPlan dependencies for automatic trust establishment
@@ -140,23 +206,15 @@ export class ConnectionModule implements Module {
       undefined     // No storyFactory
     );
 
-    // CRITICAL: Register pairing handler with actual ConnectionsModel
-    // This ensures the handler is registered even if oneCore.connectionsModel
-    // was not ready during ConnectionPlan construction (timing issue)
+    // Register pairing handler with ConnectionsModel
     console.log('[ConnectionModule] Registering pairing handler...');
-    console.log('[ConnectionModule] connectionsModel available:', !!this.deps.connectionsModel);
-    console.log('[ConnectionModule] connectionsModel.pairing available:', !!(this.deps.connectionsModel as any)?.pairing);
-    if (this.deps.connectionsModel) {
-      this.connectionPlan.registerPairingHandler(this.deps.connectionsModel);
-    } else {
-      console.error('[ConnectionModule] ❌ Cannot register pairing handler - no ConnectionsModel!');
-    }
+    this.connectionPlan.registerPairingHandler(this.connectionsModel);
 
     // Wire up mesh propagation support (for automatic group sharing to new P2P connections)
-    if (this.deps.topicGroupManager) {
-      this.connectionPlan.setTopicGroupManager(this.deps.topicGroupManager);
-      console.log('[ConnectionModule] TopicGroupManager wired to ConnectionPlan for mesh propagation');
-    }
+    // TopicGroupManager is a required dependency - guaranteed to be available
+    this.connectionPlan.setTopicGroupManager(this.deps.topicGroupManager!);
+    console.log('[ConnectionModule] TopicGroupManager wired to ConnectionPlan for mesh propagation');
+
     if (this.deps.oneCore?.paranoiaLevel !== undefined) {
       this.connectionPlan.setParanoiaLevel(this.deps.oneCore.paranoiaLevel);
       console.log('[ConnectionModule] Paranoia level set:', this.deps.oneCore.paranoiaLevel);
@@ -238,8 +296,9 @@ export class ConnectionModule implements Module {
   }
 
   async shutdown(): Promise<void> {
-    // DiscoveryService has shutdown, Plans don't
+    // Shutdown in reverse order
     await this.discoveryService?.shutdown?.();
+    await this.connectionsModel?.shutdown?.();
 
     console.log('[ConnectionModule] Shutdown complete');
   }
@@ -250,6 +309,7 @@ export class ConnectionModule implements Module {
   }
 
   emitSupplies(registry: any): void {
+    registry.supply('ConnectionsModel', this.connectionsModel);
     registry.supply('ConnectionPlan', this.connectionPlan);
     registry.supply('GroupChatPlan', this.groupChatPlan);
     registry.supply('DiscoveryService', this.discoveryService);
@@ -261,8 +321,8 @@ export class ConnectionModule implements Module {
       this.deps.leuteModel &&
       this.deps.channelManager &&
       this.deps.topicModel &&
-      this.deps.connectionsModel &&
-      this.deps.trustPlan
+      this.deps.trustPlan &&
+      this.deps.topicGroupManager
     );
   }
 }

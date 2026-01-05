@@ -462,9 +462,9 @@ class LLMManager {
     MessageBus.send('log', 'Initializing...')
 
     try {
-      // Cancel any pending Ollama requests from before restart
-      cancelAllOllamaRequests()
-      MessageBus.send('debug', 'Cleared any pending Ollama requests')
+      // NOTE: Do NOT cancel pending Ollama requests here - it kills concurrent requests
+      // like welcome message generation that may have started from AIModule.init()
+      // The old cancelAllOllamaRequests() call was causing a race condition
 
       // Load Ollama network configuration
       await this.loadOllamaConfig()

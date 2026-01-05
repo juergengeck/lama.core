@@ -20,9 +20,6 @@ import type { ExportPlan } from '@chat/core/plans/ExportPlan.js';
 // Chat core models
 import TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 
-// Wire TopicGroupManager to CoreModule's holder for CHUM filter delegation
-import { coreModuleTopicGroupManagerHolder } from './CoreModule.js';
-
 /**
  * ChatModule - Chat functionality
  *
@@ -39,6 +36,8 @@ export class ChatModule implements Module {
     { targetType: 'TopicModel', required: true },
     { targetType: 'OneCore', required: true },
     { targetType: 'ExportPlan', required: true },
+    // TrustPlan is needed for implied trust assignment when receiving Groups
+    { targetType: 'TrustPlan', required: false },
     // AIAssistantPlan is needed for AI contact detection in ContactsPlan
     // It sets oneCore.aiAssistantModel which ContactsPlan uses
     { targetType: 'AIAssistantPlan', required: false }
@@ -58,6 +57,7 @@ export class ChatModule implements Module {
     topicModel?: TopicModel;
     oneCore?: any;
     exportPlan?: ExportPlan;  // Required - injected via setDependency
+    trustPlan?: any;  // TrustPlan for implied trust on group receive
   } = {};
 
   // Chat Plans
@@ -81,29 +81,46 @@ export class ChatModule implements Module {
       return { ...result, versionHash: result.hash };
     };
 
-    // Create TopicGroupManager with oneCore instance + storageDeps
+    // Create TopicGroupManager - single owner, same architecture for all platforms
+    // Wrap createAccess to match expected signature (returns void, not array)
+    const createAccessAdapter = async (accessRequests: Parameters<typeof createAccess>[0]): Promise<void> => {
+      await createAccess(accessRequests);
+    };
+
     this.topicGroupManager = new TopicGroupManager(
-      oneCore, // OneCoreInstance (Model implements this)
+      oneCore,
       {
         storeVersionedObject: storeVersionedObjectAdapter,
         storeUnversionedObject,
         getObjectByIdHash,
         getObject,
-        getAllOfType: async (_type: string) => {
-          // TopicGroupManager declares this in interface but doesn't use it
-          throw new Error('getAllOfType not implemented');
-        },
-        createAccess,
+        createAccess: createAccessAdapter,
         calculateIdHashOfObj,
         calculateHashOfObj
-      }
+      },
+      this.deps.trustPlan
     );
 
-    // CRITICAL: Wire TopicGroupManager to CoreModule's holder for CHUM filter delegation
-    // This allows CoreModule's objectFilter/importFilter to delegate Access/IdAccess
-    // decisions to TopicGroupManager (which was created AFTER ConnectionsModel)
-    coreModuleTopicGroupManagerHolder.manager = this.topicGroupManager;
-    console.log('[ChatModule] TopicGroupManager wired to CoreModule holder for CHUM filters');
+    if (this.deps.trustPlan) {
+      console.log('[ChatModule] TopicGroupManager created with TrustPlan');
+    } else {
+      console.log('[ChatModule] TopicGroupManager created (no TrustPlan)');
+    }
+
+    // NOTE: No need to set oneCore.topicGroupManager directly.
+    // Model.topicGroupManager is a getter that returns this.modules.get('chat').topicGroupManager
+    // After ChatModule initializes, oneCore.topicGroupManager (via getter) returns this.topicGroupManager
+    console.log('[ChatModule] TopicGroupManager accessible via oneCore.topicGroupManager getter');
+
+    // Initialize sync listeners to automatically handle received Groups/Topics via CHUM
+    // LEGACY: Group sync listener for backward compatibility with old Group-based topics
+    this.topicGroupManager.initializeGroupSyncListener();
+    console.log('[ChatModule] Group sync listener initialized (legacy)');
+
+    // NEW: Topic sync listener for new Topic-based architecture (v2)
+    // createGroupTopic() shares Topic + ChannelInfo + certificates, not Group objects
+    this.topicGroupManager.initializeTopicSyncListener();
+    console.log('[ChatModule] Topic sync listener initialized (v2 architecture)');
 
     // Chat plans (platform-agnostic from chat.core)
     // Check if AIModule has set aiAssistantModel on oneCore
@@ -117,10 +134,7 @@ export class ChatModule implements Module {
 
     // Initialize GroupPlan (simplified - no longer needs StoryFactory)
     // Story/Assembly tracking should be done at higher level via @refinio/api if needed
-    this.groupPlan = new GroupPlan(
-      this.topicGroupManager,
-      oneCore
-    );
+    this.groupPlan = new GroupPlan(this.topicGroupManager);
 
     // Inject GroupPlan into ChatPlan
     this.chatPlan.setGroupPlan(this.groupPlan);

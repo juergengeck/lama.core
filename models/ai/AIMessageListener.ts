@@ -37,7 +37,9 @@ export class AIMessageListener {
     private unsubscribe: (() => void) | null = null;
     private debounceTimers: Map<string, any> = new Map();
     private readonly DEBOUNCE_MS = 0; // NO DELAYS - fail fast, process immediately
-    private processedMessages: Map<string, Set<string>> = new Map(); // topicId -> Set of message hashes
+    // Track which AIs have responded to which user messages
+    // Key: messageIdentifier, Value: Set of AI personIds that have responded
+    private aiResponseTracking: Map<string, Set<string>> = new Map();
 
     constructor(deps: AIMessageListenerDeps) {
         this.deps = deps;
@@ -154,8 +156,8 @@ export class AIMessageListener {
         }
         this.debounceTimers.clear();
 
-        // Clear processed messages tracking
-        this.processedMessages.clear();
+        // Clear AI response tracking
+        this.aiResponseTracking.clear();
     }
 
     /**
@@ -187,31 +189,35 @@ export class AIMessageListener {
                 return;
             }
 
-            // Get the last message
-            const lastMessage = messages[messages.length - 1];
-            const messageText = lastMessage.data?.text;
-            const messageSender = lastMessage.data?.sender || lastMessage.author;
+            // Find the last USER message (non-AI) that needs responses
+            // Walk backwards through messages to find it
+            let lastUserMessage = null;
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const msg = messages[i];
+                const sender = msg.data?.sender || msg.author;
+                const isAI = this.deps.aiPlan.isAIPerson(sender);
+                if (!isAI) {
+                    lastUserMessage = msg;
+                    break;
+                }
+            }
 
-            // Check if message is from one of our responding AIs (skip if yes)
-            const isFromRespondingAI = respondingAIPersonIds.some(
-                aiId => aiId === messageSender
-            );
-            // Also check using legacy isAIPerson for backwards compatibility
-            const isFromAnyAI = this.deps.aiPlan.isAIPerson(messageSender);
-
-            console.log(`[AIMessageListener] Last message from ${messageSender?.toString().substring(0, 8)}...: isFromRespondingAI=${isFromRespondingAI}, isFromAnyAI=${isFromAnyAI}, text="${messageText?.substring(0, 50)}..."`);
-
-            if (isFromRespondingAI || isFromAnyAI) {
-                console.log(`[AIMessageListener] Ignoring AI message from ${messageSender?.toString().substring(0, 8)}...`);
+            if (!lastUserMessage) {
+                console.log(`[AIMessageListener] No user message found in topic - skipping`);
                 return;
             }
 
-            // Check if message is recent (within last 10 seconds to avoid old messages)
-            const messageAge = Date.now() - new Date(lastMessage.creationTime).getTime();
-            const isRecent = messageAge < 10000;
+            const messageText = lastUserMessage.data?.text;
+            const messageSender = lastUserMessage.data?.sender || lastUserMessage.author;
+
+            console.log(`[AIMessageListener] Last user message from ${messageSender?.toString().substring(0, 8)}...: text="${messageText?.substring(0, 50)}..."`);
+
+            // Check if message is recent (within last 30 seconds to allow for multi-AI responses)
+            const messageAge = Date.now() - new Date(lastUserMessage.creationTime).getTime();
+            const isRecent = messageAge < 30000;
 
             if (!isRecent) {
-                console.log(`[AIMessageListener] Message too old (${messageAge}ms) - skipping`);
+                console.log(`[AIMessageListener] User message too old (${messageAge}ms) - skipping`);
                 return;
             }
 
@@ -221,38 +227,43 @@ export class AIMessageListener {
                 return;
             }
 
-            // Create a unique identifier for this message (timestamp + sender + text hash)
-            const messageIdentifier = `${lastMessage.creationTime}-${messageSender}-${messageText.substring(0, 50)}`;
+            // Create a unique identifier for this user message
+            const messageIdentifier = `${topic.id}-${lastUserMessage.creationTime}-${messageSender}`;
 
-            // Check if we've already processed this message
-            if (!this.processedMessages.has(topic.id)) {
-                this.processedMessages.set(topic.id, new Set());
+            // Get or create tracking set for this message
+            if (!this.aiResponseTracking.has(messageIdentifier)) {
+                this.aiResponseTracking.set(messageIdentifier, new Set());
             }
-            const topicProcessedMessages = this.processedMessages.get(topic.id)!
+            const respondedAIs = this.aiResponseTracking.get(messageIdentifier)!;
 
-            if (topicProcessedMessages.has(messageIdentifier)) {
-                console.log(`[AIMessageListener] Already processed this message - skipping duplicate`);
+            // Find AIs that haven't responded yet
+            const pendingAIs = respondingAIPersonIds.filter(
+                aiId => !respondedAIs.has(aiId.toString())
+            );
+
+            if (pendingAIs.length === 0) {
+                console.log(`[AIMessageListener] All ${respondingAIPersonIds.length} AIs have already responded to this message`);
                 return;
             }
 
-            // Mark message as processed
-            topicProcessedMessages.add(messageIdentifier);
+            console.log(`[AIMessageListener] ${pendingAIs.length}/${respondingAIPersonIds.length} AIs pending for message: "${messageText.substring(0, 30)}..."`);
 
-            // Clean up old entries (keep only last 100 per topic)
-            if (topicProcessedMessages.size > 100) {
-                const entries = Array.from(topicProcessedMessages);
-                entries.slice(0, entries.length - 100).forEach(entry => topicProcessedMessages.delete(entry));
+            // Clean up old tracking entries (keep only last 50 messages)
+            if (this.aiResponseTracking.size > 50) {
+                const entries = Array.from(this.aiResponseTracking.keys());
+                entries.slice(0, entries.length - 50).forEach(key => this.aiResponseTracking.delete(key));
             }
 
-            console.log(`[AIMessageListener] Processing user message for ${respondingAIPersonIds.length} AIs: "${messageText}"`);
+            // Process message for each pending AI independently
+            for (const aiPersonId of pendingAIs) {
+                // Mark this AI as having responded BEFORE triggering (prevents re-entry)
+                respondedAIs.add(aiPersonId.toString());
 
-            // Process message for each responding AI
-            // In the future, this could be parallelized or have per-AI logic
-            for (const aiPersonId of respondingAIPersonIds) {
                 console.log(`[AIMessageListener] Triggering response from AI: ${aiPersonId.substring(0, 8)}...`);
                 // Delegate to AIAssistantPlan for AI response generation
-                // The plan will use the AI's settings to determine how to respond
-                await this.deps.aiPlan.processMessage(topic.id, messageText, messageSender, aiPersonId);
+                // Don't await - let AIs respond independently/in parallel
+                this.deps.aiPlan.processMessage(topic.id, messageText, messageSender, aiPersonId)
+                    .catch(err => console.error(`[AIMessageListener] AI ${aiPersonId.substring(0, 8)} failed:`, err));
             }
 
         } catch (error) {

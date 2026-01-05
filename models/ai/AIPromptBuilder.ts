@@ -65,6 +65,77 @@ export class AIPromptBuilder implements IAIPromptBuilder {
   }
 
   /**
+   * Get participants for a topic with name and AI status enrichment
+   */
+  private async getParticipants(topicId: string): Promise<Array<{ id: string; name: string; isAI: boolean; modelId?: string }>> {
+    try {
+      // Get topic to find group
+      const topic = (await this.topicModel.topics.all()).find((t: any) => t.id === topicId);
+      if (!topic) return [];
+
+      // Get group members - need topicGroupManager
+      if (!this.topicModel.topicGroupManager) return [];
+
+      const groupIdHash = await this.topicModel.topicGroupManager.getGroupForTopic(topicId);
+      if (!groupIdHash) return [];
+
+      // Dynamic imports to avoid circular deps
+      const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+      const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+
+      const groupResult = await getObjectByIdHash(groupIdHash);
+      const group = groupResult.obj as any;
+
+      if (!group.hashGroup) return [];
+
+      const hashGroup = await getObject(group.hashGroup) as any;
+      if (!hashGroup.person) return [];
+
+      const participants: Array<{ id: string; name: string; isAI: boolean; modelId?: string }> = [];
+
+      for (const personId of hashGroup.person) {
+        const id = personId.toString();
+        let name = 'Unknown';
+        let isAI = false;
+        let modelId: string | undefined;
+
+        // Check if AI
+        if (this.aiManager) {
+          const ai = await this.aiManager.getAI(personId);
+          if (ai) {
+            isAI = true;
+            name = ai.displayName || ai.modelId || 'AI';
+            modelId = ai.modelId;
+          }
+        }
+
+        // Get name from topic model's leute if not AI
+        if (!isAI && this.topicModel.leuteModel) {
+          try {
+            const someone = await this.topicModel.leuteModel.getSomeone(personId);
+            if (someone) {
+              const profile = await someone.mainProfile?.();
+              if (profile) {
+                const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                name = personName?.name || 'User';
+              }
+            }
+          } catch {
+            // Keep default name
+          }
+        }
+
+        participants.push({ id, name, isAI, modelId });
+      }
+
+      return participants;
+    } catch (error) {
+      console.warn('[AIPromptBuilder] Failed to get participants:', error);
+      return [];
+    }
+  }
+
+  /**
    * Build a prompt for a message with conversation history
    * Now uses abstraction-based context management with prompt caching
    */
@@ -157,11 +228,16 @@ export class AIPromptBuilder implements IAIPromptBuilder {
       console.warn('[AIPromptBuilder] Could not get messages for subject extraction:', error);
     }
 
+    // Get participants for this topic
+    const participants = await this.getParticipants(topicId);
+
     // Build context for SystemPromptBuilder with aiManager, llmManager, and characterPlan
     const context = {
       topicId,
       personId: aiPersonId,
       currentSubjects,
+      participants,
+      selfPersonId: aiPersonId,  // So the AI knows which participant is itself
       aiManager: this.aiManager,
       llmManager: this.llmManager,
       characterPlan: this.characterPlan

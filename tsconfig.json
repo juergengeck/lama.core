@@ -39,6 +39,6 @@
       "@device/core/*": ["../device.core/lib/*"]
     }
   },
-  "include": ["ai/**/*.ts", "constants/**/*.ts", "events/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "modules/**/*.ts", "services/**/*.ts", "one-ai/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "ui/**/*.ts", "ui/**/*.tsx", "*.d.ts"],
-  "exclude": ["node_modules", "**/*.js", "packages/**", "dist/**"]
+  "include": ["packages/one.models/@OneObjectInterfaces.d.ts", "packages/one.core/@OneObjectInterfaces.d.ts", "../chat.core/types/OneObjectInterfaces.d.ts", "ai/**/*.ts", "constants/**/*.ts", "events/**/*.ts", "plans/**/*.ts", "models/**/*.ts", "modules/**/*.ts", "services/**/*.ts", "one-ai/**/*.ts", "recipes/**/*.ts", "initialization/**/*.ts", "ui/**/*.ts", "ui/**/*.tsx", "*.d.ts"],
+  "exclude": ["node_modules", "**/*.js", "packages/**/*.ts", "packages/**/*.js", "dist/**"]
 }

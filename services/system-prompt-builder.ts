@@ -22,10 +22,21 @@ export interface SystemPromptSection {
   generate: (context?: SystemPromptContext) => Promise<string> | string;
 }
 
+export interface Participant {
+  id: string;
+  name: string;
+  isAI?: boolean;
+  modelId?: string;  // For AI participants
+}
+
 export interface SystemPromptContext {
   topicId?: string;
   personId?: string;
   currentSubjects?: string[];
+  /** Participants in the current conversation */
+  participants?: Participant[];
+  /** The AI's own personId (to identify self in participant list) */
+  selfPersonId?: string;
   /** AI Manager for looking up AI identity */
   aiManager?: any;
   /** LLM Manager for capability resolution */
@@ -142,11 +153,46 @@ export class SystemPromptBuilder {
       }
     });
 
-    // Section 4: Available Context - REMOVED
+    // Section 4: Conversation Participants (Priority 30)
+    this.register({
+      name: 'participants',
+      priority: 30,
+      enabled: true,
+      generate: async (context?: SystemPromptContext) => {
+        if (!context?.participants?.length) return '';
+
+        const lines: string[] = ['\n\n# Conversation Participants'];
+        lines.push('You are participating in a conversation with:');
+
+        for (const p of context.participants) {
+          const isSelf = context.selfPersonId && p.id === context.selfPersonId;
+          if (isSelf) {
+            lines.push(`- ${p.name} (you)`);
+          } else if (p.isAI) {
+            lines.push(`- ${p.name} (AI assistant${p.modelId ? `, model: ${p.modelId}` : ''})`);
+          } else {
+            lines.push(`- ${p.name}`);
+          }
+        }
+
+        // Add guidance for multi-AI conversations
+        const otherAIs = context.participants.filter(p =>
+          p.isAI && (!context.selfPersonId || p.id !== context.selfPersonId)
+        );
+        if (otherAIs.length > 0) {
+          lines.push('');
+          lines.push('Note: There are other AI assistants in this conversation. Avoid redundant responses and coordinate naturally.');
+        }
+
+        return lines.join('\n');
+      }
+    });
+
+    // Section 5: Available Context - REMOVED
     // Subjects are now accessed via MCP tools on-demand (subject:list, subject:get-messages, subject:search)
     // This reduces system prompt size from ~15KB to ~10KB
 
-    // Section 5: MCP Tools (Priority 100)
+    // Section 6: MCP Tools (Priority 100)
     this.register({
       name: 'mcp-tools',
       priority: 100,
