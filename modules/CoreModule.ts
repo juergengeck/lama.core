@@ -37,8 +37,7 @@ let globalModels: {
  * - TopicModel (chat/messaging)
  * - Settings (encrypted storage)
  *
- * NOTE: ConnectionsModel is created by ConnectionModule which properly demands
- * TopicGroupManager for CHUM filters. This avoids circular dependencies.
+ * NOTE: ConnectionsModel is created by ConnectionModule. This avoids circular dependencies.
  */
 export class CoreModule implements Module {
   readonly name = 'CoreModule';
@@ -133,7 +132,7 @@ export class CoreModule implements Module {
 
       // Create and initialize ONE.core models
       // This is THE single place for basic model creation
-      // NOTE: ConnectionsModel is created by ConnectionModule with proper TopicGroupManager filters
+      // NOTE: ConnectionsModel is created by ConnectionModule
       console.log('[CoreModule] Creating ONE.core models');
       this.leuteModel = new LeuteModel(this.commServerUrl, false);
       this.channelManager = new ChannelManager(this.leuteModel);

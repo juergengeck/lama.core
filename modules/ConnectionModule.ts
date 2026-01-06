@@ -4,7 +4,6 @@ import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js'
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
-import type TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 import ProfileModel from '@refinio/one.models/lib/models/Leute/ProfileModel.js';
 import {ConnectionPlan, type PairingEventCallbacks} from '@connection/core/plans/ConnectionPlan.js';
 import type {TrustPlanDependencies} from '@connection/core/plans/TrustPlan.js';
@@ -34,12 +33,11 @@ export class ConnectionModule implements Module {
     { targetType: 'LeuteModel', required: true },
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicModel', required: true },
-    { targetType: 'TrustPlan', required: true },
-    { targetType: 'TopicGroupManager', required: true }  // Required for CHUM filters and mesh propagation
+    { targetType: 'TrustPlan', required: true }
   ];
 
   static supplies = [
-    { targetType: 'ConnectionsModel' },  // Created here with proper TopicGroupManager filters
+    { targetType: 'ConnectionsModel' },
     { targetType: 'ConnectionPlan' },
     { targetType: 'GroupChatPlan' },
     { targetType: 'DiscoveryService' }
@@ -51,10 +49,8 @@ export class ConnectionModule implements Module {
     channelManager?: ChannelManager;
     topicModel?: TopicModel;
     trustPlan?: TrustPlan;
-    topicGroupManager?: TopicGroupManager;  // Set via setDependency before init
   } = {};
 
-  // ConnectionsModel - created here with proper TopicGroupManager filters
   public connectionsModel!: ConnectionsModel;
 
   // Connection Plans
@@ -100,55 +96,13 @@ export class ConnectionModule implements Module {
     console.log('[ConnectionModule] Initializing...');
 
     // ==========================================================================
-    // CREATE ConnectionsModel with proper TopicGroupManager filters
+    // CREATE ConnectionsModel
     // ==========================================================================
     // This is THE single place for ConnectionsModel creation.
-    // TopicGroupManager is a required dependency - guaranteed to be available.
-    // The filters delegate to TopicGroupManager for Access/IdAccess control.
-    console.log('[ConnectionModule] Creating ConnectionsModel with TopicGroupManager filters...');
-
-    const topicGroupManager = this.deps.topicGroupManager!;
-
-    // Object filter - controls what we send to peers
-    const objectFilter = async (hash: any, type: string): Promise<boolean> => {
-      // HashGroup/Group are metadata - always allow
-      if (type === 'HashGroup' || type === 'Group') {
-        return true;
-      }
-      // Access/IdAccess grant permissions - check TopicGroupManager allowlist
-      if (type === 'Access' || type === 'IdAccess') {
-        const allowed = topicGroupManager.isAllowedOutbound?.(String(hash)) ?? true;
-        console.log(`[ConnectionModule] objectFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)}`);
-        return allowed;
-      }
-      // All other object types allowed freely
-      return true;
-    };
-
-    // Import filter - controls what we accept from peers
-    const importFilter = async (hash: any, type: string): Promise<boolean> => {
-      // Access/IdAccess grant permissions - check TopicGroupManager allowlist
-      if (type === 'Access' || type === 'IdAccess') {
-        const allowed = topicGroupManager.isAllowedInbound?.(String(hash)) ?? true;
-        console.log(`[ConnectionModule] importFilter: ${allowed ? '✅' : '❌'} ${type} ${String(hash).substring(0, 8)}`);
-        return allowed;
-      }
-      // HashGroup/Group are metadata - allow from authenticated CHUM peers
-      if (type === 'HashGroup' || type === 'Group') {
-        return true;
-      }
-      // All other object types allowed freely
-      return true;
-    };
-
-    // Create filter factories (per-peer customization not needed)
-    const objectFilterFactory = (_remotePersonId: any) => objectFilter;
-    const importFilterFactory = (_remotePersonId: any) => importFilter;
+    console.log('[ConnectionModule] Creating ConnectionsModel...');
 
     this.connectionsModel = new ConnectionsModel(this.deps.leuteModel!, {
-      commServerUrl: this.commServerUrl,
-      objectFilterFactory,
-      importFilterFactory
+      commServerUrl: this.commServerUrl
     });
 
     await this.connectionsModel.init();
@@ -209,11 +163,6 @@ export class ConnectionModule implements Module {
     // Register pairing handler with ConnectionsModel
     console.log('[ConnectionModule] Registering pairing handler...');
     this.connectionPlan.registerPairingHandler(this.connectionsModel);
-
-    // Wire up mesh propagation support (for automatic group sharing to new P2P connections)
-    // TopicGroupManager is a required dependency - guaranteed to be available
-    this.connectionPlan.setTopicGroupManager(this.deps.topicGroupManager!);
-    console.log('[ConnectionModule] TopicGroupManager wired to ConnectionPlan for mesh propagation');
 
     if (this.deps.oneCore?.paranoiaLevel !== undefined) {
       this.connectionPlan.setParanoiaLevel(this.deps.oneCore.paranoiaLevel);
@@ -321,8 +270,7 @@ export class ConnectionModule implements Module {
       this.deps.leuteModel &&
       this.deps.channelManager &&
       this.deps.topicModel &&
-      this.deps.trustPlan &&
-      this.deps.topicGroupManager
+      this.deps.trustPlan
     );
   }
 }
