@@ -12,13 +12,10 @@ import { calculateHashOfObj, calculateIdHashOfObj } from '@refinio/one.core/lib/
 
 // Chat core plans (platform-agnostic business logic - chat-related)
 import { ChatPlan } from '@chat/core/plans/ChatPlan.js';
-import { GroupPlan } from '@chat/core/plans/GroupPlan.js';
+import { GroupPlan, GroupPlanStorageDeps } from '@chat/core/plans/GroupPlan.js';
 import { ContactsPlan } from '@chat/core/plans/ContactsPlan.js';
 import { FeedForwardPlan } from '@chat/core/plans/FeedForwardPlan.js';
 import type { ExportPlan } from '@chat/core/plans/ExportPlan.js';
-
-// Chat core models
-import TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 
 /**
  * ChatModule - Chat functionality
@@ -47,8 +44,7 @@ export class ChatModule implements Module {
     { targetType: 'ChatPlan' },
     { targetType: 'GroupPlan' },
     { targetType: 'ContactsPlan' },
-    { targetType: 'FeedForwardPlan' },
-    { targetType: 'TopicGroupManager' }
+    { targetType: 'FeedForwardPlan' }
   ];
 
   private deps: {
@@ -66,7 +62,6 @@ export class ChatModule implements Module {
   public contactsPlan!: ContactsPlan;
   public exportPlan!: ExportPlan;
   public feedForwardPlan!: FeedForwardPlan;
-  public topicGroupManager!: TopicGroupManager;
 
   async init(): Promise<void> {
     if (!this.hasRequiredDeps()) {
@@ -74,53 +69,6 @@ export class ChatModule implements Module {
     }
 
     const { oneCore } = this.deps;
-
-    // Adapter for storeVersionedObject that adds versionHash alias
-    const storeVersionedObjectAdapter = async (obj: any) => {
-      const result = await storeVersionedObject(obj);
-      return { ...result, versionHash: result.hash };
-    };
-
-    // Create TopicGroupManager - single owner, same architecture for all platforms
-    // Wrap createAccess to match expected signature (returns void, not array)
-    const createAccessAdapter = async (accessRequests: Parameters<typeof createAccess>[0]): Promise<void> => {
-      await createAccess(accessRequests);
-    };
-
-    this.topicGroupManager = new TopicGroupManager(
-      oneCore,
-      {
-        storeVersionedObject: storeVersionedObjectAdapter,
-        storeUnversionedObject,
-        getObjectByIdHash,
-        getObject,
-        createAccess: createAccessAdapter,
-        calculateIdHashOfObj,
-        calculateHashOfObj
-      },
-      this.deps.trustPlan
-    );
-
-    if (this.deps.trustPlan) {
-      console.log('[ChatModule] TopicGroupManager created with TrustPlan');
-    } else {
-      console.log('[ChatModule] TopicGroupManager created (no TrustPlan)');
-    }
-
-    // NOTE: No need to set oneCore.topicGroupManager directly.
-    // Model.topicGroupManager is a getter that returns this.modules.get('chat').topicGroupManager
-    // After ChatModule initializes, oneCore.topicGroupManager (via getter) returns this.topicGroupManager
-    console.log('[ChatModule] TopicGroupManager accessible via oneCore.topicGroupManager getter');
-
-    // Initialize sync listeners to automatically handle received Groups/Topics via CHUM
-    // LEGACY: Group sync listener for backward compatibility with old Group-based topics
-    this.topicGroupManager.initializeGroupSyncListener();
-    console.log('[ChatModule] Group sync listener initialized (legacy)');
-
-    // NEW: Topic sync listener for new Topic-based architecture (v2)
-    // createGroupTopic() shares Topic + ChannelInfo + certificates, not Group objects
-    this.topicGroupManager.initializeTopicSyncListener();
-    console.log('[ChatModule] Topic sync listener initialized (v2 architecture)');
 
     // Chat plans (platform-agnostic from chat.core)
     // Check if AIModule has set aiAssistantModel on oneCore
@@ -132,9 +80,17 @@ export class ChatModule implements Module {
     // ExportPlan is required - injected by platform via setDependency
     this.exportPlan = this.deps.exportPlan!;
 
-    // Initialize GroupPlan (simplified - no longer needs StoryFactory)
-    // Story/Assembly tracking should be done at higher level via @refinio/api if needed
-    this.groupPlan = new GroupPlan(this.topicGroupManager);
+    // Initialize GroupPlan with TopicModel and storage deps
+    // GroupPlan creates HashGroup -> Group -> Topic for conversations
+    const ownerId = await this.deps.leuteModel!.myMainIdentity();
+    const storageDeps: GroupPlanStorageDeps = {
+      getObjectByIdHash: getObjectByIdHash as any,
+      getObject: getObject as any,
+      calculateIdHashOfObj: calculateIdHashOfObj as any,
+      storeUnversionedObject: storeUnversionedObject as any,
+      storeVersionedObject: storeVersionedObject as any
+    };
+    this.groupPlan = new GroupPlan(this.deps.topicModel!, storageDeps, ownerId);
 
     // Inject GroupPlan into ChatPlan
     this.chatPlan.setGroupPlan(this.groupPlan);
@@ -153,7 +109,6 @@ export class ChatModule implements Module {
     await (this.contactsPlan as any)?.shutdown?.();
     await (this.groupPlan as any)?.shutdown?.();
     await (this.chatPlan as any)?.shutdown?.();
-    await (this.topicGroupManager as any)?.shutdown?.();
 
     console.log('[ChatModule] Shutdown complete');
   }
@@ -169,7 +124,6 @@ export class ChatModule implements Module {
     registry.supply('ContactsPlan', this.contactsPlan);
     // Note: ExportPlan is NOT supplied - ChatModule consumes it, platform supplies it directly
     registry.supply('FeedForwardPlan', this.feedForwardPlan);
-    registry.supply('TopicGroupManager', this.topicGroupManager);
   }
 
   private hasRequiredDeps(): boolean {

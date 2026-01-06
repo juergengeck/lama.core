@@ -183,7 +183,7 @@ export class ConnectionModule implements Module {
           await createAccess([{
             object: hash,
             person: [personId],
-            group: [],
+            hashGroup: [],
             mode: SET_ACCESS_MODE.ADD
           }]);
         } catch (error) {

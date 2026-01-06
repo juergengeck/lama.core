@@ -4,7 +4,6 @@ import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js'
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type PropertyTreeStore from '@refinio/one.models/lib/models/SettingsModel.js';
-import type TopicGroupManager from '@chat/core/models/TopicGroupManager.js';
 import type { TrustPlan } from '@trust/core/plans/TrustPlan.js';
 
 // ONE.core storage imports
@@ -88,7 +87,6 @@ export class AIModule implements Module {
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicModel', required: true },
     { targetType: 'Settings', required: true },
-    { targetType: 'TopicGroupManager', required: true },
     { targetType: 'TrustPlan', required: true },
     { targetType: 'JournalPlan', required: true },
     { targetType: 'OneCore', required: true },
@@ -122,7 +120,6 @@ export class AIModule implements Module {
     channelManager?: ChannelManager;
     topicModel?: TopicModel;
     settings?: PropertyTreeStore;
-    topicGroupManager?: TopicGroupManager;
     trustPlan?: TrustPlan;
     oneCore?: any;
     topicAnalysisModel?: any;
@@ -175,7 +172,7 @@ export class AIModule implements Module {
 
     console.log('[AIModule] Initializing AI module...');
 
-    const { leuteModel, channelManager, topicModel, settings, topicGroupManager, trustPlan, oneCore } = this.deps;
+    const { leuteModel, channelManager, topicModel, settings, trustPlan, oneCore } = this.deps;
 
     // LLM management - use supplied LLMManager if available
     // Otherwise create a new one
@@ -325,7 +322,6 @@ export class AIModule implements Module {
       llmObjectManager: this.llmObjectManager, // Platform-agnostic LLM object manager
       contextEnrichmentService: undefined, // Optional - not used in browser
       topicAnalysisModel: undefined, // Will be set during init()
-      topicGroupManager: topicGroupManager!,
       aiSettingsManager: this.aiSettingsManager,
       localModelLookup: this.llmPlatform.lookupLocalModel?.bind(this.llmPlatform),
       storageDeps: {
@@ -612,7 +608,6 @@ export class AIModule implements Module {
       this.deps.channelManager &&
       this.deps.topicModel &&
       this.deps.settings &&
-      this.deps.topicGroupManager &&
       this.deps.trustPlan &&
       this.deps.oneCore &&
       this.deps.topicAnalysisModel &&
