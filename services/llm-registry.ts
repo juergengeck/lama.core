@@ -108,10 +108,33 @@ export class LLMRegistry {
 
   /**
    * Get an LLM by modelId
+   *
+   * Supports both exact match and model name lookup:
+   * - Exact: "gpt-oss:latest@localhost:11434" → finds "gpt-oss:latest@localhost:11434"
+   * - Name only: "gpt-oss:latest" → finds "gpt-oss:latest@localhost:11434" (first match)
+   *
+   * This handles the mismatch between:
+   * - Registry: stores models with "@host" suffix from discovery
+   * - AI contacts: store model names without "@host" suffix
    */
   get(modelId: string): LLM | null {
-    const entry = this.entries.get(modelId);
-    return entry?.llm ?? null;
+    // Try exact match first
+    const exactEntry = this.entries.get(modelId);
+    if (exactEntry) {
+      return exactEntry.llm;
+    }
+
+    // Fallback: search for models where the name matches before the @host suffix
+    // e.g., "gpt-oss:latest" should match "gpt-oss:latest@localhost:11434"
+    for (const [key, entry] of this.entries) {
+      // Check if key starts with the requested modelId followed by @
+      if (key.startsWith(modelId + '@')) {
+        MessageBus.send('debug', `LLM lookup fallback: "${modelId}" → "${key}"`);
+        return entry.llm;
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -123,9 +146,11 @@ export class LLMRegistry {
 
   /**
    * Check if an LLM exists in registry
+   * Uses same fallback logic as get() for model name matching
    */
   has(modelId: string): boolean {
-    return this.entries.has(modelId);
+    // Use get() which handles both exact match and fallback
+    return this.get(modelId) !== null;
   }
 
   /**
