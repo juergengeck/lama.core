@@ -236,11 +236,25 @@ Module system for platform-agnostic initialization:
 
 ### AI Models (models/ai/)
 Component-based AI assistant architecture:
+- **AIManager** - AI Person creation and LLM management
 - **AIContactManager** - AI Person/Profile/Someone lifecycle
 - **AITopicManager** - Topic-to-model mappings
 - **AITaskManager** - Dynamic task associations (IoM)
 - **AIPromptBuilder** - Prompt construction with context
 - **AIMessageProcessor** - Message queuing and LLM invocation
+
+#### AI Person Certificate Requirements (CRITICAL for CHUM sync)
+
+When AIManager creates an AI Person, it must create the same certificates as regular users for CHUM sync to work:
+
+1. **TrustKeysCertificate** - Enables remote peers to trust AI's signing keys
+2. **AffirmationCertificate** - Affirms the AI's profile version
+3. **Share profile versions** with everyone via `leuteModel.shareVersionsWithEveryone()`
+4. **Share certificates** - TrustKeysCertificate to IoM, AffirmationCertificate to everyone
+
+**Why this matters**: When AI posts to a group chat, remote peers receive the message via CHUM. They need to verify the AI's signature, which requires having the AI's TrustKeysCertificate. Without it, signature verification fails and sync breaks.
+
+**Reference**: See `LeuteModel.createProfile()` in one.models for the pattern used for regular user identities.
 
 ### Topic Analysis (one-ai/)
 Knowledge extraction from conversations:

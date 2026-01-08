@@ -393,20 +393,58 @@ export class AIManager {
       await this.leuteModel.addSomeoneElse(someoneIdHash);
 
       // 7. Generate keys for the AI Person
+      // CRITICAL: Keys are REQUIRED for AI to sign messages via affirm()
+      // Without keys, AI message posting will throw KEYCH-NODEFKEYS and corrupt channel state
       if (this.deps.createDefaultKeys && this.deps.hasDefaultKeys) {
-        try {
-          const hasKeys = await this.deps.hasDefaultKeys(personIdHash);
-          if (!hasKeys) {
-            await this.deps.createDefaultKeys(personIdHash);
-          }
-        } catch (error) {
-          MessageBus.send('alert', 'Failed to generate keys for AI Person:', error);
+        const hasKeys = await this.deps.hasDefaultKeys(personIdHash);
+        if (!hasKeys) {
+          // Do NOT catch errors - keys MUST succeed or AI creation fails
+          await this.deps.createDefaultKeys(personIdHash);
+          MessageBus.send('debug', `Created keys for AI Person: ${personIdHash.toString().substring(0, 8)}...`);
         }
       } else {
-        MessageBus.send('alert', 'createDefaultKeys not available - AI Person will not have keys');
+        // CRITICAL: Fail the AI creation if keys cannot be created
+        throw new Error('[AIManager] createDefaultKeys not available - AI Person requires signing keys for message affirmation');
       }
 
-      // 8. Assign trust level (fire and forget - not critical for immediate use)
+      // 8. Create certificates and share for CHUM sync
+      // CRITICAL: Without certificates, remote peers cannot verify AI's signatures
+      // and CHUM sync will break when AI posts to group chats
+      // This mirrors the pattern used in LeuteModel.createProfile() for regular identities
+      const profileVersionHash = typeof profileResult === 'object' && profileResult?.hash
+        ? profileResult.hash
+        : null;
+
+      if (profileVersionHash && this.leuteModel.trust) {
+        try {
+          // Create TrustKeysCertificate - enables remote peers to trust AI's keys
+          const trustKeysCert = await this.leuteModel.trust.certify('TrustKeysCertificate', {
+            profile: profileVersionHash
+          });
+
+          // Create AffirmationCertificate - affirms the AI's profile
+          const affirmationCert = await this.leuteModel.trust.affirm(
+            profileVersionHash,
+            personIdHash
+          );
+
+          // Share profile versions with everyone (enables CHUM sync)
+          await this.leuteModel.shareVersionsWithEveryone(profileIdHash);
+
+          // Share certificates (IoM for trust chain, everyone for affirmation)
+          await this.leuteModel.shareObjectWithIoM(trustKeysCert.signature.hash);
+          await this.leuteModel.shareObjectWithEveryone(affirmationCert.hash);
+
+          MessageBus.send('debug', `Created and shared certificates for AI Person: ${personIdHash.toString().substring(0, 8)}...`);
+        } catch (certError) {
+          // Log but don't fail - certificates enhance sync but AI can still work locally
+          MessageBus.send('alert', 'Failed to create certificates for AI Person:', certError);
+        }
+      } else {
+        MessageBus.send('alert', `Could not create certificates for AI Person - profileVersionHash: ${profileVersionHash}, trust available: ${!!this.leuteModel.trust}`);
+      }
+
+      // 9. Assign trust level (fire and forget - not critical for immediate use)
       if (this.deps.trustPlan) {
         this.deps.trustPlan.setTrustLevel({
           personId: personIdHash,

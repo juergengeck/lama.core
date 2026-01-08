@@ -11,6 +11,36 @@ import type { Plan, Assembly, Story } from '@assembly/core';
 import type { Memory } from '@memory/core/types/Memory.js';
 
 declare module '@OneObjectInterfaces' {
+    // Certificate interfaces needed for trust operations
+    // These are normally augmented by one.models certificate files, but those are excluded
+    // from lama.core's build-time compilation, so we declare them here explicitly
+    export interface OneCertificateInterfaces {
+        TrustKeysCertificate: TrustKeysCertificate;
+        AffirmationCertificate: AffirmationCertificate;
+    }
+
+    // TrustKeysCertificate - certifies that keys in a profile are trusted
+    export interface TrustKeysCertificate {
+        $type$: 'TrustKeysCertificate';
+        profile: import('@refinio/one.core/lib/util/type-checks.js').SHA256Hash<import('@refinio/one.models/lib/recipes/Leute/Profile.js').Profile>;
+        license: import('@refinio/one.core/lib/util/type-checks.js').SHA256Hash<License>;
+    }
+
+    // AffirmationCertificate - affirms/vouches for data
+    export interface AffirmationCertificate {
+        $type$: 'AffirmationCertificate';
+        data: import('@refinio/one.core/lib/util/type-checks.js').SHA256Hash;
+        license: import('@refinio/one.core/lib/util/type-checks.js').SHA256Hash<License>;
+    }
+
+    // License interface for certificates
+    export interface License {
+        $type$: 'License';
+        name: string;
+        certificateType: string;
+        validDurationInMs: number;
+    }
+
     // Add our custom versioned object types
     export interface OneVersionedObjectInterfaces {
         GlobalLLMSettings: GlobalLLMSettings;
