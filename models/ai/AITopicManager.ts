@@ -423,8 +423,13 @@ export class AITopicManager implements IAITopicManager {
 
       if (!topic) {
         // Create topic with owned channel - pass userPersonId as owner so posting works
-        topic = await this.topicModel.createTopic('Hi', [userPersonId, aiPersonId], topicId, userPersonId);
+        topic = await this.topicModel.createTopic('Hi', [userPersonId, aiPersonId], topicId);
         needsWelcome = true;
+
+        // Grant access rights for CHUM sync (IoM device sync)
+        // Topic ID format (owner:name) doesn't match P2P pattern, so explicit grant needed
+        await this.topicModel.addPersonsToTopic([userPersonId, aiPersonId], topic);
+        MessageBus.send('debug', 'Granted access rights for Hi chat');
 
         // Create Group for this topic so ChatPlan can find participants
         if (this.topicGroupManager) {
@@ -515,8 +520,13 @@ export class AITopicManager implements IAITopicManager {
 
       if (!topic) {
         // Create topic with owned channel - pass userPersonId as owner so posting works
-        topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], topicId, userPersonId);
+        topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], topicId);
         needsWelcome = true;
+
+        // Grant access rights for CHUM sync (IoM device sync)
+        // Topic ID format (owner:name) doesn't match P2P pattern, so explicit grant needed
+        await this.topicModel.addPersonsToTopic([userPersonId, privateAiPersonId], topic);
+        MessageBus.send('debug', 'Granted access rights for LAMA chat');
 
         // Create Group for this topic so ChatPlan can find participants
         if (this.topicGroupManager) {
@@ -676,7 +686,30 @@ export class AITopicManager implements IAITopicManager {
               MessageBus.send('debug', `  Group has no hashGroup`);
             }
           } else {
-            MessageBus.send('debug', `  SKIP - topic has no group (not a group chat)`);
+            // P2P AI topic - check ChannelInfo participants instead
+            MessageBus.send('debug', `  Topic has no group - checking ChannelInfo participants (P2P chat)...`);
+            try {
+              const channelInfoResult = await getObjectByIdHash(topic.channel);
+              const channelInfo = channelInfoResult.obj;
+              if (channelInfo && (channelInfo as any).participants) {
+                const participantsHash = (channelInfo as any).participants;
+                const hashGroup = await getObject(participantsHash) as HashGroup<Person>;
+                if (hashGroup.person) {
+                  MessageBus.send('debug', `  ChannelInfo has ${hashGroup.person.size} participants`);
+                  for (const memberId of hashGroup.person) {
+                    const aiId = await aiManager.getAIId(memberId);
+                    MessageBus.send('debug', `    - Participant ${memberId.toString().substring(0, 8)}... → AI ID: ${aiId || 'NOT AI'}`);
+                    if (aiId) {
+                      aiPersonId = memberId;
+                      MessageBus.send('debug', `  FOUND AI participant in P2P topic ${topicId}: ${aiId}`);
+                      break;
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              MessageBus.send('debug', `  Could not check ChannelInfo participants: ${e}`);
+            }
           }
 
           // Register if AI participant found

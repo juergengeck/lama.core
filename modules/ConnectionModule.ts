@@ -175,6 +175,7 @@ export class ConnectionModule implements Module {
       storeVersionedObject,
       storeUnversionedObject,
       getObjectByIdHash,
+      getObjectByHash: getObject,
       calculateIdHashOfObj,
 
       // Access control - use ONE.core's createAccess API
