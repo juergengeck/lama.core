@@ -428,11 +428,11 @@ export class AIManager {
             personIdHash
           );
 
-          // Share profile versions with everyone (enables CHUM sync)
+          // Share profile versions with everyone (same as regular profiles)
           await this.leuteModel.shareVersionsWithEveryone(profileIdHash);
 
-          // Share certificates (IoM for trust chain, everyone for affirmation)
-          await this.leuteModel.shareObjectWithIoM(trustKeysCert.signature.hash);
+          // Share certificates with everyone (same as regular profiles)
+          await this.leuteModel.shareObjectWithEveryone(trustKeysCert.signature.hash);
           await this.leuteModel.shareObjectWithEveryone(affirmationCert.hash);
 
           MessageBus.send('debug', `Created and shared certificates for AI Person: ${personIdHash.toString().substring(0, 8)}...`);

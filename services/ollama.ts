@@ -128,6 +128,9 @@ async function chatWithOllama(
   baseUrl: string = 'http://localhost:11434',
   authHeaders?: Record<string, string>
 ): Promise<any> {
+  console.log('[Ollama] chatWithOllama called:', { modelName, messageCount: messages?.length, baseUrl });
+  console.log('[Ollama] Messages:', JSON.stringify(messages, null, 2).substring(0, 1000));
+
   const requestId = getRequestId()
   const controller = new AbortController()
   const topicId = options.topicId // Extract topicId from options if provided
@@ -197,8 +200,7 @@ async function chatWithOllama(
     }
 
     const requestBodyStr = JSON.stringify(requestBody);
-    MessageBus.send('debug', `[${requestId}] T+${Date.now() - t0}ms: Sending fetch to ${baseUrl}/api/chat`)
-    MessageBus.send('debug', `[${requestId}] Request size: ${requestBodyStr.length} bytes, ${formattedMessages.length} messages`)
+    console.log('[Ollama] REQUEST BODY:', requestBodyStr.substring(0, 2000));
 
     const response: any = await fetch(`${baseUrl}/api/chat`, {
       method: 'POST',

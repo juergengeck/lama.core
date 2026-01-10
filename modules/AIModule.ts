@@ -321,7 +321,7 @@ export class AIModule implements Module {
       stateManager: undefined, // Optional - not used in browser
       llmObjectManager: this.llmObjectManager, // Platform-agnostic LLM object manager
       contextEnrichmentService: undefined, // Optional - not used in browser
-      topicAnalysisModel: undefined, // Will be set during init()
+      topicAnalysisModel: this.deps.topicAnalysisModel, // From AnalysisModule via demand/supply
       aiSettingsManager: this.aiSettingsManager,
       localModelLookup: this.llmPlatform.lookupLocalModel?.bind(this.llmPlatform),
       storageDeps: {
@@ -466,6 +466,12 @@ export class AIModule implements Module {
    * Called after all initialization is complete
    */
   async startMessageListener(ownerId: string): Promise<void> {
+    // Guard: prevent duplicate listener registration
+    if (this.aiMessageListener) {
+      console.log('[AIModule] AIMessageListener already started, skipping');
+      return;
+    }
+
     const { channelManager, topicModel } = this.deps;
 
     console.log('[AIModule] Creating and starting AIMessageListener...');

@@ -6,7 +6,7 @@ import { objectEvents } from '@refinio/one.models/lib/misc/ObjectEventDispatcher
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import type { Module } from '@refinio/api';
 import { initializePlanObjectManager, registerStandardPlans } from '@refinio/api/plan-system';
-import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getInstanceOwnerIdHash, getInstanceOwnerEmail } from '@refinio/one.core/lib/instance.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 
@@ -80,6 +80,7 @@ export class CoreModule implements Module {
   }
   private channelUpdateUnsubscribe: (() => void) | null = null;
   private newTopicUnsubscribe: (() => void) | null = null;
+  private objectEventUnsubscribe: (() => void) | null = null;
   private initialized = false;
 
   constructor(private commServerUrl: string) {}
@@ -188,8 +189,8 @@ export class CoreModule implements Module {
       console.log('[CoreModule] channelManager.onUpdated listenerCount:', this.channelManager.onUpdated.listenerCount?.() ?? 'N/A');
       this.channelUpdateUnsubscribe = this.channelManager.onUpdated(async (
         channelInfoIdHash: any,
-        _channelParticipants: any,
-        _channelOwner: any,
+        channelParticipants: any,
+        channelOwner: any,
         _timeOfEarliestChange: any,
         _data: any
       ) => {
@@ -197,28 +198,38 @@ export class CoreModule implements Module {
           // DEBUG: Log incoming channel update
           console.log('[CoreModule] 📬 onUpdated fired');
           console.log('[CoreModule]   channelInfoIdHash:', channelInfoIdHash?.substring(0, 16));
-          console.log('[CoreModule]   participants:', _channelParticipants?.substring(0, 16));
-          console.log('[CoreModule]   owner:', _channelOwner?.substring(0, 16) || 'null');
+          console.log('[CoreModule]   participants:', channelParticipants?.substring(0, 16));
+          console.log('[CoreModule]   owner:', channelOwner?.substring(0, 16) || 'null');
 
-          // Find topic that matches this channelInfoIdHash
+          // Find topic that matches by PARTICIPANTS (not channel ID)
+          // P2P and group chats have multiple channels with same participants
+          // Each participant has their own channel, but all share the same participants hash
           const allTopics = await this.topicModel.topics.all();
 
           // DEBUG: Log all topic channels for comparison
           console.log('[CoreModule]   topics count:', allTopics.length);
-          for (const t of allTopics) {
-            const matches = t.channel === channelInfoIdHash;
-            console.log('[CoreModule]   topic:', t.id?.substring(0, 20),
-              '| channel:', t.channel?.substring(0, 16),
-              '| match:', matches ? '✅' : '❌');
-          }
 
-          const matchingTopic = allTopics.find((t: Topic) => t.channel === channelInfoIdHash);
+          // For each topic, check if its channel has the same participants as the updated channel
+          for (const topic of allTopics) {
+            try {
+              // Load the topic's channel to get its participants
+              const channelInfoResult = await getObjectByIdHash(topic.channel);
+              const topicChannelParticipants = (channelInfoResult as any).obj?.participants;
 
-          if (matchingTopic) {
-            console.log('[CoreModule]   ✅ Found matching topic:', matchingTopic.id?.substring(0, 20));
-            this.onTopicUpdated.emit(matchingTopic.id);
-          } else {
-            console.log('[CoreModule]   ❌ NO matching topic found - onNewTopicEvent will catch up');
+              const matches = topicChannelParticipants === channelParticipants;
+              console.log('[CoreModule]   topic:', topic.id?.substring(0, 20),
+                '| channel:', topic.channel?.substring(0, 16),
+                '| topicParticipants:', topicChannelParticipants?.substring(0, 16),
+                '| match:', matches ? '✅' : '❌');
+
+              if (matches) {
+                console.log('[CoreModule]   ✅ Found matching topic by participants:', topic.id?.substring(0, 20));
+                this.onTopicUpdated.emit(topic.id);
+                // Don't break - there might be multiple topics with same participants (unlikely but possible)
+              }
+            } catch (err) {
+              console.error('[CoreModule]   Error loading channel for topic:', topic.id?.substring(0, 16), err);
+            }
           }
           // If no matching topic, the onNewTopicEvent handler will catch up when the topic is added
         } catch (error) {
@@ -243,6 +254,30 @@ export class CoreModule implements Module {
           console.error('[CoreModule] Error getting topics after new topic event:', error);
         });
       });
+
+      // CRITICAL: Also listen to objectEvents for CHUM-imported ChannelInfo
+      // channelManager.onUpdated only fires for local updates, not CHUM imports
+      // objectEvents.onNewVersion fires for ALL stored versioned objects including CHUM imports
+      console.log('[CoreModule] Setting up objectEvents listener for CHUM imports...');
+      this.objectEventUnsubscribe = objectEvents.onNewVersion(async (result: any) => {
+        // Only process ChannelInfo updates (messages are stored in channels)
+        if (result.obj?.$type$ !== 'ChannelInfo') return;
+
+        console.log('[CoreModule] 📦 objectEvents.onNewVersion: ChannelInfo received via CHUM');
+
+        // Debounce: emit for all topics after a short delay to batch rapid updates
+        // Use a simple approach - emit for all topics, UI will filter
+        try {
+          const allTopics = await this.topicModel.topics.all();
+          for (const topic of allTopics) {
+            console.log('[CoreModule]   🔔 Emitting update for topic:', topic.id?.substring(0, 20));
+            this.onTopicUpdated.emit(topic.id);
+          }
+        } catch (error) {
+          console.error('[CoreModule] Error emitting topic updates from objectEvents:', error);
+        }
+      }, 'CoreModule:ChannelInfo-updates', 'ChannelInfo');
+      console.log('[CoreModule] ✅ objectEvents listener registered');
 
       // Store models globally so future CoreModule instances can reuse them
       globalModels = {
@@ -297,6 +332,10 @@ export class CoreModule implements Module {
       if (this.newTopicUnsubscribe) {
         this.newTopicUnsubscribe();
         this.newTopicUnsubscribe = null;
+      }
+      if (this.objectEventUnsubscribe) {
+        this.objectEventUnsubscribe();
+        this.objectEventUnsubscribe = null;
       }
 
       // Shutdown in reverse order (one.models classes have shutdown)

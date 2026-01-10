@@ -51,7 +51,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
   constructor(
     private channelManager: ChannelManager,
     private llmManager: any, // LLMManager interface
-    _leuteModel: LeuteModel,
+    private leuteModel: LeuteModel, // For getting instance owner
     private topicManager: any, // AITopicManager
     private aiManager: any, // AIManager (replaces AIContactManager)
     private topicModel: TopicModel, // For storing messages in ONE.core
@@ -305,14 +305,18 @@ export class AIMessageProcessor implements IAIMessageProcessor {
             // CRITICAL: Store the AI's response to the channel with analytics
             // This persists the message in ONE.core so it doesn't vanish after streaming
             try {
+              console.log(`[AIMessageProcessor] 🔍 DEBUG onComplete: topicId=${topicId.substring(0, 20)}, response.length=${response.length}, response.substring(0,100)="${response.substring(0, 100)}"`);
               const topic = await this.topicModel.findTopic(topicId);
+              console.log(`[AIMessageProcessor] 🔍 DEBUG: findTopic returned:`, topic ? `id=${topic.id?.substring(0, 20)}, channel=${topic.channel?.substring(0, 16)}` : 'null');
               const topicRoom = topic ? await this.topicModel.enterTopicRoom(topic.id) : null;
+              console.log(`[AIMessageProcessor] 🔍 DEBUG: enterTopicRoom returned:`, topicRoom ? 'TopicRoom' : 'null');
               if (topicRoom) {
                 // Post the AI's response to the topic's existing channel (owned by user)
                 // AI is the author, but use topic's channel (undefined = current user default)
                 if (thinking) {
                   // Store thinking as CLOB attachment
                   const thinkingClob = await storeUTF8Clob(thinking);
+                  console.log(`[AIMessageProcessor] 🔍 DEBUG: About to call sendMessageWithAttachmentAsHash with response="${response.substring(0, 50)}...", aiPersonId=${aiPersonId.substring(0, 16)}`);
                   await topicRoom.sendMessageWithAttachmentAsHash(response, [{
                     hash: thinkingClob.hash as unknown as SHA256Hash,
                     type: 'CLOB',
@@ -322,9 +326,12 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                       size: new TextEncoder().encode(thinking).length
                     }
                   }], aiPersonId);
+                  console.log(`[AIMessageProcessor] ✅ DEBUG: sendMessageWithAttachmentAsHash completed`);
                   MessageBus.send('debug', `Stored AI response with thinking to ${topicId}`);
                 } else {
+                  console.log(`[AIMessageProcessor] 🔍 DEBUG: About to call sendMessage with response="${response.substring(0, 50)}...", aiPersonId=${aiPersonId.substring(0, 16)}`);
                   await topicRoom.sendMessage(response, aiPersonId);
+                  console.log(`[AIMessageProcessor] ✅ DEBUG: sendMessage completed`);
                   MessageBus.send('debug', `Stored AI response to ${topicId}`);
                 }
 

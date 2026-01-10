@@ -41,7 +41,9 @@ export class OllamaAdapter implements LLMAdapter {
    * Execute chat with Ollama
    */
   async chat(llm: LLM, messages: ChatMessage[], options?: ChatOptions): Promise<ChatResult> {
-    const modelName = llm.modelId || llm.name;
+    // Use llm.name for the model name (clean, without server suffix)
+    // llm.modelId is the registry key (includes @host for uniqueness)
+    const modelName = llm.name;
     const baseUrl = llm.server || 'http://localhost:11434';
 
     MessageBus.send('debug', `Ollama chat: ${modelName}, ${messages.length} msgs, ${baseUrl}`);

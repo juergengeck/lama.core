@@ -98,7 +98,7 @@ export class AITopicManager implements IAITopicManager {
   /**
    * Register an AI topic with its AI Person
    */
-  registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): void {
+  async registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void> {
     MessageBus.send('debug', `Registered AI topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
     this._topicAIMap.set(topicId, aiPersonId);
   }
@@ -426,9 +426,12 @@ export class AITopicManager implements IAITopicManager {
         topic = await this.topicModel.createTopic('Hi', [userPersonId, aiPersonId], topicId);
         needsWelcome = true;
 
-        // Grant access rights for CHUM sync (IoM device sync)
+        // Grant access rights for CHUM sync
         // Topic ID format (owner:name) doesn't match P2P pattern, so explicit grant needed
         await this.topicModel.addPersonsToTopic([userPersonId, aiPersonId], topic);
+
+        // Share AI's profile and certificates with topic participants (same flow as other profiles)
+        await this.topicModel.sharePersonProfileWithTopic(aiPersonId, topic);
         MessageBus.send('debug', 'Granted access rights for Hi chat');
 
         // Create Group for this topic so ChatPlan can find participants
@@ -523,9 +526,12 @@ export class AITopicManager implements IAITopicManager {
         topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], topicId);
         needsWelcome = true;
 
-        // Grant access rights for CHUM sync (IoM device sync)
+        // Grant access rights for CHUM sync
         // Topic ID format (owner:name) doesn't match P2P pattern, so explicit grant needed
         await this.topicModel.addPersonsToTopic([userPersonId, privateAiPersonId], topic);
+
+        // Share AI's profile and certificates with topic participants (same flow as other profiles)
+        await this.topicModel.sharePersonProfileWithTopic(privateAiPersonId, topic);
         MessageBus.send('debug', 'Granted access rights for LAMA chat');
 
         // Create Group for this topic so ChatPlan can find participants

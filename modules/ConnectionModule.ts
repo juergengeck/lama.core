@@ -33,7 +33,10 @@ export class ConnectionModule implements Module {
     { targetType: 'LeuteModel', required: true },
     { targetType: 'ChannelManager', required: true },
     { targetType: 'TopicModel', required: true },
-    { targetType: 'TrustPlan', required: true }
+    { targetType: 'TrustPlan', required: true },
+    // Optional: If supplied (lama.browser), ensures bridge is ready before CHUM starts
+    // If not supplied (lama.cube), ConnectionModule proceeds without waiting
+    { targetType: 'BridgeReady', required: false }
   ];
 
   static supplies = [
@@ -96,7 +99,7 @@ export class ConnectionModule implements Module {
     console.log('[ConnectionModule] Initializing...');
 
     // ==========================================================================
-    // CREATE ConnectionsModel
+    // CREATE ConnectionsModel (but DON'T init yet - we need to register handlers first)
     // ==========================================================================
     // This is THE single place for ConnectionsModel creation.
     console.log('[ConnectionModule] Creating ConnectionsModel...');
@@ -105,17 +108,18 @@ export class ConnectionModule implements Module {
       commServerUrl: this.commServerUrl
     });
 
-    await this.connectionsModel.init();
-    console.log('[ConnectionModule] ConnectionsModel created and initialized');
-
     // NOTE: No need to set oneCore.connectionsModel directly.
     // Model.connectionsModel is a getter that returns this.modules.get('connection').connectionsModel
     // After ConnectionModule initializes, oneCore.connectionsModel (via getter) returns this.connectionsModel
 
     // ==========================================================================
-    // Connection Plans
+    // Connection Plans - MUST be created BEFORE connectionsModel.init()
     // ==========================================================================
-    console.log('[ConnectionModule] Initializing connection plans...');
+    // CRITICAL: Register onProtocolStart handler BEFORE init() to prevent race condition.
+    // When connectionsModel.init() is called, it connects to commserver and peers.
+    // CHUM sync can start immediately on reconnection. If the onProtocolStart handler
+    // isn't registered yet, access rights won't be granted, and CHUM finds nothing to sync.
+    console.log('[ConnectionModule] Creating ConnectionPlan (before connectionsModel.init to prevent race)...');
 
     // Prepare TrustPlan dependencies for automatic trust establishment
     const trustDeps: TrustPlanDependencies = {
@@ -160,14 +164,23 @@ export class ConnectionModule implements Module {
       undefined     // No storyFactory
     );
 
-    // Register pairing handler with ConnectionsModel
-    console.log('[ConnectionModule] Registering pairing handler...');
+    // CRITICAL: Register pairing handler BEFORE connectionsModel.init()
+    // This registers the onProtocolStart handler that grants access rights for CHUM sync.
+    // Without this, CHUM starts but finds no objects to sync (race condition).
+    console.log('[ConnectionModule] Registering pairing handler (before connectionsModel.init)...');
     this.connectionPlan.registerPairingHandler(this.connectionsModel);
 
     if (this.deps.oneCore?.paranoiaLevel !== undefined) {
       this.connectionPlan.setParanoiaLevel(this.deps.oneCore.paranoiaLevel);
       console.log('[ConnectionModule] Paranoia level set:', this.deps.oneCore.paranoiaLevel);
     }
+
+    // ==========================================================================
+    // NOW init ConnectionsModel - handlers are registered, CHUM can start safely
+    // ==========================================================================
+    console.log('[ConnectionModule] Initializing ConnectionsModel (handlers already registered)...');
+    await this.connectionsModel.init();
+    console.log('[ConnectionModule] ConnectionsModel initialized');
 
     // Group chat plan dependencies (platform-agnostic from connection.core)
     const groupChatDeps: GroupChatPlanDependencies = {

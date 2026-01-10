@@ -67,7 +67,7 @@ export class SystemPromptBuilder {
       name: 'base-identity',
       priority: 0,
       enabled: true,
-      generate: () => buildFallbackIdentity() + '\n\nIMPORTANT: When providing structured JSON responses, keep your response field under 2000 characters.'
+      generate: () => buildFallbackIdentity()
     });
 
     // Section 1b: AI Identity (Priority 5 - personalized identity)

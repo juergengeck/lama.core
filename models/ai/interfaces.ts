@@ -31,8 +31,8 @@ export interface IAITopicManager {
   /** Display names for topics */
   readonly topicDisplayNames: Readonly<Record<string, string>>;
 
-  /** Register an AI topic with its AI Person */
-  registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): void;
+  /** Register an AI topic with its AI Person and add AI to topic's access control */
+  registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void>;
 
   /** Check if a topic is an AI topic */
   isAITopic(topicId: string): boolean;

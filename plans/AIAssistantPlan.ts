@@ -778,10 +778,10 @@ export class AIAssistantPlan {
   }
 
   /**
-   * Register an AI topic with its AI Person
+   * Register an AI topic with its AI Person and add AI to topic's access control
    */
-  registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): void {
-    this.topicManager.registerAITopic(topicId, aiPersonId);
+  async registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void> {
+    await this.topicManager.registerAITopic(topicId, aiPersonId);
   }
 
   /**
@@ -984,6 +984,12 @@ export class AIAssistantPlan {
       const phase1Time = Date.now() - startTime;
       MessageBus.send('debug', `Phase 1 complete (${phase1Time}ms)`);
 
+      // DEBUG: Log what Phase 1 returned
+      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response type:', typeof response);
+      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response keys:', response && typeof response === 'object' ? Object.keys(response) : 'N/A');
+      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response.content?.length:', (response as any)?.content?.length);
+      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response.content?.substring(0,100):', (response as any)?.content?.substring?.(0, 100));
+
       // Extract actual response content and thinking
       // Handle multiple response formats: {content, ...}, {response, ...}, or plain string
       let actualResponse = '';
@@ -1000,6 +1006,7 @@ export class AIAssistantPlan {
       } else {
         actualResponse = String(response);
       }
+      console.log('[AIAssistantPlan] 🔍 DEBUG actualResponse.length:', actualResponse?.length);
 
       let analysis: any = undefined;
 

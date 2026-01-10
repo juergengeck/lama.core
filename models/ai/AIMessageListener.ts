@@ -260,6 +260,12 @@ export class AIMessageListener {
                 respondedAIs.add(aiPersonId.toString());
 
                 console.log(`[AIMessageListener] Triggering response from AI: ${aiPersonId.substring(0, 8)}...`);
+
+                // CRITICAL: Register AI topic BEFORE processing message
+                // This sets up HashGroup access for the AI's channel, enabling CHUM sync
+                // Without this, AI messages won't sync to remote peers
+                await this.deps.aiPlan.registerAITopic(topic.id, aiPersonId);
+
                 // Delegate to AIAssistantPlan for AI response generation
                 // Don't await - let AIs respond independently/in parallel
                 this.deps.aiPlan.processMessage(topic.id, messageText, messageSender, aiPersonId)

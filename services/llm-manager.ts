@@ -866,13 +866,16 @@ class LLMManager {
    * Handles nested objects/arrays robustly
    */
   private extractJsonFromText(text: string): string | null {
-    // Try to find JSON with "tool" and "parameters" keys
-    const toolIndex = text.indexOf('"tool"')
-    if (toolIndex === -1) return null
+    // Try to find JSON with "tool" key (tool calls) or "response" key (structured output)
+    let keyIndex = text.indexOf('"tool"')
+    if (keyIndex === -1) {
+      keyIndex = text.indexOf('"response"')
+    }
+    if (keyIndex === -1) return null
 
-    // Search backwards from "tool" to find the opening brace
+    // Search backwards from key to find the opening brace
     let startIdx = -1
-    for (let i = toolIndex - 1; i >= 0; i--) {
+    for (let i = keyIndex - 1; i >= 0; i--) {
       const char = text[i]
       if (char === '{') {
         startIdx = i
@@ -964,6 +967,18 @@ class LLMManager {
 
     try {
       const toolCall = JSON.parse(toolCallMatch[1])
+
+      // Handle structured response format (e.g., {"response":"..."} from gpt-oss)
+      // Extract the response field if present and no tool call
+      if (!toolCall.tool && toolCall.response) {
+        MessageBus.send('debug', `Extracting structured response: ${toolCall.response.length} chars`)
+        // Preserve thinking if present in original response object
+        if (hasThinking) {
+          return { content: toolCall.response, thinking: response.thinking, _hasThinking: true }
+        }
+        return toolCall.response
+      }
+
       if (toolCall.tool) {
         MessageBus.send('debug', `Executing tool: ${toolCall.tool}`)
 
