@@ -19,11 +19,14 @@
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 
 const MessageBus = createMessageBus('AITopicManager');
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -97,10 +100,64 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Register an AI topic with its AI Person
+   * Creates a channel for the AI to post messages to (required for group chat CHUM sync)
    */
   async registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void> {
-    MessageBus.send('debug', `Registered AI topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
+    MessageBus.send('debug', `Registering AI topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
+
+    // Store the mapping
     this._topicAIMap.set(topicId, aiPersonId);
+
+    // Create channel for the AI in this topic
+    // This enables the AI to post to its own channel (like human participants)
+    try {
+      await this.createAIChannel(topicId, aiPersonId);
+      MessageBus.send('debug', `Created AI channel for topic ${topicId.substring(0, 16)}...`);
+    } catch (error) {
+      // Log but don't fail - channel might already exist or topic might be P2P
+      MessageBus.send('alert', `Could not create AI channel for topic ${topicId}: ${error}`);
+    }
+  }
+
+  /**
+   * Create a channel for an AI participant in a topic
+   * Reuses the topic's existing participantsHash so all group members have access
+   *
+   * @param topicId - The topic ID hash
+   * @param aiPersonId - The AI Person who will own this channel
+   * @returns The created ChannelInfo ID hash
+   */
+  private async createAIChannel(
+    topicId: string,
+    aiPersonId: SHA256IdHash<Person>
+  ): Promise<SHA256IdHash<ChannelInfo>> {
+    // Get topic to access its participants and channel info
+    const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+    if (!topic) {
+      throw new Error(`Cannot create AI channel for non-existent topic: ${topicId}`);
+    }
+
+    // Get participantsHash directly from Topic
+    const participantsHash = topic.participants as SHA256Hash<HashGroup<Person>>;
+
+    // Get discriminator from ChannelInfo
+    const channelInfoResult = await getObjectByIdHash(topic.channel);
+    const channelInfo = channelInfoResult.obj as ChannelInfo;
+    const discriminator = channelInfo.discriminator;
+
+    MessageBus.send('debug', `Creating AI channel: owner=${aiPersonId.substring(0, 16)}, participants=${participantsHash.substring(0, 16)}, discriminator=${discriminator}`);
+
+    // Create channel owned by AI, using existing group participants
+    // This allows all group members to read AI's messages via CHUM sync
+    const result = await this.channelManager.createChannel(
+      [], // participants already established via participantsHash
+      aiPersonId, // AI owns this channel
+      participantsHash, // reuse group's participant hash
+      discriminator // topic-specific
+    );
+
+    MessageBus.send('debug', `AI channel created: ${result.channelInfoIdHash.substring(0, 16)}...`);
+    return result.channelInfoIdHash;
   }
 
   /**
@@ -409,22 +466,21 @@ export class AITopicManager implements IAITopicManager {
       // Get user's person ID
       const userPersonId = await this.leuteModel.myMainIdentity();
 
-      // Use stable owned channel format: owner:name (name is "Hi", not aiPersonId)
-      // This ensures the same topic is found even when AI person changes on model switch
-      const topicId = `${userPersonId}:Hi`;
-
-      MessageBus.send('debug', `Hi chat topic ID: ${topicId.substring(0, 30)}...`);
-
       let topicRoom: any;
       let needsWelcome = false;
+      let topicIdHash: string;
 
-      // Check if topic already exists
-      let topic: any = await this.topicModel.findTopic(topicId);
+      // Check if topic already exists by originalName
+      // Topic identity is computed from (participants, originalName) - 'Hi' with these participants
+      let topic: any = await this.topicModel.topics.queryByOriginalName('Hi');
 
       if (!topic) {
-        // Create topic with owned channel - pass userPersonId as owner so posting works
-        topic = await this.topicModel.createTopic('Hi', [userPersonId, aiPersonId], topicId);
+        // Create topic - identity computed from participants + originalName ('Hi')
+        // displayName can be the AI's name for UI display
+        topic = await this.topicModel.createTopic('Hi', [userPersonId, aiPersonId], 'Hi');
+        topicIdHash = String(await calculateIdHashOfObj(topic));
         needsWelcome = true;
+        MessageBus.send('debug', `Hi chat created with idHash: ${topicIdHash.substring(0, 16)}...`);
 
         // Grant access rights for CHUM sync
         // Topic ID format (owner:name) doesn't match P2P pattern, so explicit grant needed
@@ -437,30 +493,32 @@ export class AITopicManager implements IAITopicManager {
         // Create Group for this topic so ChatPlan can find participants
         if (this.topicGroupManager) {
           MessageBus.send('debug', 'Creating Group for Hi chat');
-          await this.topicGroupManager.getOrCreateConversationGroup(topicId, aiPersonId);
+          await this.topicGroupManager.getOrCreateConversationGroup(topicIdHash, aiPersonId);
         }
 
         // Create Assembly for this topic
         if (this.assemblyManager) {
           MessageBus.send('debug', 'Creating Assembly for Hi chat');
-          await this.assemblyManager.createChatAssembly(topicId, 'Hi');
+          await this.assemblyManager.createChatAssembly(topicIdHash, 'Hi');
         }
       } else {
-        // Topic exists - update AI person mapping (may have changed on model switch)
-        MessageBus.send('debug', `Hi chat exists, updating AI person mapping to ${aiPersonId.substring(0, 8)}...`);
-        topicRoom = await this.topicModel.enterTopicRoom(topic.id);
+        // Topic exists - compute idHash from existing topic
+        topicIdHash = String(await calculateIdHashOfObj(topic));
+        MessageBus.send('debug', `Hi chat exists with idHash: ${topicIdHash.substring(0, 16)}, updating AI person mapping to ${aiPersonId.substring(0, 8)}...`);
+        topicRoom = await this.topicModel.enterTopicRoom(topicIdHash as SHA256IdHash<Topic>);
         const messages = await topicRoom.retrieveAllMessages();
         needsWelcome = messages.length === 0;
       }
 
       if (!topicRoom) {
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        topicRoom = await this.topicModel.enterTopicRoom(topicIdHash as SHA256IdHash<Topic>);
       }
 
-      // Register as AI topic with display name
-      this.registerAITopic(topicId, aiPersonId);
-      this.setTopicDisplayName(topicId, 'Hi');
-      this._hiTopicId = topicId;  // Track as default Hi topic
+      // Register as AI topic with display name (using computed idHash)
+      // MUST await - createAIChannel needs to complete before posting messages
+      await this.registerAITopic(topicIdHash, aiPersonId);
+      this.setTopicDisplayName(topicIdHash, 'Hi');
+      this._hiTopicId = topicIdHash;  // Track as default Hi topic
 
       // Post static welcome message directly (NO LLM generation for Hi chat)
       if (needsWelcome) {
@@ -509,25 +567,37 @@ export class AITopicManager implements IAITopicManager {
       // Get user's person ID
       const userPersonId = await this.leuteModel.myMainIdentity();
 
-      // Use stable owned channel format: owner:name (name is "LAMA", not privateAiPersonId)
-      // This ensures the same topic is found even when AI person changes on model switch
-      const topicId = `${userPersonId}:LAMA`;
-
-      MessageBus.send('debug', `LAMA chat topic ID: ${topicId.substring(0, 30)}...`);
-
       let topicRoom: any;
       let needsWelcome = false;
+      let topicIdHash: string;
 
-      // Check if topic already exists
-      let topic: any = await this.topicModel.findTopic(topicId);
+      // Check if topic already exists by originalName
+      // Topic identity is computed from (participants, originalName) - 'LAMA' with these participants
+      let topic: any = await this.topicModel.topics.queryByOriginalName('LAMA');
 
       if (!topic) {
-        // Create topic with owned channel - pass userPersonId as owner so posting works
-        topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], topicId);
+        // Get AI's display name from model info (e.g., "Lumi" instead of "LAMA")
+        let aiDisplayName = 'LAMA';
+        if (this.defaultModelId && this.llmManager) {
+          try {
+            const model = this.llmManager.getModel(this.defaultModelId);
+            if (model?.displayName) {
+              aiDisplayName = model.displayName;
+              MessageBus.send('debug', `Using AI display name: ${aiDisplayName}`);
+            }
+          } catch (e) {
+            // Fall back to 'LAMA' if model lookup fails
+          }
+        }
+
+        // Create topic - identity computed from participants + originalName ('LAMA')
+        // displayName uses the AI's name for UI display (e.g., "Lumi")
+        topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], aiDisplayName);
+        topicIdHash = String(await calculateIdHashOfObj(topic));
         needsWelcome = true;
+        MessageBus.send('debug', `LAMA chat created with idHash: ${topicIdHash.substring(0, 16)}, displayName: ${aiDisplayName}`);
 
         // Grant access rights for CHUM sync
-        // Topic ID format (owner:name) doesn't match P2P pattern, so explicit grant needed
         await this.topicModel.addPersonsToTopic([userPersonId, privateAiPersonId], topic);
 
         // Share AI's profile and certificates with topic participants (same flow as other profiles)
@@ -537,35 +607,50 @@ export class AITopicManager implements IAITopicManager {
         // Create Group for this topic so ChatPlan can find participants
         if (this.topicGroupManager) {
           MessageBus.send('debug', 'Creating Group for LAMA chat');
-          await this.topicGroupManager.getOrCreateConversationGroup(topicId, privateAiPersonId);
+          await this.topicGroupManager.getOrCreateConversationGroup(topicIdHash, privateAiPersonId);
         }
 
         // Create Assembly for this topic
         if (this.assemblyManager) {
           MessageBus.send('debug', 'Creating Assembly for LAMA chat');
-          await this.assemblyManager.createChatAssembly(topicId, 'LAMA');
+          await this.assemblyManager.createChatAssembly(topicIdHash, 'LAMA');
         }
       } else {
-        // Topic exists - update AI person mapping (may have changed on model switch)
-        MessageBus.send('debug', `LAMA chat exists, updating AI person mapping to ${privateAiPersonId.substring(0, 8)}...`);
-        topicRoom = await this.topicModel.enterTopicRoom(topic.id);
+        // Topic exists - compute idHash from existing topic
+        topicIdHash = String(await calculateIdHashOfObj(topic));
+        MessageBus.send('debug', `LAMA chat exists with idHash: ${topicIdHash.substring(0, 16)}, updating AI person mapping to ${privateAiPersonId.substring(0, 8)}...`);
+        topicRoom = await this.topicModel.enterTopicRoom(topicIdHash as SHA256IdHash<Topic>);
         const messages = await topicRoom.retrieveAllMessages();
         needsWelcome = messages.length === 0;
       }
 
       if (!topicRoom) {
-        topicRoom = await this.topicModel.enterTopicRoom(topicId);
+        topicRoom = await this.topicModel.enterTopicRoom(topicIdHash as SHA256IdHash<Topic>);
       }
 
-      // Register as AI topic with display name
-      this.registerAITopic(topicId, privateAiPersonId);
-      this.setTopicDisplayName(topicId, 'LAMA');
-      this._lamaTopicId = topicId;  // Track as default LAMA topic
+      // Get AI display name for registration (existing topics may not have aiDisplayName variable)
+      let displayNameForTopic = 'LAMA';
+      if (this.defaultModelId && this.llmManager) {
+        try {
+          const model = this.llmManager.getModel(this.defaultModelId);
+          if (model?.displayName) {
+            displayNameForTopic = model.displayName;
+          }
+        } catch (e) {
+          // Fall back to 'LAMA'
+        }
+      }
+
+      // Register as AI topic with display name (using computed idHash)
+      // MUST await - createAIChannel needs to complete before posting messages
+      await this.registerAITopic(topicIdHash, privateAiPersonId);
+      this.setTopicDisplayName(topicIdHash, displayNameForTopic);
+      this._lamaTopicId = topicIdHash;  // Track as default LAMA topic
 
       // Trigger LLM-generated welcome message via callback (fire and forget - don't block)
       if (needsWelcome && onTopicCreated) {
         MessageBus.send('debug', 'LAMA chat created, triggering LLM welcome message generation (background)');
-        onTopicCreated(topicId, privateAiPersonId).catch(err => {
+        onTopicCreated(topicIdHash, privateAiPersonId).catch(err => {
           MessageBus.send('error', 'Failed to generate LAMA welcome message:', err);
         });
       } else if (needsWelcome) {
@@ -642,10 +727,11 @@ export class AITopicManager implements IAITopicManager {
 
       for (const topic of allTopics) {
         try {
-          // Get topicId from Topic object
-          const topicId = topic.id;
+          // Calculate topic ID hash from Topic object
+          const topicId = await calculateIdHashOfObj(topic);
+          const topicDisplayName = topic.displayName ?? topic.originalName ?? topicId.substring(0, 16);
 
-          MessageBus.send('debug', `Checking topic: ${topicId}`);
+          MessageBus.send('debug', `Checking topic: ${topicDisplayName}`);
 
           // Skip if already registered
           if (this._topicAIMap.has(topicId)) {
@@ -681,7 +767,7 @@ export class AITopicManager implements IAITopicManager {
                   MessageBus.send('debug', `    - Participant ${memberId.toString().substring(0, 8)}... → AI ID: ${aiId || 'NOT AI'}`);
                   if (aiId) {
                     aiPersonId = memberId;
-                    MessageBus.send('debug', `  FOUND AI participant in ${topicId}: ${aiId}`);
+                    MessageBus.send('debug', `  FOUND AI participant in ${topicDisplayName}: ${aiId}`);
                     break;
                   }
                 }
@@ -707,7 +793,7 @@ export class AITopicManager implements IAITopicManager {
                     MessageBus.send('debug', `    - Participant ${memberId.toString().substring(0, 8)}... → AI ID: ${aiId || 'NOT AI'}`);
                     if (aiId) {
                       aiPersonId = memberId;
-                      MessageBus.send('debug', `  FOUND AI participant in P2P topic ${topicId}: ${aiId}`);
+                      MessageBus.send('debug', `  FOUND AI participant in P2P topic ${topicDisplayName}: ${aiId}`);
                       break;
                     }
                   }
@@ -720,12 +806,18 @@ export class AITopicManager implements IAITopicManager {
 
           // Register if AI participant found
           if (aiPersonId) {
-            this._topicAIMap.set(topicId, aiPersonId);
+            // Use registerAITopic to ensure AI channel is created
+            await this.registerAITopic(topicId, aiPersonId);
             registeredCount++;
             const aiId = await aiManager.getAIId(aiPersonId);
-            MessageBus.send('debug', `  REGISTERED topic ${topicId} with AI Person ${aiId} (${aiPersonId.toString().substring(0, 8)}...)`);
+            MessageBus.send('debug', `  REGISTERED topic ${topicDisplayName} with AI Person ${aiId} (${aiPersonId.toString().substring(0, 8)}...)`);
+
+            // Share AI's profile and certificates with topic participants (same flow as Hi/LAMA topics)
+            // Required for CHUM sync - remote peers need TrustKeysCertificate to verify AI's signature
+            await this.topicModel.sharePersonProfileWithTopic(aiPersonId, topic);
+            MessageBus.send('debug', `  Shared AI profile with topic participants`);
           } else {
-            MessageBus.send('debug', `  SKIP - no AI participant found in topic ${topicId}`);
+            MessageBus.send('debug', `  SKIP - no AI participant found in topic ${topicDisplayName}`);
           }
         } catch (error) {
           MessageBus.send('alert', `  ERROR scanning topic:`, error);
