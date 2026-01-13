@@ -2,6 +2,7 @@ import LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import PropertyTreeStore from '@refinio/one.models/lib/models/SettingsModel.js';
+import GroupModel from '@refinio/one.models/lib/models/Leute/GroupModel.js';
 import { objectEvents } from '@refinio/one.models/lib/misc/ObjectEventDispatcher.js';
 import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import type { Module } from '@refinio/api';
@@ -10,6 +11,9 @@ import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-ob
 import { getInstanceOwnerIdHash, getInstanceOwnerEmail } from '@refinio/one.core/lib/instance.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+
+// IoM group name constant (same as IoMManager.IoMGroupName)
+const IOM_GROUP_NAME = 'IoM';
 
 // ============================================================================
 // MODULE-LEVEL SINGLETONS
@@ -135,7 +139,9 @@ export class CoreModule implements Module {
       // This is THE single place for basic model creation
       // NOTE: ConnectionsModel is created by ConnectionModule
       console.log('[CoreModule] Creating ONE.core models');
-      this.leuteModel = new LeuteModel(this.commServerUrl, false);
+      // createEveryoneGroup=true creates the "everyone" group for certificate sharing
+      // This is required for AI and user certificate distribution via CHUM
+      this.leuteModel = new LeuteModel(this.commServerUrl, true);
       this.channelManager = new ChannelManager(this.leuteModel);
       this.topicModel = new TopicModel(this.channelManager, this.leuteModel);
 
@@ -153,6 +159,23 @@ export class CoreModule implements Module {
       await this.leuteModel.init();
       await this.channelManager.init();
       await this.topicModel.init();
+
+      // Ensure IoM group exists for certificate sharing (mirrors IoMManager.initIomGroup)
+      // This is required for shareObjectWithIoM to work for both users and AI
+      try {
+        const myId = await this.leuteModel.myMainIdentity();
+        const iomGroup = await GroupModel.constructWithNewGroup(IOM_GROUP_NAME);
+        if (!iomGroup.persons.includes(myId)) {
+          iomGroup.persons.push(myId);
+          await iomGroup.saveAndLoad();
+        }
+        console.log('[CoreModule] ✅ IoM group initialized');
+      } catch (error: any) {
+        // Group might already exist
+        if (!error.message?.includes('already exists')) {
+          console.warn('[CoreModule] IoM group initialization:', error.message);
+        }
+      }
 
       // Note: ownerId and instanceId are available via ONE.core's getInstanceOwnerIdHash() and
       // getInstanceIdHash() after login. No need to set them on oneCore - Model accesses them directly.
