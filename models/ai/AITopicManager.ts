@@ -20,15 +20,12 @@
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
-import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 
 const MessageBus = createMessageBus('AITopicManager');
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
-import { createAccess } from '@refinio/one.core/lib/access.js';
-import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -102,23 +99,13 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Register an AI topic with its AI Person
-   * Creates a channel for the AI to post messages to (required for group chat CHUM sync)
+   * AI posts to the existing shared channel (owned by topic creator), not a separate channel
    */
   async registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void> {
     MessageBus.send('debug', `Registering AI topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
 
     // Store the mapping
     this._topicAIMap.set(topicId, aiPersonId);
-
-    // Create channel for the AI in this topic
-    // This enables the AI to post to its own channel (like human participants)
-    try {
-      await this.createAIChannel(topicId, aiPersonId);
-      MessageBus.send('debug', `Created AI channel for topic ${topicId.substring(0, 16)}...`);
-    } catch (error) {
-      // Log but don't fail - channel might already exist or topic might be P2P
-      MessageBus.send('alert', `Could not create AI channel for topic ${topicId}: ${error}`);
-    }
 
     // CRITICAL: Share AI's profile and certificates with topic participants
     // Without this, remote peers cannot verify AI's signature on messages via CHUM
@@ -131,56 +118,6 @@ export class AITopicManager implements IAITopicManager {
     } catch (error) {
       MessageBus.send('alert', `Could not share AI profile with topic ${topicId}: ${error}`);
     }
-  }
-
-  /**
-   * Create a channel for an AI participant in a topic
-   * Reuses the topic's existing participantsHash so all group members have access
-   *
-   * @param topicId - The topic ID hash
-   * @param aiPersonId - The AI Person who will own this channel
-   * @returns The created ChannelInfo ID hash
-   */
-  private async createAIChannel(
-    topicId: string,
-    aiPersonId: SHA256IdHash<Person>
-  ): Promise<SHA256IdHash<ChannelInfo>> {
-    // Get topic to access its participants and channel info
-    const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
-    if (!topic) {
-      throw new Error(`Cannot create AI channel for non-existent topic: ${topicId}`);
-    }
-
-    // Get participantsHash directly from Topic
-    const participantsHash = topic.participants as SHA256Hash<HashGroup<Person>>;
-
-    // Get discriminator from ChannelInfo
-    const channelInfoResult = await getObjectByIdHash(topic.channel);
-    const channelInfo = channelInfoResult.obj as ChannelInfo;
-    const discriminator = channelInfo.discriminator;
-
-    MessageBus.send('debug', `Creating AI channel: owner=${aiPersonId.substring(0, 16)}, participants=${participantsHash.substring(0, 16)}, discriminator=${discriminator}`);
-
-    // Create channel owned by AI, using existing group participants
-    // This allows all group members to read AI's messages via CHUM sync
-    const result = await this.channelManager.createChannel(
-      [], // participants already established via participantsHash
-      aiPersonId, // AI owns this channel
-      participantsHash, // reuse group's participant hash
-      discriminator // topic-specific
-    );
-
-    // CRITICAL: Grant HashGroup-based access to AI's channel for CHUM sync
-    // Without this, remote peers won't receive the AI's ChannelInfo via shared storage
-    await createAccess([{
-      id: result.channelInfoIdHash,
-      person: [],
-      hashGroup: [participantsHash],
-      mode: SET_ACCESS_MODE.ADD
-    }]);
-
-    MessageBus.send('debug', `AI channel created with access: ${result.channelInfoIdHash.substring(0, 16)}...`);
-    return result.channelInfoIdHash;
   }
 
   /**
