@@ -34,8 +34,8 @@ export interface AIManagerDeps {
   getIdObject: (idHash: SHA256IdHash<any>) => Promise<any>;
   getObject: (hash: SHA256Hash<any>) => Promise<any>;
   getObjectByIdHash: (idHash: SHA256IdHash<any>) => Promise<{obj: any, hash: SHA256Hash<any>}>;
-  createDefaultKeys?: (owner: SHA256IdHash<Person | Instance>, encryptionKeyPair?: KeyPair, signKeyPair?: SignKeyPair) => Promise<SHA256Hash<Keys>>;
-  hasDefaultKeys?: (owner: SHA256IdHash<Person | Instance>) => Promise<boolean>;
+  /** Creates a Person with default keys - the proper way to create AI persons */
+  createPersonWithDefaultKeys: (email?: string) => Promise<{personId: SHA256IdHash<Person>, personKeys: SHA256Hash<Keys>}>;
   channelManager: any;  // Required: for querying LLM objects
   trustPlan?: any;
   /** Instance idHash from ONE.core - used for Story tracking */
@@ -311,18 +311,19 @@ export class AIManager {
     }
 
     try {
-      // 1. Create Person object
+      // 1. Create Person with default keys (the proper way - same as LeuteModel.createIdentityWithInstanceAndKeys)
+      // This creates Person AND Keys atomically
       const email = `${aiId}@ai.local`;
-      const personData = {
-        $type$: 'Person' as const,
-        email,
-        name,
-      };
+      const { personId: personIdHash, personKeys: keysHash } = await this.deps.createPersonWithDefaultKeys(email);
+      MessageBus.send('debug', `Created AI Person with keys: ${personIdHash.toString().substring(0, 8)}...`);
 
-      const personResult: any = await this.deps.storeVersionedObject(personData);
-      const personIdHash = ensureIdHash(typeof personResult === 'object' && personResult?.idHash ? personResult.idHash : personResult);
+      // 2. Get the Keys object to extract publicSignKey for profile
+      const keysObject = await this.deps.getObject(keysHash);
+      if (!keysObject?.publicSignKey) {
+        throw new Error(`[AIManager] Keys object missing publicSignKey for AI Person: ${personIdHash}`);
+      }
 
-      // 2. Create PersonName
+      // 3. Create PersonName
       const personNameResult = await this.deps.storeUnversionedObject({
         $type$: 'PersonName' as const,
         name
@@ -331,7 +332,19 @@ export class AIManager {
         ? personNameResult.hash
         : personNameResult;
 
-      // 3. Create standard Profile (NO AI-specific fields)
+      // 4. Create SignKey PersonDescription (this is what trust system looks for!)
+      const signKeyResult = await this.deps.storeUnversionedObject({
+        $type$: 'SignKey' as const,
+        key: keysObject.publicSignKey
+      });
+      const signKeyHash = typeof signKeyResult === 'object' && 'hash' in signKeyResult
+        ? signKeyResult.hash
+        : signKeyResult;
+      MessageBus.send('debug', `Created SignKey PersonDescription: ${signKeyHash.toString().substring(0, 8)}...`);
+
+      // 5. Create Profile with BOTH PersonName AND SignKey
+      // CRITICAL: Profile MUST include SignKey for trust system to work
+      // TrustKeysCertificate points to profile, trust system extracts keys from profile.personDescription
       const myId = await this.leuteModel.myMainIdentity();
       const profileObj: any = {
         $type$: 'Profile' as const,
@@ -339,15 +352,15 @@ export class AIManager {
         personId: personIdHash,
         owner: myId,
         nickname: name,
-        personDescription: [personNameHash],
+        personDescription: [personNameHash, signKeyHash],  // Include SignKey!
         communicationEndpoint: []
       };
 
       const profileResult: any = await this.deps.storeVersionedObject(profileObj);
       const profileIdHash = ensureIdHash(typeof profileResult === 'object' && profileResult?.idHash ? profileResult.idHash : profileResult);
-      MessageBus.send('debug', `Created standard Profile: ${profileIdHash.toString().substring(0, 8)}...`);
+      MessageBus.send('debug', `Created Profile with SignKey: ${profileIdHash.toString().substring(0, 8)}...`);
 
-      // 4. Create AI metadata object
+      // 6. Create AI metadata object
       const now = Date.now();
       // modelId is required - AI identity is independent of model per design
       // aiId is now derived from AI creation (email prefix), not from modelId
@@ -378,7 +391,7 @@ export class AIManager {
       // Store in lookup table
       this.aiByPerson.set(personIdHash, aiObject);
 
-      // 5. Create Someone
+      // 7. Create Someone
       const someoneObj: any = {
         $type$: 'Someone' as const,
         someoneId: `ai:${aiId}`,
@@ -389,25 +402,10 @@ export class AIManager {
       const someoneResult: any = await this.deps.storeVersionedObject(someoneObj);
       const someoneIdHash = ensureIdHash(typeof someoneResult === 'object' && someoneResult?.idHash ? someoneResult.idHash : someoneResult);
 
-      // 6. Register with LeuteModel
+      // 8. Register with LeuteModel
       await this.leuteModel.addSomeoneElse(someoneIdHash);
 
-      // 7. Generate keys for the AI Person
-      // CRITICAL: Keys are REQUIRED for AI to sign messages via affirm()
-      // Without keys, AI message posting will throw KEYCH-NODEFKEYS and corrupt channel state
-      if (this.deps.createDefaultKeys && this.deps.hasDefaultKeys) {
-        const hasKeys = await this.deps.hasDefaultKeys(personIdHash);
-        if (!hasKeys) {
-          // Do NOT catch errors - keys MUST succeed or AI creation fails
-          await this.deps.createDefaultKeys(personIdHash);
-          MessageBus.send('debug', `Created keys for AI Person: ${personIdHash.toString().substring(0, 8)}...`);
-        }
-      } else {
-        // CRITICAL: Fail the AI creation if keys cannot be created
-        throw new Error('[AIManager] createDefaultKeys not available - AI Person requires signing keys for message affirmation');
-      }
-
-      // 8. Create certificates and share for CHUM sync
+      // 9. Create certificates and share for CHUM sync
       // CRITICAL: Without certificates, remote peers cannot verify AI's signatures
       // and CHUM sync will break when AI posts to group chats
       // This mirrors the pattern used in LeuteModel.createProfile() for regular identities
@@ -415,33 +413,46 @@ export class AIManager {
         ? profileResult.hash
         : null;
 
+      MessageBus.send('debug', `[AIManager] Certificate creation check - profileVersionHash: ${profileVersionHash?.substring?.(0, 16)}, trust: ${!!this.leuteModel.trust}`);
+
       if (profileVersionHash && this.leuteModel.trust) {
         try {
           // Create TrustKeysCertificate - enables remote peers to trust AI's keys
+          MessageBus.send('debug', `[AIManager] Creating TrustKeysCertificate for profile ${profileVersionHash.substring(0, 16)}...`);
           const trustKeysCert = await this.leuteModel.trust.certify('TrustKeysCertificate', {
             profile: profileVersionHash
           });
+          MessageBus.send('debug', `[AIManager] ✅ TrustKeysCertificate created`);
 
           // Create AffirmationCertificate - affirms the AI's profile
+          MessageBus.send('debug', `[AIManager] Creating AffirmationCertificate...`);
           const affirmationCert = await this.leuteModel.trust.affirm(
             profileVersionHash,
             personIdHash
           );
+          MessageBus.send('debug', `[AIManager] ✅ AffirmationCertificate created`);
 
           // Share profile versions with everyone (same as regular profiles)
+          MessageBus.send('debug', `[AIManager] Sharing profile versions with everyone...`);
           await this.leuteModel.shareVersionsWithEveryone(profileIdHash);
+          MessageBus.send('debug', `[AIManager] ✅ Profile versions shared`);
 
-          // Share certificates with everyone (same as regular profiles)
-          await this.leuteModel.shareObjectWithEveryone(trustKeysCert.signature.hash);
+          // Share certificates (same as LeuteModel.createProfile pattern)
+          // TrustKeysCertificate goes to IoM (inner circle), AffirmationCertificate to everyone
+          MessageBus.send('debug', `[AIManager] Sharing certificates...`);
+          await this.leuteModel.shareObjectWithIoM(trustKeysCert.signature.hash);
           await this.leuteModel.shareObjectWithEveryone(affirmationCert.hash);
+          MessageBus.send('debug', `[AIManager] ✅ Certificates shared`);
 
-          MessageBus.send('debug', `Created and shared certificates for AI Person: ${personIdHash.toString().substring(0, 8)}...`);
+          MessageBus.send('log', `[AIManager] ✅ Created and shared certificates for AI Person: ${personIdHash.toString().substring(0, 8)}...`);
         } catch (certError) {
-          // Log but don't fail - certificates enhance sync but AI can still work locally
-          MessageBus.send('alert', 'Failed to create certificates for AI Person:', certError);
+          // CRITICAL: Certificate failures will break CHUM sync for AI messages
+          // Log as error, not just alert
+          MessageBus.send('error', `[AIManager] ❌ CRITICAL: Failed to create certificates for AI Person - CHUM sync will NOT work:`, certError);
+          console.error('[AIManager] Certificate creation failed:', certError);
         }
       } else {
-        MessageBus.send('alert', `Could not create certificates for AI Person - profileVersionHash: ${profileVersionHash}, trust available: ${!!this.leuteModel.trust}`);
+        MessageBus.send('error', `[AIManager] ❌ CRITICAL: Cannot create certificates - profileVersionHash: ${profileVersionHash}, trust: ${!!this.leuteModel.trust}`);
       }
 
       // 9. Assign trust level (fire and forget - not critical for immediate use)
@@ -712,6 +723,99 @@ export class AIManager {
   }
 
   /**
+   * Ensure AI Person has TrustKeysCertificate for CHUM sync.
+   * Called during loadExisting() to backfill certificates for AIs created before
+   * certificate support was added.
+   *
+   * CRITICAL for CHUM sync: Without TrustKeysCertificate, remote peers cannot verify
+   * AI's signatures on ChannelInfo versions, causing AI messages to not sync.
+   *
+   * @param ai - The AI object to ensure certificates for
+   * @returns true if certificates were created, false if already present or failed
+   */
+  async ensureCertificatesForAI(ai: AI): Promise<boolean> {
+    if (!this.leuteModel?.trust) {
+      MessageBus.send('debug', `[AIManager] Cannot ensure certificates - trust not available`);
+      return false;
+    }
+
+    // CRITICAL: Only create certificates for AIs we OWN
+    // Remote AIs synced via CHUM should NOT have certificates created locally
+    // The AI's creator is responsible for creating and sharing certificates
+    const myId = await this.leuteModel.myMainIdentity();
+    if (ai.owner !== myId) {
+      MessageBus.send('debug', `[AIManager] Skipping certificate backfill for remote AI ${ai.aiId} (owner: ${String(ai.owner).substring(0, 8)}..., me: ${String(myId).substring(0, 8)}...)`);
+      return false;
+    }
+
+    try {
+      const { getAllEntries } = await import('@refinio/one.core/lib/reverse-map-query.js');
+
+      // Find the AI's Someone to get the profile
+      const others = await this.leuteModel.others();
+      let aiProfile: any = null;
+
+      for (const someone of others) {
+        if (someone.managesIdentity(ai.personId)) {
+          aiProfile = await someone.mainProfile();
+          break;
+        }
+      }
+
+      if (!aiProfile?.idHash) {
+        MessageBus.send('debug', `[AIManager] AI ${ai.aiId} has no profile - skipping certificate check`);
+        return false;
+      }
+
+      // Check if TrustKeysCertificate already exists for this profile
+      // Use loadedVersion (the concrete version hash) as that's what certificates reference
+      const profileHash = aiProfile.loadedVersion || aiProfile.idHash;
+      const existingCerts = await getAllEntries(profileHash, 'TrustKeysCertificate' as any);
+      if (existingCerts.length > 0) {
+        MessageBus.send('debug', `[AIManager] AI ${ai.aiId} already has ${existingCerts.length} TrustKeysCertificate(s)`);
+        return false;
+      }
+
+      // No certificates found - create them
+      MessageBus.send('log', `[AIManager] Creating certificates for AI ${ai.aiId} (backfill)...`);
+
+      const profileVersionHash = aiProfile.loadedVersion;
+      if (!profileVersionHash) {
+        MessageBus.send('warn', `[AIManager] AI ${ai.aiId} profile has no loadedVersion - cannot create certificates`);
+        return false;
+      }
+
+      // Create TrustKeysCertificate
+      const trustKeysCert = await this.leuteModel.trust.certify('TrustKeysCertificate', {
+        profile: profileVersionHash
+      });
+      MessageBus.send('debug', `[AIManager] ✅ Created TrustKeysCertificate for AI ${ai.aiId}`);
+
+      // Create AffirmationCertificate
+      const affirmationCert = await this.leuteModel.trust.affirm(
+        profileVersionHash,
+        ai.personId
+      );
+      MessageBus.send('debug', `[AIManager] ✅ Created AffirmationCertificate for AI ${ai.aiId}`);
+
+      // Share profile versions with everyone
+      await this.leuteModel.shareVersionsWithEveryone(aiProfile.idHash);
+      MessageBus.send('debug', `[AIManager] ✅ Shared profile versions for AI ${ai.aiId}`);
+
+      // Share certificates (TrustKeysCertificate to IoM, AffirmationCertificate to everyone)
+      await this.leuteModel.shareObjectWithIoM(trustKeysCert.signature.hash);
+      await this.leuteModel.shareObjectWithEveryone(affirmationCert.hash);
+      MessageBus.send('debug', `[AIManager] ✅ Shared certificates for AI ${ai.aiId}`);
+
+      MessageBus.send('log', `[AIManager] ✅ Backfilled certificates for AI ${ai.aiId}`);
+      return true;
+    } catch (error) {
+      MessageBus.send('warn', `[AIManager] Failed to ensure certificates for AI ${ai.aiId}:`, error);
+      return false;
+    }
+  }
+
+  /**
    * Get LLM object by modelId
    */
   getLLM(modelId: string): LLM | null {
@@ -853,17 +957,17 @@ export class AIManager {
         throw new Error(`[AIManager] No Someone found for AI ${aiId}`);
       }
 
-      // 2. Create new Person with new name
-      const newPersonData = {
-        $type$: 'Person' as const,
-        email: `${newName.toLowerCase().replace(/[^a-z0-9]/g, '_')}@ai.local`,
-        name: newName,
-      };
+      // 2. Create new Person with default keys (proper approach)
+      const newEmail = `${newName.toLowerCase().replace(/[^a-z0-9]/g, '_')}@ai.local`;
+      const { personId: newPersonId, personKeys: keysHash } = await this.deps.createPersonWithDefaultKeys(newEmail);
 
-      const newPersonResult: any = await this.deps.storeVersionedObject(newPersonData);
-      const newPersonId = ensureIdHash(typeof newPersonResult === 'object' && newPersonResult?.idHash ? newPersonResult.idHash : newPersonResult);
+      // 3. Get Keys object to extract publicSignKey
+      const keysObject = await this.deps.getObject(keysHash);
+      if (!keysObject?.publicSignKey) {
+        throw new Error(`[AIManager] Keys object missing publicSignKey for renamed AI Person: ${newPersonId}`);
+      }
 
-      // 3. Create PersonName for new Person
+      // 4. Create PersonName for new Person
       const personNameResult = await this.deps.storeUnversionedObject({
         $type$: 'PersonName' as const,
         name: newName
@@ -872,7 +976,16 @@ export class AIManager {
         ? personNameResult.hash
         : personNameResult;
 
-      // 4. Create new Profile
+      // 5. Create SignKey PersonDescription
+      const signKeyResult = await this.deps.storeUnversionedObject({
+        $type$: 'SignKey' as const,
+        key: keysObject.publicSignKey
+      });
+      const signKeyHash = typeof signKeyResult === 'object' && 'hash' in signKeyResult
+        ? signKeyResult.hash
+        : signKeyResult;
+
+      // 6. Create new Profile with SignKey
       const myId = await this.leuteModel.myMainIdentity();
       const newProfileId = `ai:${newName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       const newProfileObj: any = {
@@ -881,30 +994,18 @@ export class AIManager {
         personId: newPersonId,
         owner: myId,
         nickname: newName,
-        personDescription: [personNameHash],
+        personDescription: [personNameHash, signKeyHash],  // Include SignKey!
         communicationEndpoint: []
       };
 
       const newProfileResult: any = await this.deps.storeVersionedObject(newProfileObj);
       const newProfileIdHash = ensureIdHash(typeof newProfileResult === 'object' && newProfileResult?.idHash ? newProfileResult.idHash : newProfileResult);
 
-      // 5. Add new Person to Someone's identities and set as mainProfile
+      // 7. Add new Person to Someone's identities and set as mainProfile
       await someone.addProfile(newProfileIdHash);
       await someone.setMainProfile(newProfileIdHash);
 
-      // 6. Generate keys for the new Person identity
-      if (this.deps.createDefaultKeys && this.deps.hasDefaultKeys) {
-        try {
-          const hasKeys = await this.deps.hasDefaultKeys(newPersonId);
-          if (!hasKeys) {
-            await this.deps.createDefaultKeys(newPersonId);
-          }
-        } catch (error) {
-          MessageBus.send('alert', 'Failed to generate keys for renamed Person:', error);
-        }
-      }
-
-      // 7. Update AI object with new Person ID
+      // 8. Update AI object with new Person ID
       const updatedAI: AI = {
         ...aiObject,
         personId: newPersonId,
@@ -1092,6 +1193,9 @@ export class AIManager {
 
                 // Ensure AI's Someone is in LeuteModel (fixes bug where Leute was cleared but AIList persisted)
                 await this.ensureSomeoneInLeute(ai);
+
+                // Ensure AI has certificates for CHUM sync (backfills missing certs)
+                await this.ensureCertificatesForAI(ai);
               }
             }
           } catch (error) {

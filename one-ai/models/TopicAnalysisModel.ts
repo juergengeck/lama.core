@@ -9,6 +9,7 @@ import { OEvent } from '@refinio/one.models/lib/misc/OEvent.js';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 import TopicAnalysisRoom from './TopicAnalysisRoom.js';
 import type { Subject } from '../types/Subject.js';
@@ -554,8 +555,13 @@ export default class TopicAnalysisModel extends Model {
             topicCount: allTopics?.length || 0
         });
 
-        // Return just the topic IDs
-        return (allTopics || []).map((topic: any) => topic.id);
+        // Return topic ID hashes (computed from Topic objects)
+        const topicIds: string[] = [];
+        for (const topic of allTopics || []) {
+            const topicIdHash = await calculateIdHashOfObj(topic as Topic);
+            topicIds.push(topicIdHash);
+        }
+        return topicIds;
     }
 
     /**
@@ -579,18 +585,22 @@ export default class TopicAnalysisModel extends Model {
 
         for (const topic of allTopics || []) {
             try {
-                const topicSubjects: any = await this.getSubjects(topic.id);
+                const topicIdHash = await calculateIdHashOfObj(topic as Topic);
+                const topicDisplayName = (topic as any).displayName ?? (topic as any).originalName ?? topicIdHash.substring(0, 16);
+                const topicSubjects: any = await this.getSubjects(topicIdHash);
                 if (Array.isArray(topicSubjects)) {
                     // Add topic context to each subject for reference
                     const subjectsWithTopic = topicSubjects.map(s => ({
                         ...s,
-                        topicId: topic.id,
-                        topicName: topic.name || topic.id
+                        topicId: topicIdHash,
+                        topicName: topicDisplayName
                     }));
                     allSubjects.push(...subjectsWithTopic);
                 }
             } catch (err) {
-                MessageBus.send('error', '[TopicAnalysisModel] Error getting subjects for topic:', topic.id, err);
+                const topicIdHash = await calculateIdHashOfObj(topic as Topic);
+                const topicDisplayName = (topic as any).displayName ?? (topic as any).originalName ?? topicIdHash.substring(0, 16);
+                MessageBus.send('error', '[TopicAnalysisModel] Error getting subjects for topic:', topicDisplayName, err);
             }
         }
 
@@ -623,18 +633,22 @@ export default class TopicAnalysisModel extends Model {
 
         for (const topic of allTopics || []) {
             try {
-                const topicKeywords: any = await this.getKeywords(topic.id);
+                const topicIdHash = await calculateIdHashOfObj(topic as Topic);
+                const topicDisplayName = (topic as any).displayName ?? (topic as any).originalName ?? topicIdHash.substring(0, 16);
+                const topicKeywords: any = await this.getKeywords(topicIdHash);
                 if (Array.isArray(topicKeywords)) {
                     // Add topic context to each keyword for reference
                     const keywordsWithTopic = topicKeywords.map(k => ({
                         ...k,
-                        topicId: topic.id,
-                        topicName: topic.name || topic.id
+                        topicId: topicIdHash,
+                        topicName: topicDisplayName
                     }));
                     allKeywords.push(...keywordsWithTopic);
                 }
             } catch (err) {
-                MessageBus.send('error', '[TopicAnalysisModel] Error getting keywords for topic:', topic.id, err);
+                const topicIdHash = await calculateIdHashOfObj(topic as Topic);
+                const topicDisplayName = (topic as any).displayName ?? (topic as any).originalName ?? topicIdHash.substring(0, 16);
+                MessageBus.send('error', '[TopicAnalysisModel] Error getting keywords for topic:', topicDisplayName, err);
             }
         }
 

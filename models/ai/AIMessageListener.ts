@@ -15,9 +15,12 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
+import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
 import type { AIAssistantPlan } from '../../plans/AIAssistantPlan.js';
 import { getRespondingAIs } from './AISettingsResolver.js';
 import type { AI } from './AIManager.js';
@@ -66,6 +69,22 @@ export class AIMessageListener {
             timeOfEarliestChange,
             data
         ) => {
+            // CRITICAL: Skip local channel updates - AI is triggered directly from ChatPlan.sendMessage()
+            // This listener only handles REMOTE messages (from P2P sync)
+            // Without this check, we'd get duplicate AI responses (one from IPC, one from listener)
+            const isOurChannel = channelOwner === this.deps.ownerId;
+            if (isOurChannel) {
+                console.log(`[AIMessageListener] ⏭️ Ignoring local channel update (AI triggered directly): ${channelInfoIdHash.substring(0, 16)}`);
+                return;
+            }
+
+            // CRITICAL: Ignore updates from AI channels (those are AI's own responses)
+            const isAIChannel = channelOwner && this.deps.aiPlan.isAIPerson(channelOwner);
+            if (isAIChannel) {
+                console.log(`[AIMessageListener] ⏭️ Ignoring update from AI channel: ${channelInfoIdHash.substring(0, 16)}`);
+                return;
+            }
+
             // Debounce frequent updates using channelInfoIdHash (stable identifier)
             const existingTimer = this.debounceTimers.get(channelInfoIdHash);
             if (existingTimer) {
@@ -77,14 +96,47 @@ export class AIMessageListener {
 
                 console.log(`[AIMessageListener] 🔔 Channel update received - channelInfoIdHash: ${channelInfoIdHash}`);
 
-                // Find topic by matching channel ID hash (Topic.channel === channelInfoIdHash)
+                // Find topic by matching channel discriminator
+                // In group chats, each participant has their own channel with a different channelInfoIdHash
+                // but all channels in the same topic share the same discriminator
                 const allTopics = await this.deps.topicModel.topics.all();
-                const topic = allTopics.find(t => t.channel === channelInfoIdHash);
+
+                // First try exact match (works for P2P and topic owner's channel)
+                let topic = allTopics.find(t => t.channel === channelInfoIdHash);
+
+                // If no exact match, look up by discriminator (group chat with multiple channels)
+                if (!topic) {
+                    try {
+                        // Get incoming channel's discriminator
+                        const incomingChannelResult = await getObjectByIdHash(channelInfoIdHash);
+                        const incomingChannel = incomingChannelResult.obj as ChannelInfo;
+                        const incomingDiscriminator = incomingChannel.discriminator;
+
+                        console.log(`[AIMessageListener] 🔍 Looking up topic by discriminator: ${incomingDiscriminator?.substring(0, 16)}`);
+
+                        // Find topic where Topic.channel has matching discriminator
+                        for (const t of allTopics) {
+                            const topicChannelResult = await getObjectByIdHash(t.channel);
+                            const topicChannel = topicChannelResult.obj as ChannelInfo;
+                            if (topicChannel.discriminator === incomingDiscriminator) {
+                                topic = t;
+                                console.log(`[AIMessageListener] ✅ Found topic by discriminator match`);
+                                break;
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`[AIMessageListener] Error looking up channel by discriminator:`, err);
+                    }
+                }
 
                 if (!topic) {
                     console.log(`[AIMessageListener] ⏭️  No topic found for channelInfoIdHash: ${channelInfoIdHash}`);
                     return;
                 }
+
+                // Calculate topic ID hash once for all operations
+                const topicIdHash = await calculateIdHashOfObj(topic);
+                const topicDisplayName = topic.displayName ?? topic.originalName ?? topicIdHash.substring(0, 16);
 
                 // Check if this topic has responding AIs based on settings
                 // Priority: Check Topic.aiParticipants (new settings) → fallback to isAITopic (legacy)
@@ -107,23 +159,23 @@ export class AIMessageListener {
 
                 // Fallback to legacy isAITopic check if no settings-based AIs found
                 if (respondingAIPersonIds.length === 0) {
-                    const isAI = this.deps.aiPlan.isAITopic(topic.id);
-                    console.log(`[AIMessageListener] 🤖 Is AI topic (legacy)? ${isAI} for topic.id: ${topic.id}`);
+                    const isAI = this.deps.aiPlan.isAITopic(topicIdHash);
+                    console.log(`[AIMessageListener] 🤖 Is AI topic (legacy)? ${isAI} for topic: ${topicDisplayName}`);
                     if (!isAI) {
-                        console.log(`[AIMessageListener] ⏭️  Skipping non-AI topic: ${topic.id}`);
+                        console.log(`[AIMessageListener] ⏭️  Skipping non-AI topic: ${topicDisplayName}`);
                         return;
                     }
                     // Legacy mode: single AI from _topicAIMap
-                    const legacyAI = this.deps.aiPlan.getAIPersonForTopic?.(topic.id);
+                    const legacyAI = this.deps.aiPlan.getAIPersonForTopic?.(topicIdHash);
                     if (legacyAI) {
                         respondingAIPersonIds = [legacyAI as SHA256IdHash<Person>];
                     }
                 } else {
-                    console.log(`[AIMessageListener] 🤖 Settings-based: ${respondingAIPersonIds.length} AIs should respond for topic.id: ${topic.id}`);
+                    console.log(`[AIMessageListener] 🤖 Settings-based: ${respondingAIPersonIds.length} AIs should respond for topic: ${topicDisplayName}`);
                 }
 
                 if (respondingAIPersonIds.length === 0) {
-                    console.log(`[AIMessageListener] ⏭️  No responding AIs for topic: ${topic.id}`);
+                    console.log(`[AIMessageListener] ⏭️  No responding AIs for topic: ${topicDisplayName}`);
                     return;
                 }
 
@@ -169,13 +221,17 @@ export class AIMessageListener {
         topic: Topic,
         respondingAIPersonIds: SHA256IdHash<Person>[]
     ): Promise<void> {
-        console.log(`[AIMessageListener] Processing channel update for topic.id: ${topic.id}`);
+        // Calculate topic ID hash for all operations
+        const topicIdHash = await calculateIdHashOfObj(topic);
+        const topicDisplayName = topic.displayName ?? topic.originalName ?? topicIdHash.substring(0, 16);
+
+        console.log(`[AIMessageListener] Processing channel update for topic: ${topicDisplayName}`);
 
         try {
             // Enter the topic room to access messages
-            const topicRoom = await this.deps.topicModel.enterTopicRoom(topic.id);
+            const topicRoom = await this.deps.topicModel.enterTopicRoom(topicIdHash as unknown as SHA256IdHash<Topic>);
             if (!topicRoom) {
-                console.error(`[AIMessageListener] Could not enter topic room ${topic.id}`);
+                console.error(`[AIMessageListener] Could not enter topic room ${topicDisplayName}`);
                 return;
             }
 
@@ -185,7 +241,7 @@ export class AIMessageListener {
 
             // If topic is empty, skip (welcome message handled elsewhere)
             if (messages.length === 0) {
-                console.log(`[AIMessageListener] Empty topic ${topic.id} - skipping`);
+                console.log(`[AIMessageListener] Empty topic ${topicDisplayName} - skipping`);
                 return;
             }
 
@@ -228,7 +284,7 @@ export class AIMessageListener {
             }
 
             // Create a unique identifier for this user message
-            const messageIdentifier = `${topic.id}-${lastUserMessage.creationTime}-${messageSender}`;
+            const messageIdentifier = `${topicIdHash}-${lastUserMessage.creationTime}-${messageSender}`;
 
             // Get or create tracking set for this message
             if (!this.aiResponseTracking.has(messageIdentifier)) {
@@ -264,11 +320,11 @@ export class AIMessageListener {
                 // CRITICAL: Register AI topic BEFORE processing message
                 // This sets up HashGroup access for the AI's channel, enabling CHUM sync
                 // Without this, AI messages won't sync to remote peers
-                await this.deps.aiPlan.registerAITopic(topic.id, aiPersonId);
+                await this.deps.aiPlan.registerAITopic(topicIdHash, aiPersonId);
 
                 // Delegate to AIAssistantPlan for AI response generation
                 // Don't await - let AIs respond independently/in parallel
-                this.deps.aiPlan.processMessage(topic.id, messageText, messageSender, aiPersonId)
+                this.deps.aiPlan.processMessage(topicIdHash, messageText, messageSender, aiPersonId)
                     .catch(err => console.error(`[AIMessageListener] AI ${aiPersonId.substring(0, 8)} failed:`, err));
             }
 

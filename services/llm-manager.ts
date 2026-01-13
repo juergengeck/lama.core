@@ -746,6 +746,15 @@ class LLMManager {
           platform: this.platform,
           ollamaContextCache: this.ollamaContextCache
         });
+        // DEBUG: Trace content through LLM response
+        console.log(`[LLMManager] 🔍 TRACE chatResult:`, {
+          hasContent: 'content' in chatResult,
+          contentType: typeof chatResult.content,
+          contentLength: chatResult.content?.length,
+          contentPreview: chatResult.content?.substring?.(0, 100),
+          hasThinking: !!chatResult.thinking,
+          thinkingLength: chatResult.thinking?.length
+        });
         // Preserve thinking from reasoning models (gpt-oss, deepseek-r1)
         if (chatResult.thinking) {
           response = {
@@ -753,8 +762,17 @@ class LLMManager {
             thinking: chatResult.thinking,
             _hasThinking: true
           };
+          console.log(`[LLMManager] 🔍 TRACE response (with thinking):`, {
+            responseContentLength: (response as any).content?.length,
+            responseContentPreview: (response as any).content?.substring?.(0, 100)
+          });
         } else {
           response = chatResult.content;
+          console.log(`[LLMManager] 🔍 TRACE response (no thinking):`, {
+            responseType: typeof response,
+            responseLength: (response as string)?.length,
+            responsePreview: (response as string)?.substring?.(0, 100)
+          });
         }
       } else {
         // Fallback to legacy routing (will be removed once all adapters are registered)

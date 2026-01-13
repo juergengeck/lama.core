@@ -222,7 +222,7 @@ export class TopicAnalysisPlan {
       if (this.topicModel && this.nodeOneCore?.aiAssistantModel) {
         try {
           // Get the Topic object to check aiParticipants
-          const topic = await this.topicModel.findTopic(request.topicId);
+          const topic = await this.topicModel.findTopic(request.topicId as SHA256IdHash<Topic>);
           if (topic && topic.aiParticipants && topic.aiParticipants.size > 0) {
             // Get AIManager to resolve AI objects
             const aiManager = this.nodeOneCore.aiAssistantModel.getAIManager?.();
@@ -256,7 +256,7 @@ export class TopicAnalysisPlan {
       // If no messages provided, retrieve from conversation
       if (messages.length === 0 && this.topicModel) {
         try {
-          const topic = await this.topicModel.findTopic(request.topicId);
+          const topic = await this.topicModel.findTopic(request.topicId as SHA256IdHash<Topic>);
           if (!topic) {
             MessageBus.send('debug', `Topic does not exist, skipping analysis: ${request.topicId}`);
             return {
@@ -268,7 +268,8 @@ export class TopicAnalysisPlan {
               }
             };
           }
-          const topicRoom: any = await this.topicModel.enterTopicRoom(topic.id);
+          // Use request.topicId directly (same as what was passed to findTopic)
+          const topicRoom: any = await this.topicModel.enterTopicRoom(request.topicId as SHA256IdHash<Topic>);
           const messagesIterable: any = await topicRoom.retrieveAllMessages();
           messages = [];
           for await (const msg of messagesIterable) {

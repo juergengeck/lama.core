@@ -27,6 +27,8 @@ const MessageBus = createMessageBus('AITopicManager');
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
+import { createAccess } from '@refinio/one.core/lib/access.js';
+import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -117,6 +119,18 @@ export class AITopicManager implements IAITopicManager {
       // Log but don't fail - channel might already exist or topic might be P2P
       MessageBus.send('alert', `Could not create AI channel for topic ${topicId}: ${error}`);
     }
+
+    // CRITICAL: Share AI's profile and certificates with topic participants
+    // Without this, remote peers cannot verify AI's signature on messages via CHUM
+    try {
+      const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+      if (topic) {
+        await this.topicModel.sharePersonProfileWithTopic(aiPersonId, topic);
+        MessageBus.send('debug', `Shared AI profile/certs with topic ${topicId.substring(0, 16)} participants`);
+      }
+    } catch (error) {
+      MessageBus.send('alert', `Could not share AI profile with topic ${topicId}: ${error}`);
+    }
   }
 
   /**
@@ -156,7 +170,16 @@ export class AITopicManager implements IAITopicManager {
       discriminator // topic-specific
     );
 
-    MessageBus.send('debug', `AI channel created: ${result.channelInfoIdHash.substring(0, 16)}...`);
+    // CRITICAL: Grant HashGroup-based access to AI's channel for CHUM sync
+    // Without this, remote peers won't receive the AI's ChannelInfo via shared storage
+    await createAccess([{
+      id: result.channelInfoIdHash,
+      person: [],
+      hashGroup: [participantsHash],
+      mode: SET_ACCESS_MODE.ADD
+    }]);
+
+    MessageBus.send('debug', `AI channel created with access: ${result.channelInfoIdHash.substring(0, 16)}...`);
     return result.channelInfoIdHash;
   }
 
@@ -537,8 +560,8 @@ export class AITopicManager implements IAITopicManager {
         }
 
         const welcomeMessage = getWelcomeMessage(modelProvider);
-        // Owned channels use current user as channel owner (default)
-        await topicRoom.sendMessage(welcomeMessage, aiPersonId);
+        // AI posts to its own channel (owned by AI, shared with group participants)
+        await topicRoom.sendMessage(welcomeMessage, aiPersonId, aiPersonId);
         MessageBus.send('debug', 'Static welcome message posted to Hi chat');
       } else {
         MessageBus.send('debug', 'Hi chat already exists');

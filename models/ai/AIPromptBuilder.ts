@@ -14,6 +14,7 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type { IAIPromptBuilder, IAIMessageProcessor } from './interfaces.js';
@@ -69,8 +70,8 @@ export class AIPromptBuilder implements IAIPromptBuilder {
    */
   private async getParticipants(topicId: string): Promise<Array<{ id: string; name: string; isAI: boolean; modelId?: string }>> {
     try {
-      // Get topic to find group
-      const topic = (await this.topicModel.topics.all()).find((t: any) => t.id === topicId);
+      // Get topic by ID
+      const topic = await this.topicModel.findTopic(topicId);
       if (!topic) return [];
 
       // Get group members - need topicGroupManager
@@ -162,7 +163,8 @@ export class AIPromptBuilder implements IAIPromptBuilder {
       const contextWindow = model?.contextLength || 8192; // Default to Ollama-scale (most local models)
 
       // Get system prompt (will be Part 1)
-      const systemPrompt = await this.buildSystemPrompt(topicId);
+      // Pass modelId so SystemPromptBuilder can check capabilities (e.g., skip tools for non-tool-capable models)
+      const systemPrompt = await this.buildSystemPrompt(topicId, modelId);
 
       // Get past subjects from other topics (will be Part 2)
       const pastSubjects = await this.getPastSubjectsWithAbstraction(topicId);
@@ -170,7 +172,15 @@ export class AIPromptBuilder implements IAIPromptBuilder {
 
       // Get messages from current topic (will be Part 3)
       const allMessages = await this.getCachedMessages(topicId);
+      console.log(`[AIPromptBuilder] 🔍 RAW MESSAGES (${allMessages.length}):`, allMessages.map((m: any) => ({
+        text: (m.data?.text || m.text)?.substring(0, 30),
+        sender: (m.data?.sender || m.author)?.substring(0, 16)
+      })));
       const currentSubjectMessages = await this.formatMessagesForContext(allMessages);
+      console.log(`[AIPromptBuilder] 🔍 FORMATTED MESSAGES (${currentSubjectMessages.length}):`, currentSubjectMessages.map(m => ({
+        role: m.role,
+        content: m.content?.substring(0, 30)
+      })));
 
       // Build context using budget manager with abstraction-based compression
       const promptParts = buildContextWithinBudget({
@@ -214,7 +224,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
    * Build system prompt (Part 1)
    * Uses SystemPromptBuilder for composable, personalized system prompts
    */
-  private async buildSystemPrompt(topicId: string): Promise<string> {
+  private async buildSystemPrompt(topicId: string, modelId?: string | null): Promise<string> {
     // Get AI Person ID for this topic to enable personalized prompts
     const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
 
@@ -240,7 +250,8 @@ export class AIPromptBuilder implements IAIPromptBuilder {
       selfPersonId: aiPersonId,  // So the AI knows which participant is itself
       aiManager: this.aiManager,
       llmManager: this.llmManager,
-      characterPlan: this.characterPlan
+      characterPlan: this.characterPlan,
+      modelId: modelId || undefined  // Pass modelId so SystemPromptBuilder can check capabilities
     };
 
     // Use llmManager's SystemPromptBuilder if available, otherwise fall back to Phase 1 prompt
@@ -533,11 +544,12 @@ export class AIPromptBuilder implements IAIPromptBuilder {
       const pastSubjects: SubjectForSummary[] = [];
 
       // Get subjects from all topics except current
-      for (const topic of allTopics) {
-        if (topic.id === currentTopicId) continue; // Skip current topic
+      // Note: allTopics is an array of topic ID hash strings (not Topic objects)
+      for (const topicIdHash of allTopics) {
+        if (topicIdHash === currentTopicId) continue; // Skip current topic
 
         try {
-          const subjects = await this.topicAnalysisModel.getSubjects(topic.id);
+          const subjects = await this.topicAnalysisModel.getSubjects(topicIdHash);
           if (!subjects) continue;
 
           for (const subject of subjects) {
@@ -567,7 +579,7 @@ export class AIPromptBuilder implements IAIPromptBuilder {
             });
           }
         } catch (error) {
-          console.warn(`[AIPromptBuilder] Failed to get subjects for topic ${topic.id}:`, error);
+          console.warn(`[AIPromptBuilder] Failed to get subjects for topic ${topicIdHash.substring(0, 16)}:`, error);
         }
       }
 

@@ -109,8 +109,22 @@ export class AnthropicAdapter implements LLMAdapter {
       });
     }
 
+    // DEBUG: Trace raw response from HTTP layer
+    console.log('[AnthropicAdapter] 🔍 TRACE raw response from HTTP:', {
+      responseType: typeof response,
+      responseLength: typeof response === 'string' ? response.length : 'N/A',
+      responsePreview: typeof response === 'string' ? response.substring(0, 100) : JSON.stringify(response)?.substring(0, 100)
+    });
+
     // Normalize response to ChatResult
-    return this.normalizeResponse(response);
+    const normalized = this.normalizeResponse(response);
+    console.log('[AnthropicAdapter] 🔍 TRACE normalized response:', {
+      contentType: typeof normalized.content,
+      contentLength: normalized.content?.length,
+      contentPreview: normalized.content?.substring?.(0, 100),
+      hasThinking: !!normalized.thinking
+    });
+    return normalized;
   }
 
   /**

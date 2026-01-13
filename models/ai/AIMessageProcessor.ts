@@ -14,12 +14,14 @@
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 
 const MessageBus = createMessageBus('AIMessageProcessor');
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import type { IAIMessageProcessor, IAIPromptBuilder, IAITaskManager } from './interfaces.js';
 import type { LLMModelInfo, MessageQueueEntry } from './types.js';
 import type { LLMPlatform } from '../../services/llm-platform.js';
@@ -282,6 +284,20 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           },
           onComplete: async (completionResult: { response: string; thinking?: string; analysis?: any }) => {
             // ✅ CONSOLIDATED PERSISTENCE: Store message with analytics after Phase 2 completes
+            // DEBUG: Comprehensive trace of what we received
+            console.log('[AIMessageProcessor] 🔍 TRACE onComplete received:', {
+              completionResultType: typeof completionResult,
+              completionResultKeys: completionResult ? Object.keys(completionResult) : 'null',
+              responseType: typeof completionResult?.response,
+              responseValue: completionResult?.response,
+              responseLength: completionResult?.response?.length,
+              responseIsUndefined: completionResult?.response === undefined,
+              responseIsNull: completionResult?.response === null,
+              responseIsEmptyString: completionResult?.response === '',
+              thinkingLength: completionResult?.thinking?.length,
+              hasAnalysis: !!completionResult?.analysis,
+              topicId: topicId?.substring(0, 20)
+            });
             MessageBus.send('debug', `onComplete - response: ${completionResult.response?.length || 0} chars, analysis: ${completionResult.analysis ? 'yes' : 'no'}`);
 
             const response = completionResult.response;
@@ -306,9 +322,11 @@ export class AIMessageProcessor implements IAIMessageProcessor {
             // This persists the message in ONE.core so it doesn't vanish after streaming
             try {
               console.log(`[AIMessageProcessor] 🔍 DEBUG onComplete: topicId=${topicId.substring(0, 20)}, response.length=${response.length}, response.substring(0,100)="${response.substring(0, 100)}"`);
-              const topic = await this.topicModel.findTopic(topicId);
-              console.log(`[AIMessageProcessor] 🔍 DEBUG: findTopic returned:`, topic ? `id=${topic.id?.substring(0, 20)}, channel=${topic.channel?.substring(0, 16)}` : 'null');
-              const topicRoom = topic ? await this.topicModel.enterTopicRoom(topic.id) : null;
+              const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+              const topicIdHashForRoom = topic ? await calculateIdHashOfObj(topic) : null;
+              const topicDisplayName = topic ? (topic.displayName ?? topic.originalName ?? topicIdHashForRoom?.substring(0, 16)) : 'unknown';
+              console.log(`[AIMessageProcessor] 🔍 DEBUG: findTopic returned:`, topic ? `name=${topicDisplayName}, channel=${topic.channel?.substring(0, 16)}` : 'null');
+              const topicRoom = topicIdHashForRoom ? await this.topicModel.enterTopicRoom(topicIdHashForRoom as unknown as SHA256IdHash<Topic>) : null;
               console.log(`[AIMessageProcessor] 🔍 DEBUG: enterTopicRoom returned:`, topicRoom ? 'TopicRoom' : 'null');
               if (topicRoom) {
                 // Post the AI's response to the topic's existing channel (owned by user)
@@ -330,7 +348,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                   MessageBus.send('debug', `Stored AI response with thinking to ${topicId}`);
                 } else {
                   console.log(`[AIMessageProcessor] 🔍 DEBUG: About to call sendMessage with response="${response.substring(0, 50)}...", aiPersonId=${aiPersonId.substring(0, 16)}`);
-                  await topicRoom.sendMessage(response, aiPersonId);
+                  await topicRoom.sendMessage(response, aiPersonId, aiPersonId);
                   console.log(`[AIMessageProcessor] ✅ DEBUG: sendMessage completed`);
                   MessageBus.send('debug', `Stored AI response to ${topicId}`);
                 }
@@ -475,12 +493,12 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
         // Store the hardcoded message in ONE.core
         try {
-          const topic = await this.topicModel.findTopic(topicId);
-          const topicRoom = topic ? await this.topicModel.enterTopicRoom(topic.id) : null;
+          const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+          const topicIdHashForRoom = topic ? await calculateIdHashOfObj(topic) : null;
+          const topicRoom = topicIdHashForRoom ? await this.topicModel.enterTopicRoom(topicIdHashForRoom as unknown as SHA256IdHash<Topic>) : null;
           if (aiPersonId && topicRoom) {
-            // Use the topic's existing channel (owned by user, not AI)
-            // AI is the author, but channel owner is the user (undefined = current user default)
-            await topicRoom.sendMessage(hardcodedWelcome, aiPersonId);
+            // AI posts to its own channel (owned by AI, shared with group participants)
+            await topicRoom.sendMessage(hardcodedWelcome, aiPersonId, aiPersonId);
             MessageBus.send('debug', `Hardcoded welcome message stored for ${topicId}`);
 
             // Add to cache
@@ -581,13 +599,13 @@ export class AIMessageProcessor implements IAIMessageProcessor {
 
       // CRITICAL: Store the welcome message in ONE.core so it persists
       try {
-        const topic = await this.topicModel.findTopic(topicId);
-        const topicRoom = topic ? await this.topicModel.enterTopicRoom(topic.id) : null;
+        const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+        const topicIdHashForRoom = topic ? await calculateIdHashOfObj(topic) : null;
+        const topicRoom = topicIdHashForRoom ? await this.topicModel.enterTopicRoom(topicIdHashForRoom as unknown as SHA256IdHash<Topic>) : null;
 
         if (topicRoom) {
-          // Use the topic's existing channel (owned by user, not AI)
-          // AI is the author, but channel owner is the user (undefined = current user default)
-          await topicRoom.sendMessage(finalResponse, aiPersonId);
+          // AI posts to its own channel (owned by AI, shared with group participants)
+          await topicRoom.sendMessage(finalResponse, aiPersonId, aiPersonId);
           MessageBus.send('debug', `Welcome message stored for ${topicId}`);
 
           // Add welcome message to cache

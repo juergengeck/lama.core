@@ -203,25 +203,10 @@ export class SystemPromptBuilder {
           return '';
         }
 
-        // Debug logging
-        console.log('[SystemPromptBuilder] mcpManager methods:', Object.keys(this.mcpManager));
-        console.log('[SystemPromptBuilder] getCompactToolDescriptions exists?', typeof this.mcpManager.getCompactToolDescriptions);
-
         // Use compact descriptions to reduce prompt size and improve response times
-        // AI can call tool:describe for full details when needed
         const compact = this.mcpManager.getCompactToolDescriptions?.();
         const verbose = this.mcpManager.getToolDescriptions?.();
-
-        console.log('[SystemPromptBuilder] Compact type:', typeof compact);
-        console.log('[SystemPromptBuilder] Compact result length:', compact?.length || 0);
-        console.log('[SystemPromptBuilder] Verbose type:', typeof verbose);
-        console.log('[SystemPromptBuilder] Verbose result length:', verbose?.length || 0);
-
-        const result = compact || verbose || '';
-        console.log('[SystemPromptBuilder] FINAL CHOICE - Using:', result === compact ? 'COMPACT' : (result === verbose ? 'VERBOSE' : 'EMPTY'));
-        console.log('[SystemPromptBuilder] FINAL result length:', result?.length || 0);
-
-        return result;
+        return compact || verbose || '';
       }
     });
   }

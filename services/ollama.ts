@@ -263,6 +263,11 @@ async function chatWithOllama(
           try {
             const json = JSON.parse(line)
 
+            // DEBUG: Log raw JSON structure for gpt-oss troubleshooting
+            if (!json.done) {
+              MessageBus.send('debug', `[Ollama] 🔍 RAW CHUNK: ${JSON.stringify(json).substring(0, 300)}`)
+            }
+
             // Extract context array for caching (if present)
             if (json.context && Array.isArray(json.context)) {
               contextArray = json.context
@@ -444,6 +449,11 @@ async function chatWithOllama(
     }
     MessageBus.send('debug', `Completed request ${requestId}`)
     MessageBus.send('debug', `[Ollama] Response stats - content: ${fullResponse?.length || 0} chars, thinking: ${fullThinking?.length || 0} chars`)
+
+    // DEBUG: If thinking but no content, log thinking to understand model behavior
+    if (fullThinking && !fullResponse) {
+      console.log('[Ollama] ⚠️ THINKING ONLY (no content):', fullThinking.substring(0, 500))
+    }
 
     // Return structured response with thinking and context as metadata
     // If there's thinking or context, return object; otherwise return string for backwards compat

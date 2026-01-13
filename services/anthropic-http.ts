@@ -144,6 +144,13 @@ export async function chatWithAnthropicHTTP(options: AnthropicChatOptions): Prom
       }
     }
 
+    // DEBUG: Trace final accumulated response
+    console.log('[AnthropicHTTP] 🔍 TRACE streaming complete:', {
+      fullResponseLength: fullResponse.length,
+      fullResponsePreview: fullResponse.substring(0, 100),
+      fullResponseIsEmpty: fullResponse === ''
+    });
+
     return fullResponse;
   } finally {
     reader.releaseLock();

@@ -16,7 +16,7 @@ import { getObject, storeUnversionedObject } from '@refinio/one.core/lib/storage
 import { StoryFactory } from '@refinio/api/plan-system';
 import { getAllEntries } from '@refinio/one.core/lib/reverse-map-query.js';
 import { createAccess } from '@refinio/one.core/lib/access.js';
-import { createDefaultKeys, hasDefaultKeys } from '@refinio/one.core/lib/keychain/keychain.js';
+import { createPersonWithDefaultKeys } from '@refinio/one.models/lib/misc/person.js';
 
 // LAMA core plans (platform-agnostic business logic - AI-related)
 import { AIPlan } from '@lama/core/plans/AIPlan.js';
@@ -330,8 +330,7 @@ export class AIModule implements Module {
         getIdObject,
         getObjectByIdHash,
         getObject,
-        createDefaultKeys,
-        hasDefaultKeys,
+        createPersonWithDefaultKeys,
         channelManager: channelManager!,    // Required: for querying LLM objects
         trustPlan: trustPlan!              // For assigning 'high' trust to AI contacts
       }
@@ -403,7 +402,95 @@ export class AIModule implements Module {
     // This enables Gemma and other local models to call plan methods
     this.initToolExecutor({ mcpManager: this.deps.mCPManager });
 
+    // CRITICAL: Establish trust for AI participants when topics are received
+    // This mirrors what trustPairingKeys does for human peers after pairing
+    // Without this, remote peers cannot verify AI signatures on messages
+    this.setupAITrustListener();
+
     console.log('[AIModule] Initialized');
+  }
+
+  /**
+   * Set up listener to establish trust for AI participants in received topics
+   * When a topic with AI participants is received via CHUM, the receiver needs
+   * to create local TrustKeysCertificates for those AIs - same as human pairing
+   */
+  private setupAITrustListener(): void {
+    const { topicModel, leuteModel, trustPlan } = this.deps;
+    if (!topicModel || !leuteModel || !trustPlan) {
+      console.warn('[AIModule] Cannot setup AI trust listener - missing deps');
+      return;
+    }
+
+    topicModel.onTopicReady.listen(async (topic, _idHash) => {
+      try {
+        // Check if topic has AI participants
+        if (!topic.aiParticipants || topic.aiParticipants.size === 0) {
+          return;
+        }
+
+        console.log(`[AIModule] Topic ${topic.displayName || topic.originalName} has ${topic.aiParticipants.size} AI participant(s)`);
+
+        for (const [aiPersonId, _settings] of topic.aiParticipants) {
+          await this.ensureAITrust(aiPersonId);
+        }
+      } catch (error) {
+        console.warn('[AIModule] Error establishing AI trust:', error);
+      }
+    });
+
+    console.log('[AIModule] AI trust listener set up');
+  }
+
+  /**
+   * Ensure we have trust established for an AI Person
+   * Creates TrustKeysCertificate if we don't have one yet
+   * This mirrors trustPairingKeys for human peers
+   */
+  private async ensureAITrust(aiPersonId: string): Promise<void> {
+    const { leuteModel, trustPlan } = this.deps;
+    if (!leuteModel?.trust || !trustPlan) {
+      return;
+    }
+
+    try {
+      // Check if we already have a TrustKeysCertificate for this AI
+      const someone = await leuteModel.getSomeone(aiPersonId as any);
+      if (!someone) {
+        console.log(`[AIModule] AI ${aiPersonId.substring(0, 8)} not found locally yet - waiting for CHUM`);
+        return;
+      }
+
+      const mainProfile = await someone.mainProfile();
+      if (!mainProfile?.loadedVersion) {
+        console.log(`[AIModule] AI ${aiPersonId.substring(0, 8)} has no profile yet - waiting for CHUM`);
+        return;
+      }
+
+      // Check if we already have trust
+      const existingCerts = await leuteModel.trust.getCertificatesOfType(
+        mainProfile.loadedVersion,
+        'TrustKeysCertificate' as any
+      );
+
+      if (existingCerts.length > 0) {
+        console.log(`[AIModule] Already have TrustKeysCertificate for AI ${aiPersonId.substring(0, 8)}`);
+        return;
+      }
+
+      // Create TrustKeysCertificate for the AI
+      console.log(`[AIModule] Creating TrustKeysCertificate for AI ${aiPersonId.substring(0, 8)}...`);
+      await leuteModel.trust.certify('TrustKeysCertificate', {
+        profile: mainProfile.loadedVersion
+      });
+
+      // Refresh trust caches
+      await leuteModel.trust.refreshCaches();
+
+      console.log(`[AIModule] ✅ Trust established for AI ${aiPersonId.substring(0, 8)}`);
+    } catch (error) {
+      console.warn(`[AIModule] Failed to establish trust for AI ${aiPersonId.substring(0, 8)}:`, error);
+    }
   }
 
   /**

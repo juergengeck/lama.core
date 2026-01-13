@@ -17,6 +17,7 @@
 
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import { createMessageBus } from '@refinio/one.core/lib/message-bus.js';
 
 const MessageBus = createMessageBus('AIAssistantPlan');
@@ -198,7 +199,7 @@ export class AIAssistantPlan {
    */
   private async _checkTopicExists(topicId: string): Promise<boolean> {
     try {
-      const topic = await this.deps.topicModel.findTopic(topicId);
+      const topic = await this.deps.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
       return !!topic;
     } catch (e) {
       return false;
@@ -984,29 +985,52 @@ export class AIAssistantPlan {
       const phase1Time = Date.now() - startTime;
       MessageBus.send('debug', `Phase 1 complete (${phase1Time}ms)`);
 
-      // DEBUG: Log what Phase 1 returned
-      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response type:', typeof response);
-      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response keys:', response && typeof response === 'object' ? Object.keys(response) : 'N/A');
-      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response.content?.length:', (response as any)?.content?.length);
-      console.log('[AIAssistantPlan] 🔍 DEBUG Phase 1 response.content?.substring(0,100):', (response as any)?.content?.substring?.(0, 100));
+      // DEBUG: Comprehensive trace of response through extraction
+      console.log('[AIAssistantPlan] 🔍 TRACE Phase 1 response received:', {
+        type: typeof response,
+        isNull: response === null,
+        isObject: typeof response === 'object' && response !== null,
+        keys: response && typeof response === 'object' ? Object.keys(response) : 'N/A',
+        hasContentKey: response && typeof response === 'object' ? 'content' in response : false,
+        hasResponseKey: response && typeof response === 'object' ? 'response' in response : false,
+        contentValue: (response as any)?.content,
+        contentType: typeof (response as any)?.content,
+        contentLength: (response as any)?.content?.length,
+        contentPreview: (response as any)?.content?.substring?.(0, 100),
+        thinkingLength: (response as any)?.thinking?.length
+      });
 
       // Extract actual response content and thinking
       // Handle multiple response formats: {content, ...}, {response, ...}, or plain string
       let actualResponse = '';
       let thinking: string | undefined;
+      let extractionPath = 'none';
       if (typeof response === 'object' && response !== null) {
-        if ('content' in response) {
+        if ('content' in response && (response as any).content) {
           actualResponse = (response as any).content;
-        } else if ('response' in response) {
+          extractionPath = 'object.content';
+        } else if ('response' in response && (response as any).response) {
           actualResponse = (response as any).response;
-        } else {
+          extractionPath = 'object.response';
+        } else if ((response as any).content === undefined && (response as any).response === undefined) {
+          // Neither content nor response - stringify the object
           actualResponse = String(response);
+          extractionPath = 'object.toString';
         }
+        // If content/response key exists but is empty/undefined, keep actualResponse as ''
         thinking = (response as any).thinking;
       } else {
         actualResponse = String(response);
+        extractionPath = 'string';
       }
-      console.log('[AIAssistantPlan] 🔍 DEBUG actualResponse.length:', actualResponse?.length);
+      console.log('[AIAssistantPlan] 🔍 TRACE actualResponse after extraction:', {
+        extractionPath,
+        actualResponseType: typeof actualResponse,
+        actualResponseValue: actualResponse,
+        actualResponseLength: actualResponse?.length,
+        actualResponsePreview: actualResponse?.substring?.(0, 100),
+        thinkingLength: thinking?.length
+      });
 
       let analysis: any = undefined;
 
@@ -1075,6 +1099,16 @@ export class AIAssistantPlan {
 
       // ✅ COMPLETION: Call onComplete with consolidated state (response + thinking + analysis)
       if (options?.onComplete) {
+        console.log('[AIAssistantPlan] 🔍 TRACE calling onComplete with:', {
+          responseType: typeof actualResponse,
+          responseLength: actualResponse?.length,
+          responsePreview: actualResponse?.substring?.(0, 100),
+          responseIsUndefined: actualResponse === undefined,
+          responseIsNull: actualResponse === null,
+          responseIsEmptyString: actualResponse === '',
+          thinkingLength: thinking?.length,
+          hasAnalysis: !!analysis
+        });
         options.onComplete({
           response: actualResponse,
           thinking,

@@ -16,6 +16,8 @@ import { GroupPlan, GroupPlanStorageDeps } from '@chat/core/plans/GroupPlan.js';
 import { ContactsPlan } from '@chat/core/plans/ContactsPlan.js';
 import { FeedForwardPlan } from '@chat/core/plans/FeedForwardPlan.js';
 import type { ExportPlan } from '@chat/core/plans/ExportPlan.js';
+import { TopicGroupManager } from '@chat/core/models/TopicGroupManager.js';
+import type { TopicGroupManagerStorageDeps } from '@chat/core/models/TopicGroupManager.js';
 
 /**
  * ChatModule - Chat functionality
@@ -44,7 +46,8 @@ export class ChatModule implements Module {
     { targetType: 'ChatPlan' },
     { targetType: 'GroupPlan' },
     { targetType: 'ContactsPlan' },
-    { targetType: 'FeedForwardPlan' }
+    { targetType: 'FeedForwardPlan' },
+    { targetType: 'TopicGroupManager' }
   ];
 
   private deps: {
@@ -62,6 +65,7 @@ export class ChatModule implements Module {
   public contactsPlan!: ContactsPlan;
   public exportPlan!: ExportPlan;
   public feedForwardPlan!: FeedForwardPlan;
+  public topicGroupManager!: TopicGroupManager;
 
   async init(): Promise<void> {
     if (!this.hasRequiredDeps()) {
@@ -96,6 +100,37 @@ export class ChatModule implements Module {
     this.chatPlan.setGroupPlan(this.groupPlan);
     console.log('[ChatModule] GroupPlan initialized');
 
+    // Initialize TopicGroupManager for group chat management
+    const topicGroupStorageDeps: TopicGroupManagerStorageDeps = {
+      storeVersionedObject: storeVersionedObject as any,
+      storeUnversionedObject: storeUnversionedObject as any,
+      getObjectByIdHash: getObjectByIdHash as any,
+      getObject: getObject as any,
+      createAccess: createAccess as any,
+      calculateIdHashOfObj: calculateIdHashOfObj as any,
+      calculateHashOfObj: calculateHashOfObj as any
+    };
+
+    // Build OneCoreInstance for TopicGroupManager
+    const oneCoreInstance = {
+      ownerId,
+      channelManager: this.deps.channelManager!,
+      topicModel: this.deps.topicModel!,
+      leuteModel: this.deps.leuteModel!,
+      aiAssistantModel: (oneCore as any)?.aiAssistantModel,
+      paranoiaLevel: (oneCore as any)?.paranoiaLevel ?? 0
+    };
+
+    this.topicGroupManager = new TopicGroupManager(
+      oneCoreInstance,
+      topicGroupStorageDeps,
+      this.deps.trustPlan
+    );
+
+    // Initialize topic sync listener
+    this.topicGroupManager.initializeTopicSyncListener(this.deps.topicModel!);
+    console.log('[ChatModule] TopicGroupManager initialized');
+
     console.log('[ChatModule] Initialized');
   }
 
@@ -124,6 +159,7 @@ export class ChatModule implements Module {
     registry.supply('ContactsPlan', this.contactsPlan);
     // Note: ExportPlan is NOT supplied - ChatModule consumes it, platform supplies it directly
     registry.supply('FeedForwardPlan', this.feedForwardPlan);
+    registry.supply('TopicGroupManager', this.topicGroupManager);
   }
 
   private hasRequiredDeps(): boolean {
