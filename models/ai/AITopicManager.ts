@@ -35,6 +35,7 @@ import type { AIMode, LLMModelInfo } from './types.js';
 
 export class AITopicManager implements IAITopicManager {
   // Topic-to-AI mappings (topicId → AI personId)
+  // @deprecated Use topic.aiParticipants as source of truth. This map is legacy and may be removed.
   private _topicAIMap: Map<string, SHA256IdHash<Person>>;
 
   // Topic loading states (topicId → isLoading)
@@ -99,7 +100,12 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Register an AI topic with its AI Person
-   * AI posts to the existing shared channel (owned by topic creator), not a separate channel
+   *
+   * Primary purpose: Share AI's profile/certs with topic participants for CHUM sync.
+   * Secondary: Populates legacy _topicAIMap (deprecated, kept for backwards compatibility).
+   *
+   * Note: For AI response triggering, isAITopic() now checks topic.aiParticipants directly.
+   * When creating new AI topics, set aiParticipants on the Topic object instead.
    */
   async registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void> {
     MessageBus.send('debug', `Registering AI topic: ${topicId} with AI Person: ${aiPersonId.toString().substring(0, 8)}...`);
@@ -122,16 +128,30 @@ export class AITopicManager implements IAITopicManager {
 
   /**
    * Check if a topic is an AI topic
+   * Checks topic.aiParticipants directly - the single source of truth
    */
-  isAITopic(topicId: string): boolean {
-    return this._topicAIMap.has(topicId);
+  async isAITopic(topicId: string): Promise<boolean> {
+    try {
+      const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+      return !!(topic?.aiParticipants && topic.aiParticipants.size > 0);
+    } catch {
+      return false;
+    }
   }
 
   /**
-   * Get AI Person ID for a topic
+   * Get first AI Person ID for a topic
    */
-  getAIPersonForTopic(topicId: string): SHA256IdHash<Person> | null {
-    return this._topicAIMap.get(topicId) || null;
+  async getAIPersonForTopic(topicId: string): Promise<SHA256IdHash<Person> | null> {
+    try {
+      const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+      if (topic?.aiParticipants && topic.aiParticipants.size > 0) {
+        return topic.aiParticipants.keys().next().value as SHA256IdHash<Person>;
+      }
+    } catch {
+      // Topic not found
+    }
+    return null;
   }
 
   // ============================================================
@@ -284,8 +304,8 @@ export class AITopicManager implements IAITopicManager {
    * Switch/reassign the AI Person for an existing AI topic
    * Used for changing which AI assistant a conversation uses
    */
-  switchTopicAI(topicId: string, newAIPersonId: SHA256IdHash<Person>): void {
-    if (!this.isAITopic(topicId)) {
+  async switchTopicAI(topicId: string, newAIPersonId: SHA256IdHash<Person>): Promise<void> {
+    if (!await this.isAITopic(topicId)) {
       throw new Error(`Cannot switch AI - topic ${topicId} is not an AI topic`);
     }
 
@@ -474,8 +494,7 @@ export class AITopicManager implements IAITopicManager {
         topicRoom = await this.topicModel.enterTopicRoom(topicIdHash as SHA256IdHash<Topic>);
       }
 
-      // Register as AI topic with display name (using computed idHash)
-      // MUST await - createAIChannel needs to complete before posting messages
+      // Register as AI topic (legacy support during migration)
       await this.registerAITopic(topicIdHash, aiPersonId);
       this.setTopicDisplayName(topicIdHash, 'Hi');
       this._hiTopicId = topicIdHash;  // Track as default Hi topic
@@ -497,8 +516,8 @@ export class AITopicManager implements IAITopicManager {
         }
 
         const welcomeMessage = getWelcomeMessage(modelProvider);
-        // AI posts to its own channel (owned by AI, shared with group participants)
-        await topicRoom.sendMessage(welcomeMessage, aiPersonId, aiPersonId);
+        // AI posts to the common group channel (null = topic's default channel)
+        await topicRoom.sendMessage(welcomeMessage, aiPersonId, null);
         MessageBus.send('debug', 'Static welcome message posted to Hi chat');
       } else {
         MessageBus.send('debug', 'Hi chat already exists');
@@ -702,6 +721,19 @@ export class AITopicManager implements IAITopicManager {
 
           let aiPersonId: SHA256IdHash<Person> | null = null;
 
+          // PRIORITY CHECK: topic.aiParticipants (new settings-based AI participants)
+          // This is the authoritative source for group chats with AI settings
+          if (topic.aiParticipants && topic.aiParticipants.size > 0) {
+            // Get first AI participant (topics may have multiple AIs, register first one)
+            const firstAI = topic.aiParticipants.keys().next().value;
+            if (firstAI) {
+              aiPersonId = firstAI as SHA256IdHash<Person>;
+              MessageBus.send('debug', `  FOUND AI in topic.aiParticipants: ${(aiPersonId as string).substring(0, 8)}...`);
+            }
+          }
+
+          // FALLBACK: Check Group/Channel participants for legacy AI topics
+          if (!aiPersonId) {
           // Check if topic has a group - all AI topics are group topics
           // Use topicGroupManager to check if the topic is a group topic
           let groupIdHash: SHA256IdHash<Group> | null = null;
@@ -763,6 +795,7 @@ export class AITopicManager implements IAITopicManager {
               MessageBus.send('debug', `  Could not check ChannelInfo participants: ${e}`);
             }
           }
+          } // End of if (!aiPersonId) fallback block
 
           // Register if AI participant found
           if (aiPersonId) {

@@ -428,7 +428,7 @@ export class AIAssistantPlan {
   /**
    * Check if a topic is an AI topic
    */
-  isAITopic(topicId: string): boolean {
+  async isAITopic(topicId: string): Promise<boolean> {
     return this.topicManager.isAITopic(topicId);
   }
 
@@ -436,7 +436,7 @@ export class AIAssistantPlan {
    * Get the model ID for a topic by resolving AI Person → modelId
    */
   async getModelIdForTopic(topicId: string): Promise<string | null> {
-    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    const aiPersonId = await this.topicManager.getAIPersonForTopic(topicId);
     if (!aiPersonId) {
       return null;
     }
@@ -452,8 +452,8 @@ export class AIAssistantPlan {
    * @param topicId - The topic ID
    * @returns AI Person ID hash as string, or null if not an AI topic
    */
-  getAIPersonForTopic(topicId: string): string | null {
-    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+  async getAIPersonForTopic(topicId: string): Promise<string | null> {
+    const aiPersonId = await this.topicManager.getAIPersonForTopic(topicId);
     return aiPersonId ? aiPersonId.toString() : null;
   }
 
@@ -475,7 +475,7 @@ export class AIAssistantPlan {
   /**
    * Check if a topic has any LLM participants.
    *
-   * The AITopicManager registry is the source of truth - if the topic isn't registered, it doesn't have AI.
+   * topic.aiParticipants is the source of truth.
    */
   async topicHasLLMParticipant(topicId: string): Promise<boolean> {
     return this.topicManager.isAITopic(topicId);
@@ -835,7 +835,7 @@ export class AIAssistantPlan {
    */
   async getPastIdentities(topicId: string): Promise<Array<{personId: SHA256IdHash<Person>, name: string}>> {
     // Get the AI Person for this topic
-    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    const aiPersonId = await this.topicManager.getAIPersonForTopic(topicId);
     if (!aiPersonId) {
       return [];
     }
@@ -870,7 +870,7 @@ export class AIAssistantPlan {
    * Handle a new topic creation by sending a welcome message
    */
   async handleNewTopic(topicId: string): Promise<void> {
-    const aiPersonId = this.topicManager.getAIPersonForTopic(topicId);
+    const aiPersonId = await this.topicManager.getAIPersonForTopic(topicId);
     if (!aiPersonId) {
       throw new Error(`[AIAssistantPlan] No AI Person for topic: ${topicId}`);
     }

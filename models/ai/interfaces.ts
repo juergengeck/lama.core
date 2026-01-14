@@ -34,11 +34,11 @@ export interface IAITopicManager {
   /** Register an AI topic with its AI Person and add AI to topic's access control */
   registerAITopic(topicId: string, aiPersonId: SHA256IdHash<Person>): Promise<void>;
 
-  /** Check if a topic is an AI topic */
-  isAITopic(topicId: string): boolean;
+  /** Check if a topic is an AI topic (checks aiParticipants) */
+  isAITopic(topicId: string): Promise<boolean>;
 
-  /** Get AI Person ID for a topic */
-  getAIPersonForTopic(topicId: string): SHA256IdHash<Person> | null;
+  /** Get first AI Person ID for a topic */
+  getAIPersonForTopic(topicId: string): Promise<SHA256IdHash<Person> | null>;
 
   /** Set loading state for a topic */
   setTopicLoadingState(topicId: string, isLoading: boolean): void;

@@ -414,6 +414,10 @@ export class AIModule implements Module {
    * Set up listener to establish trust for AI participants in received topics
    * When a topic with AI participants is received via CHUM, the receiver needs
    * to create local TrustKeysCertificates for those AIs - same as human pairing
+   *
+   * CRITICAL: Also registers topics in _topicAIMap so isAITopic() works correctly.
+   * This fixes the race condition where group chats with aiParticipants weren't
+   * triggering AI responses because isAITopic() only checked the legacy map.
    */
   private setupAITrustListener(): void {
     const { topicModel, leuteModel, trustPlan } = this.deps;
@@ -422,17 +426,25 @@ export class AIModule implements Module {
       return;
     }
 
-    topicModel.onTopicReady.listen(async (topic, _idHash) => {
+    topicModel.onTopicReady.listen(async (topic, idHash) => {
       try {
         // Check if topic has AI participants
         if (!topic.aiParticipants || topic.aiParticipants.size === 0) {
           return;
         }
 
-        console.log(`[AIModule] Topic ${topic.displayName || topic.originalName} has ${topic.aiParticipants.size} AI participant(s)`);
+        const topicId = String(idHash);
+        console.log(`[AIModule] Topic ${topic.displayName || topic.originalName} (${topicId.substring(0, 16)}) has ${topic.aiParticipants.size} AI participant(s)`);
 
         for (const [aiPersonId, _settings] of topic.aiParticipants) {
           await this.ensureAITrust(aiPersonId);
+
+          // Share AI profile/certs with topic participants (needed for CHUM sync)
+          // Note: isAITopic() now checks aiParticipants directly, map is legacy
+          if (this.aiAssistantPlan) {
+            await this.aiAssistantPlan.registerAITopic(topicId, aiPersonId as any);
+            console.log(`[AIModule] Shared AI profile with topic ${topicId.substring(0, 16)}`);
+          }
         }
       } catch (error) {
         console.warn('[AIModule] Error establishing AI trust:', error);

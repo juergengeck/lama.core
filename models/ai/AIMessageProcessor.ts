@@ -28,6 +28,7 @@ import type { LLMPlatform } from '../../services/llm-platform.js';
 import OneObjectCache from '@refinio/one.models/lib/api/utils/caches/OneObjectCache.js';
 import { formatForStandardAPI } from '../../services/context-budget-manager.js';
 import { storeUTF8Clob } from '@refinio/one.core/lib/storage-blob.js';
+import { storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 
 export class AIMessageProcessor implements IAIMessageProcessor {
   // Circular dependencies - injected via setters
@@ -102,6 +103,46 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     this.availableModels = models;
   }
 
+  /**
+   * Add/remove AI from aiResponding set on topic (syncs to all participants via CHUM)
+   * Each instance manages its own AI - adds when starting, removes when done
+   * @param topicId - The topic ID
+   * @param aiPersonId - The AI Person ID
+   * @param isResponding - true to add, false to remove
+   */
+  private async setTopicAIResponding(topicId: string, aiPersonId: SHA256IdHash<Person> | null, isResponding: boolean = true): Promise<void> {
+    if (!aiPersonId) return;
+
+    try {
+      const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
+      if (!topic) {
+        MessageBus.send('debug', `Cannot set aiResponding - topic not found: ${topicId}`);
+        return;
+      }
+
+      // Get or create the aiResponding set
+      const aiResponding = new Set(topic.aiResponding || []);
+
+      if (isResponding) {
+        aiResponding.add(aiPersonId);
+      } else {
+        aiResponding.delete(aiPersonId);
+      }
+
+      // Update topic with modified set
+      const updatedTopic = {
+        ...topic,
+        aiResponding: aiResponding.size > 0 ? aiResponding : undefined
+      };
+
+      const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+      await storeVersionedObject(updatedTopic);
+      MessageBus.send('debug', `${isResponding ? 'Added' : 'Removed'} ${aiPersonId.toString().substring(0, 8)} ${isResponding ? 'to' : 'from'} aiResponding on topic ${topicId.substring(0, 8)} (now ${aiResponding.size} responding)`);
+    } catch (error) {
+      MessageBus.send('error', `Failed to update aiResponding on topic ${topicId}:`, error);
+    }
+  }
+
 
   /**
    * Handle a new topic message
@@ -117,7 +158,7 @@ export class AIMessageProcessor implements IAIMessageProcessor {
     }
 
     // Check if this is an AI topic
-    if (!this.topicManager.isAITopic(topicId)) {
+    if (!await this.topicManager.isAITopic(topicId)) {
       return;
     }
 
@@ -224,7 +265,10 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       // This prevents duplicate processing when AI's stored message triggers channel update
       this.processingInProgress.set(processingKey, Promise.resolve());
 
-      // Emit thinking indicator via platform
+      // Add this AI to aiResponding set - syncs to all participants via CHUM
+      await this.setTopicAIResponding(topicId, aiPersonId, true);
+
+      // Emit thinking indicator via platform (for local UI)
       if (this.platform) {
         this.platform.emitProgress(topicId, 0);
       }
@@ -332,23 +376,32 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                 // Post the AI's response to the topic's existing channel (owned by user)
                 // AI is the author, but use topic's channel (undefined = current user default)
                 if (thinking) {
-                  // Store thinking as CLOB attachment
+                  // Store thinking as ClobDescriptor (proper ONE object wrapping the CLOB)
                   const thinkingClob = await storeUTF8Clob(thinking);
+                  const thinkingSize = new TextEncoder().encode(thinking).length;
+                  const clobDescriptor = await storeUnversionedObject({
+                    $type$: 'ClobDescriptor' as const,
+                    data: thinkingClob.hash,
+                    lastModified: Date.now(),
+                    name: 'thinking.txt',
+                    size: thinkingSize,
+                    type: 'text/plain'
+                  });
                   console.log(`[AIMessageProcessor] 🔍 DEBUG: About to call sendMessageWithAttachmentAsHash with response="${response.substring(0, 50)}...", aiPersonId=${aiPersonId.substring(0, 16)}`);
                   await topicRoom.sendMessageWithAttachmentAsHash(response, [{
-                    hash: thinkingClob.hash as unknown as SHA256Hash,
-                    type: 'CLOB',
+                    hash: clobDescriptor.hash as unknown as SHA256Hash,
+                    type: 'ClobDescriptor',
                     metadata: {
                       name: 'thinking.txt',
                       mimeType: 'text/plain',
-                      size: new TextEncoder().encode(thinking).length
+                      size: thinkingSize
                     }
                   }], aiPersonId);
                   console.log(`[AIMessageProcessor] ✅ DEBUG: sendMessageWithAttachmentAsHash completed`);
                   MessageBus.send('debug', `Stored AI response with thinking to ${topicId}`);
                 } else {
                   console.log(`[AIMessageProcessor] 🔍 DEBUG: About to call sendMessage with response="${response.substring(0, 50)}...", aiPersonId=${aiPersonId.substring(0, 16)}`);
-                  await topicRoom.sendMessage(response, aiPersonId, aiPersonId);
+                  await topicRoom.sendMessage(response, aiPersonId, null);
                   console.log(`[AIMessageProcessor] ✅ DEBUG: sendMessage completed`);
                   MessageBus.send('debug', `Stored AI response to ${topicId}`);
                 }
@@ -370,6 +423,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                   const content = analysis?.language ? { response, language: analysis.language } : response;
                   this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
                 }
+                // Remove this AI from aiResponding set - syncs to all participants via CHUM
+                await this.setTopicAIResponding(topicId, aiPersonId, false);
                 // Clear processing flag - message is stored and complete event sent
                 this.processingInProgress.delete(processingKey);
               } else {
@@ -379,6 +434,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                   const content = analysis?.language ? { response, language: analysis.language } : response;
                   this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
                 }
+                // Remove this AI from aiResponding set even on error
+                await this.setTopicAIResponding(topicId, aiPersonId, false);
                 // Clear processing flag even on error
                 this.processingInProgress.delete(processingKey);
               }
@@ -389,6 +446,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
                 const content = analysis?.language ? { response, language: analysis.language } : response;
                 this.platform.emitMessageUpdate(topicId, messageId, content, 'complete', modelId, modelName);
               }
+              // Remove this AI from aiResponding set even on error
+              await this.setTopicAIResponding(topicId, aiPersonId, false);
               // Clear processing flag even on error
               this.processingInProgress.delete(processingKey);
               // Don't throw - the response was already streamed to UI
@@ -405,6 +464,12 @@ export class AIMessageProcessor implements IAIMessageProcessor {
       return fullResponse;
     } catch (error) {
       MessageBus.send('error', 'Failed to process message:', error);
+
+      // Remove AI from aiResponding set on error (use override or try to resolve)
+      const errorAiPersonId = aiPersonIdOverride ?? this.topicManager.getAIPersonForTopic(topicId);
+      if (errorAiPersonId) {
+        await this.setTopicAIResponding(topicId, errorAiPersonId, false);
+      }
 
       // Clear processing flag on error (processingKey may not be defined if error happened early)
       const errorKey = `${topicId}:${aiPersonIdOverride || 'unknown'}`;
@@ -497,8 +562,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
           const topicIdHashForRoom = topic ? await calculateIdHashOfObj(topic) : null;
           const topicRoom = topicIdHashForRoom ? await this.topicModel.enterTopicRoom(topicIdHashForRoom as unknown as SHA256IdHash<Topic>) : null;
           if (aiPersonId && topicRoom) {
-            // AI posts to its own channel (owned by AI, shared with group participants)
-            await topicRoom.sendMessage(hardcodedWelcome, aiPersonId, aiPersonId);
+            // AI posts to the common group channel (null = topic's default channel)
+            await topicRoom.sendMessage(hardcodedWelcome, aiPersonId, null);
             MessageBus.send('debug', `Hardcoded welcome message stored for ${topicId}`);
 
             // Add to cache
@@ -604,8 +669,8 @@ export class AIMessageProcessor implements IAIMessageProcessor {
         const topicRoom = topicIdHashForRoom ? await this.topicModel.enterTopicRoom(topicIdHashForRoom as unknown as SHA256IdHash<Topic>) : null;
 
         if (topicRoom) {
-          // AI posts to its own channel (owned by AI, shared with group participants)
-          await topicRoom.sendMessage(finalResponse, aiPersonId, aiPersonId);
+          // AI posts to the common group channel (null = topic's default channel)
+          await topicRoom.sendMessage(finalResponse, aiPersonId, null);
           MessageBus.send('debug', `Welcome message stored for ${topicId}`);
 
           // Add welcome message to cache

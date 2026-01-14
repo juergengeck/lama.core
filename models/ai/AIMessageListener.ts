@@ -69,15 +69,6 @@ export class AIMessageListener {
             timeOfEarliestChange,
             data
         ) => {
-            // CRITICAL: Skip local channel updates - AI is triggered directly from ChatPlan.sendMessage()
-            // This listener only handles REMOTE messages (from P2P sync)
-            // Without this check, we'd get duplicate AI responses (one from IPC, one from listener)
-            const isOurChannel = channelOwner === this.deps.ownerId;
-            if (isOurChannel) {
-                console.log(`[AIMessageListener] ⏭️ Ignoring local channel update (AI triggered directly): ${channelInfoIdHash.substring(0, 16)}`);
-                return;
-            }
-
             // CRITICAL: Ignore updates from AI channels (those are AI's own responses)
             const isAIChannel = channelOwner && this.deps.aiPlan.isAIPerson(channelOwner);
             if (isAIChannel) {
@@ -138,12 +129,12 @@ export class AIMessageListener {
                 const topicIdHash = await calculateIdHashOfObj(topic);
                 const topicDisplayName = topic.displayName ?? topic.originalName ?? topicIdHash.substring(0, 16);
 
-                // Check if this topic has responding AIs based on settings
-                // Priority: Check Topic.aiParticipants (new settings) → fallback to isAITopic (legacy)
+                // Check if this topic has responding AIs
+                // Priority: topic.aiParticipants (new) → legacy _topicAIMap (for Hi/LAMA default chats)
                 let respondingAIPersonIds: SHA256IdHash<Person>[] = [];
 
                 if (topic.aiParticipants && topic.aiParticipants.size > 0) {
-                    // New settings-based check
+                    // New path: check aiParticipants settings
                     try {
                         const aiManager = this.deps.aiPlan.getAIManager?.();
                         if (aiManager) {
@@ -153,31 +144,26 @@ export class AIMessageListener {
                             respondingAIPersonIds = await getRespondingAIs(topic.aiParticipants, getAI);
                         }
                     } catch (err) {
-                        console.log(`[AIMessageListener] Error checking AI settings, falling back to legacy:`, err);
-                    }
-                }
-
-                // Fallback to legacy isAITopic check if no settings-based AIs found
-                if (respondingAIPersonIds.length === 0) {
-                    const isAI = this.deps.aiPlan.isAITopic(topicIdHash);
-                    console.log(`[AIMessageListener] 🤖 Is AI topic (legacy)? ${isAI} for topic: ${topicDisplayName}`);
-                    if (!isAI) {
-                        console.log(`[AIMessageListener] ⏭️  Skipping non-AI topic: ${topicDisplayName}`);
-                        return;
-                    }
-                    // Legacy mode: single AI from _topicAIMap
-                    const legacyAI = this.deps.aiPlan.getAIPersonForTopic?.(topicIdHash);
-                    if (legacyAI) {
-                        respondingAIPersonIds = [legacyAI as SHA256IdHash<Person>];
+                        console.error(`[AIMessageListener] Error checking AI settings:`, err);
                     }
                 } else {
-                    console.log(`[AIMessageListener] 🤖 Settings-based: ${respondingAIPersonIds.length} AIs should respond for topic: ${topicDisplayName}`);
+                    // Legacy path: check _topicAIMap (for Hi/LAMA default chats)
+                    const isAI = await this.deps.aiPlan.isAITopic(topicIdHash);
+                    if (isAI) {
+                        const legacyAI = await this.deps.aiPlan.getAIPersonForTopic?.(topicIdHash);
+                        if (legacyAI) {
+                            respondingAIPersonIds = [legacyAI as SHA256IdHash<Person>];
+                            console.log(`[AIMessageListener] 🤖 Legacy AI topic: ${topicDisplayName}`);
+                        }
+                    }
                 }
 
                 if (respondingAIPersonIds.length === 0) {
-                    console.log(`[AIMessageListener] ⏭️  No responding AIs for topic: ${topicDisplayName}`);
+                    console.log(`[AIMessageListener] ⏭️  Skipping non-AI topic: ${topicDisplayName}`);
                     return;
                 }
+
+                console.log(`[AIMessageListener] 🤖 ${respondingAIPersonIds.length} AI(s) should respond for topic: ${topicDisplayName}`);
 
                 try {
                     await this.handleChannelUpdate(topic, respondingAIPersonIds);
