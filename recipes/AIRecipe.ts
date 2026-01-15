@@ -134,7 +134,8 @@ export const AIRecipe = {
                                 { itemprop: 'device', itemtype: { type: 'string' } },
                                 { itemprop: 'locale', itemtype: { type: 'string' } },
                                 { itemprop: 'time', itemtype: { type: 'number' } },
-                                { itemprop: 'app', itemtype: { type: 'string' } }
+                                { itemprop: 'app', itemtype: { type: 'string' } },
+                                { itemprop: 'creationStory', itemtype: { type: 'string' }, optional: true }
                             ]
                         },
                         optional: true

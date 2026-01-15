@@ -328,11 +328,13 @@ export class AITopicManager implements IAITopicManager {
    *
    * @param aiPersonId - The AI Person ID for Hi chat (from AI creation)
    * @param privateAIPersonId - The AI Person ID for LAMA chat (with -private suffix)
+   * @param aiDisplayName - The AI's display name (e.g., "Dreizehn") for naming the private chat
    * @param onTopicCreated - Callback when a topic is created
    */
   async ensureDefaultChats(
     aiPersonId: SHA256IdHash<Person>,
     privateAIPersonId: SHA256IdHash<Person>,
+    aiDisplayName?: string,
     onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
     if (!aiPersonId) {
@@ -349,7 +351,7 @@ export class AITopicManager implements IAITopicManager {
     }
 
     // Create and store the promise
-    this.ensuringDefaultChats = this.doEnsureDefaultChats(aiPersonId, privateAIPersonId, onTopicCreated);
+    this.ensuringDefaultChats = this.doEnsureDefaultChats(aiPersonId, privateAIPersonId, aiDisplayName, onTopicCreated);
 
     try {
       await this.ensuringDefaultChats;
@@ -392,11 +394,13 @@ export class AITopicManager implements IAITopicManager {
    *
    * @param aiPersonId - The AI Person ID for Hi chat
    * @param privateAIPersonId - The AI Person ID for LAMA chat (with -private suffix)
+   * @param aiDisplayName - The AI's display name (e.g., "Dreizehn") for naming the private chat
    * @param onTopicCreated - Callback when a topic is created
    */
   private async doEnsureDefaultChats(
     aiPersonId: SHA256IdHash<Person>,
     privateAIPersonId: SHA256IdHash<Person>,
+    aiDisplayName?: string,
     onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
     MessageBus.send('debug', 'Ensuring default AI chats...');
@@ -407,20 +411,20 @@ export class AITopicManager implements IAITopicManager {
 
     // Two separate AI Persons for two separate chats (using owned channel format):
     // - Hi: owner=user, name="Hi" (stable topic ID)
-    // - LAMA: owner=user, name="LAMA" (stable topic ID)
+    // - Private: owner=user, name="LAMA" (stable topic ID), displayName = AI's name
     // The AI person is tracked separately via registerAITopic() and can change on model switch
     console.log(`[AITopicManager] Hi chat AI Person: ${aiPersonId}`);
-    console.log(`[AITopicManager] LAMA chat AI Person: ${privateAIPersonId}`);
+    console.log(`[AITopicManager] Private chat AI Person: ${privateAIPersonId}, displayName: ${aiDisplayName}`);
 
     // Create Hi chat (static welcome message - no LLM generation)
     console.log('[AITopicManager] Creating Hi chat...');
     await this.ensureHiChat(this.defaultModelId, aiPersonId, onTopicCreated);
     console.log('[AITopicManager] Hi chat done');
 
-    // Create LAMA chat (LLM-generated welcome message) - uses PRIVATE AI Person
-    console.log('[AITopicManager] Creating LAMA chat...');
-    await this.ensureLamaChat(this.defaultModelId, privateAIPersonId, onTopicCreated);
-    console.log('[AITopicManager] LAMA chat done');
+    // Create private AI chat (LLM-generated welcome message) - uses PRIVATE AI Person
+    console.log('[AITopicManager] Creating private AI chat...');
+    await this.ensureLamaChat(this.defaultModelId, privateAIPersonId, aiDisplayName, onTopicCreated);
+    console.log('[AITopicManager] Private AI chat done');
   }
 
   /**
@@ -529,18 +533,26 @@ export class AITopicManager implements IAITopicManager {
   }
 
   /**
-   * Ensure LAMA chat exists (uses private model variant)
-   * NOTE: LAMA chat generates DYNAMIC welcome message via LLM (unlike Hi chat)
+   * Ensure private AI chat exists (uses private model variant)
+   * NOTE: This chat generates DYNAMIC welcome message via LLM (unlike Hi chat)
    *
    * Creates a topic with owned channel format (owner:name).
    * This allows natural conversion to group chat when participants are added.
+   *
+   * @param _privateModelId - Model ID (unused, kept for API compatibility)
+   * @param privateAiPersonId - The AI Person ID for this chat
+   * @param aiDisplayName - The AI's display name (e.g., "Dreizehn") - used as topic display name
+   * @param onTopicCreated - Callback when a topic is created
    */
   private async ensureLamaChat(
     _privateModelId: string,
     privateAiPersonId: SHA256IdHash<Person>,
+    aiDisplayName?: string,
     onTopicCreated?: (topicId: string, aiPersonId: SHA256IdHash<Person>) => Promise<void>
   ): Promise<void> {
-    MessageBus.send('debug', `Ensuring LAMA chat with AI Person: ${privateAiPersonId.toString().substring(0, 8)}...`);
+    // Use AI's name for display, fall back to 'LAMA' only if not provided
+    const displayName = aiDisplayName || 'LAMA';
+    MessageBus.send('debug', `Ensuring private AI chat "${displayName}" with AI Person: ${privateAiPersonId.toString().substring(0, 8)}...`);
 
     try {
       // Get user's person ID
@@ -552,26 +564,13 @@ export class AITopicManager implements IAITopicManager {
 
       // Check if topic already exists by originalName
       // Topic identity is computed from (participants, originalName) - 'LAMA' with these participants
+      // Note: originalName stays 'LAMA' for stability, displayName uses AI's name
       let topic: any = await this.topicModel.topics.queryByOriginalName('LAMA');
 
       if (!topic) {
-        // Get AI's display name from model info (e.g., "Lumi" instead of "LAMA")
-        let aiDisplayName = 'LAMA';
-        if (this.defaultModelId && this.llmManager) {
-          try {
-            const model = this.llmManager.getModel(this.defaultModelId);
-            if (model?.displayName) {
-              aiDisplayName = model.displayName;
-              MessageBus.send('debug', `Using AI display name: ${aiDisplayName}`);
-            }
-          } catch (e) {
-            // Fall back to 'LAMA' if model lookup fails
-          }
-        }
-
         // Create topic - identity computed from participants + originalName ('LAMA')
-        // displayName uses the AI's name for UI display (e.g., "Lumi")
-        topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], aiDisplayName);
+        // displayName uses the AI's name for UI display (e.g., "Dreizehn")
+        topic = await this.topicModel.createTopic('LAMA', [userPersonId, privateAiPersonId], displayName);
         topicIdHash = String(await calculateIdHashOfObj(topic));
         needsWelcome = true;
         MessageBus.send('debug', `LAMA chat created with idHash: ${topicIdHash.substring(0, 16)}, displayName: ${aiDisplayName}`);

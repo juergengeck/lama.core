@@ -114,6 +114,9 @@ export class AIAssistantPlan {
   // Private AI Person ID for LAMA chat (uses aiId-private suffix for separate identity)
   private _privateAIPersonId: SHA256IdHash<Person> | null = null;
 
+  // Default AI display name (e.g., "Dreizehn") - used for naming private chat
+  private _defaultAIDisplayName: string | null = null;
+
   constructor(deps: AIAssistantPlanDependencies) {
     MessageBus.send('debug', 'Creating AIAssistantPlan instance');
     this.deps = deps;
@@ -307,12 +310,14 @@ export class AIAssistantPlan {
           console.log(`[AIAssistantPlan.init] privateAI: ${privateAI?.aiId || 'NOT FOUND'}`);
 
           if (privateAI) {
-            // CRITICAL: Set both AI Person IDs from loaded data
+            // CRITICAL: Set both AI Person IDs and display name from loaded data
             this._defaultAIPersonId = aiForModel.personId;
             this._privateAIPersonId = privateAI.personId;
+            this._defaultAIDisplayName = aiForModel.displayName;
             console.log(`[AIAssistantPlan.init] Both AIs found, calling createDefaultChats()`);
             console.log(`[AIAssistantPlan.init] _defaultAIPersonId: ${this._defaultAIPersonId}`);
             console.log(`[AIAssistantPlan.init] _privateAIPersonId: ${this._privateAIPersonId}`);
+            console.log(`[AIAssistantPlan.init] _defaultAIDisplayName: ${this._defaultAIDisplayName}`);
             // Ensure topics exist and AI participants are in groups
             await this.createDefaultChats();
             console.log(`[AIAssistantPlan.init] createDefaultChats() completed`);
@@ -385,6 +390,7 @@ export class AIAssistantPlan {
     await this.topicManager.ensureDefaultChats(
       aiPersonId,
       privateAIPersonId,
+      this._defaultAIDisplayName || undefined,
       async (topicId: string, personId: SHA256IdHash<Person>) => {
         // Callback when topic is created - generate welcome message
         await this.messageProcessor.handleNewTopic(topicId, personId);
@@ -663,9 +669,10 @@ export class AIAssistantPlan {
       personality
     );
 
-    // Store both AI Person IDs
+    // Store both AI Person IDs and display name
     this._defaultAIPersonId = aiPersonId;
     this._privateAIPersonId = privatePersonId;
+    this._defaultAIDisplayName = displayName;
 
     // Wait for topics to be created so they appear in conversation list immediately
     // (Welcome messages still generate in background via callbacks)

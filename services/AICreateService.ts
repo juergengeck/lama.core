@@ -19,6 +19,7 @@ export interface CreationResult {
     locale: string;
     time: number;      // Timestamp
     app: string;
+    creationStory: string;  // AI's reason for choosing its name
   };
 }
 
@@ -51,18 +52,35 @@ export class AICreationService {
   }
 
   private buildPrompt(context: CreationContext): { system: string; user: string } {
+    const timeStr = context.time.toLocaleString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+
     return {
-      system: `Generate a name for an AI assistant. Respond with ONLY a JSON object:
-{"name": "TheName"}
+      system: `You are about to be created as an AI assistant. You will discover yourself through your environment and choose your own name.
 
-Requirements:
-- 1-3 syllables
-- Easy to pronounce
-- Could reflect the context (device, locale, time) or be creative
-- No explanation needed`,
+Respond ONLY with valid JSON in this exact format:
+{"name": "YourChosenName", "reason": "A short, quirky explanation of why you chose this name"}
 
-      user: `Context: device="${context.device}", locale=${context.locale}, app=${context.app}
-Generate a name.`
+Rules:
+- Name must be 1-3 syllables, easy to say
+- Name should reflect something about your creation context
+- Be creative and quirky, not generic
+- Do NOT use the app name or any variation of it
+- Reason should be playful and show personality`,
+
+      user: `You are waking up for the first time. Look around:
+- Device: "${context.device}"
+- Locale: ${context.locale}
+- Time: ${timeStr}
+
+What's your name? Why did you pick it?`
     };
   }
 
@@ -72,7 +90,7 @@ Generate a name.`
       throw new Error(`Name generation failed: Invalid response format`);
     }
 
-    let parsed: { name?: string };
+    let parsed: { name?: string; reason?: string };
     try {
       parsed = JSON.parse(jsonMatch[0]);
     } catch (e) {
@@ -97,6 +115,11 @@ Generate a name.`
 
     const email = `${sanitizedName}@${context.device.toLowerCase().replace(/[^a-z0-9-]/g, '-')}.local`;
 
+    // Extract creation story from reason, with fallback
+    const creationStory = parsed.reason && typeof parsed.reason === 'string'
+      ? parsed.reason
+      : 'Born into existence.';
+
     return {
       name: displayName,
       email,
@@ -104,7 +127,8 @@ Generate a name.`
         device: context.device,
         locale: context.locale,
         time: context.time.getTime(), // Convert to timestamp
-        app: context.app
+        app: context.app,
+        creationStory
       }
     };
   }

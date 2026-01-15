@@ -4,6 +4,7 @@ import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.j
 import type TopicAnalysisModel from '@lama/core/one-ai/models/TopicAnalysisModel.js';
 import type { SubjectsPlan } from '@lama/core/plans/SubjectsPlan.js';
 import type { MemoryPlan as UIMemoryPlan } from '@ui/core';
+import type { SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 
 // ONE.core storage imports
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
@@ -11,6 +12,34 @@ import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
 // Memory.core imports
 import { MemoryPlan as CoreMemoryPlan, ChatMemoryPlan, ChatMemoryService, MemoryExportPlan, MemoryImportPlan } from '@memory/core';
+
+// TopicAnalyzer for LLM-based keyword extraction
+import TopicAnalyzer from '../one-ai/services/TopicAnalyzer.js';
+
+/**
+ * Embedding provider interface for semantic memory search
+ * Platform implementations (ONNX, Ollama) inject this at runtime
+ */
+export interface EmbeddingProvider {
+  readonly model: string;
+  embed(text: string): Promise<number[]>;
+  embedBatch(texts: string[]): Promise<number[][]>;
+}
+
+/**
+ * MeaningDimension interface for cube-based semantic indexing
+ * Provided by meaning.core package
+ */
+export interface MeaningDimensionLike {
+  indexText(objectHash: SHA256Hash, text: string): Promise<SHA256Hash>;
+  queryByText(text: string, k: number, threshold?: number): Promise<Array<{
+    objectHash: SHA256Hash;
+    meaningNodeHash: SHA256Hash;
+    similarity: number;
+  }>>;
+  isIndexed(objectHash: SHA256Hash): boolean;
+  getIndexSize(): number;
+}
 
 /**
  * MemoryModule - Memory management functionality
@@ -28,8 +57,11 @@ export class MemoryModule implements Module {
     { targetType: 'TopicAnalysisModel', required: true },
     { targetType: 'SubjectsPlan', required: true },
     { targetType: 'OneCore', required: true },
+    { targetType: 'LLMManager', required: true },  // For TopicAnalyzer keyword extraction
     { targetType: 'LeuteModel', required: false },
-    { targetType: 'AuditService', required: false }
+    { targetType: 'AuditService', required: false },
+    { targetType: 'EmbeddingProvider', required: false },  // For ChatMemoryService semantic search
+    { targetType: 'MeaningDimension', required: false }    // For cube-based HNSW indexing
   ];
 
   static supplies = [
@@ -43,9 +75,15 @@ export class MemoryModule implements Module {
     topicAnalysisModel?: TopicAnalysisModel;
     subjectsPlan?: SubjectsPlan;
     oneCore?: any;
+    lLMManager?: any;  // LLMManager for TopicAnalyzer (camelCase matches setDependency)
     leuteModel?: any;
     auditService?: any;
+    embeddingProvider?: EmbeddingProvider;  // For ChatMemoryService semantic search
+    meaningDimension?: MeaningDimensionLike;  // For cube-based HNSW indexing
   } = {};
+
+  // TopicAnalyzer instance for LLM-based keyword extraction
+  private topicAnalyzer?: TopicAnalyzer;
 
   // Memory plans and services
   // NOTE: memoryPlan implements ui.core's MemoryPlan interface, NOT memory.core's MemoryPlan class
@@ -63,15 +101,41 @@ export class MemoryModule implements Module {
 
     console.log('[MemoryModule] Initializing memory module...');
 
-    const { channelManager, topicAnalysisModel, subjectsPlan, oneCore } = this.deps;
+    const { channelManager, topicAnalysisModel, subjectsPlan, oneCore, lLMManager, embeddingProvider, meaningDimension } = this.deps;
+
+    // Create TopicAnalyzer with LLMManager for keyword extraction
+    // TopicAnalyzer uses LLM to extract keywords from chat messages
+    if (lLMManager) {
+      this.topicAnalyzer = new TopicAnalyzer(lLMManager);
+      console.log('[MemoryModule] ✅ TopicAnalyzer created with LLMManager for keyword extraction');
+    } else {
+      console.warn('[MemoryModule] ⚠️ No LLMManager available - memory extraction will use fallback');
+    }
+
+    // Log embedding provider status
+    if (embeddingProvider) {
+      console.log(`[MemoryModule] ✅ EmbeddingProvider available (${embeddingProvider.model}) for semantic search`);
+    } else {
+      console.log('[MemoryModule] ℹ️ No EmbeddingProvider - using keyword-based memory search');
+    }
+
+    // Log MeaningDimension status for HNSW-based semantic indexing
+    if (meaningDimension) {
+      console.log(`[MemoryModule] ✅ MeaningDimension available (${meaningDimension.getIndexSize()} items indexed) for cube-based search`);
+    } else {
+      console.log('[MemoryModule] ℹ️ No MeaningDimension - subjects will not be indexed in cube');
+    }
 
     // Create ChatMemoryService with all dependencies
+    // Pass topicAnalyzer (with extractKeywords) for LLM-based extraction
+    // Pass embeddingProvider for semantic similarity search
     this.chatMemoryService = new ChatMemoryService({
       nodeOneCore: oneCore,
-      topicAnalyzer: topicAnalysisModel,
+      topicAnalyzer: this.topicAnalyzer,  // Use TopicAnalyzer service, not TopicAnalysisModel
       memoryPlan: undefined, // Will be set after CoreMemoryPlan is created
       storeVersionedObject,
-      getObjectByIdHash
+      getObjectByIdHash,
+      embeddingProvider  // For semantic memory search
     });
 
     // Create core MemoryPlan with dependencies
@@ -88,8 +152,163 @@ export class MemoryModule implements Module {
       }
     });
 
-    // Wire up ChatMemoryService with CoreMemoryPlan
-    (this.chatMemoryService as any).deps.memoryPlan = this.coreMemoryPlan;
+    // Create adapter for ChatMemoryService that wraps TopicAnalysisModel
+    // Provides: createSubject, listSubjects, getSubject
+    const memoryPlanAdapter = {
+      // Store created subjects for retrieval
+      _createdSubjects: new Map<string, any>(),
+
+      async createSubject(params: { id: string; name: string; description?: string; metadata?: Map<string, string>; sign?: boolean; theme?: string }) {
+        // Extract topic ID and keywords from the chat-scoped id (format: chat-{topicId}-{name})
+        const match = params.id.match(/^chat-([a-f0-9]+)-(.+)$/);
+        const topicId = match?.[1] || '';
+        const subjectName = params.name || match?.[2] || '';
+
+        // Extract keywords from name (space-separated)
+        const keywordTerms = subjectName.split(/\s+/).filter(k => k.length > 0);
+        const keywordCombination = keywordTerms.join('+');
+
+        // Get confidence from metadata or default
+        const confidence = parseFloat(params.metadata?.get('confidence') || '0.5');
+
+        console.log('[MemoryModule] Creating subject via TopicAnalysisModel:', { topicId, keywordTerms, subjectName });
+
+        try {
+          const result = await topicAnalysisModel!.createSubject(
+            topicId,
+            keywordTerms,
+            keywordCombination,
+            params.description || subjectName,
+            confidence
+          );
+
+          // Store for later retrieval
+          const idHash = result.idHash || result.hash || '';
+          this._createdSubjects.set(idHash, {
+            ...result,
+            name: subjectName,
+            keywords: keywordTerms,
+            description: params.description || subjectName
+          });
+
+          // Index subject in MeaningDimension for cube-based semantic search
+          if (meaningDimension && idHash) {
+            const textToIndex = params.description || subjectName;
+            try {
+              await meaningDimension.indexText(idHash as SHA256Hash, textToIndex);
+              console.log('[MemoryModule] ✅ Subject indexed in MeaningDimension:', subjectName);
+            } catch (indexError) {
+              // Log but don't fail - MeaningDimension indexing is optional enhancement
+              console.warn('[MemoryModule] ⚠️ Failed to index subject in MeaningDimension:', indexError);
+            }
+          }
+
+          return {
+            idHash,
+            hash: result.hash || result.idHash || '',
+            filePath: ''
+          };
+        } catch (error) {
+          console.error('[MemoryModule] createSubject error:', error);
+          throw error;
+        }
+      },
+
+      async listSubjects(): Promise<string[]> {
+        // Get all subjects from TopicAnalysisModel across all topics
+        try {
+          const allSubjects = await topicAnalysisModel!.getAllSubjects();
+          const idHashes: string[] = [];
+
+          for (const subject of allSubjects) {
+            // Calculate idHash for each subject
+            const idHash = await calculateIdHashOfObj(subject);
+            if (idHash) {
+              idHashes.push(idHash);
+              // Cache for getSubject
+              this._createdSubjects.set(idHash, subject);
+            }
+          }
+
+          // Also include any subjects we created in this session
+          for (const idHash of this._createdSubjects.keys()) {
+            if (!idHashes.includes(idHash)) {
+              idHashes.push(idHash);
+            }
+          }
+
+          console.log('[MemoryModule] listSubjects found:', idHashes.length);
+          return idHashes;
+        } catch (error) {
+          console.error('[MemoryModule] listSubjects error:', error);
+          return [];
+        }
+      },
+
+      async getSubject(idHash: string): Promise<any> {
+        // Helper to transform subject to ChatMemoryService-compatible format
+        const transformSubject = (subject: any): any => {
+          if (!subject) return null;
+
+          // Create metadata Map with keywords for ChatMemoryService
+          const metadata = new Map<string, string>();
+
+          // Get keyword terms from the subject
+          // Subject stores keywords as array of terms (from our createSubject adapter)
+          // or as array of idHashes (from TopicAnalysisModel)
+          let keywordTerms: string[] = [];
+          if (subject.keywords && Array.isArray(subject.keywords)) {
+            // Check if keywords are already terms (strings that aren't hashes)
+            const firstKeyword = subject.keywords[0];
+            if (firstKeyword && firstKeyword.length < 64 && !firstKeyword.match(/^[a-f0-9]{64}$/)) {
+              // Keywords are already terms
+              keywordTerms = subject.keywords;
+            } else {
+              // Keywords are idHashes - use name or description to extract terms
+              if (subject.name) {
+                keywordTerms = subject.name.split(/\s+/).filter((k: string) => k.length > 0);
+              } else if (subject.description) {
+                keywordTerms = subject.description.split(/\s+/).slice(0, 5);
+              }
+            }
+          }
+
+          metadata.set('keywords', keywordTerms.join(','));
+          metadata.set('confidence', String(subject.confidence || 0.5));
+
+          return {
+            ...subject,
+            name: subject.name || subject.description?.split('.')[0] || 'Untitled',
+            metadata,
+            created: subject.createdAt || Date.now(),
+            modified: subject.lastSeenAt || subject.createdAt || Date.now()
+          };
+        };
+
+        // First check our cache
+        if (this._createdSubjects.has(idHash)) {
+          return transformSubject(this._createdSubjects.get(idHash));
+        }
+
+        // Try to fetch from ONE.core storage
+        try {
+          const result = await getObjectByIdHash(idHash as any);
+          if (result?.obj) {
+            const subject = result.obj;
+            // Cache for future lookups
+            this._createdSubjects.set(idHash, subject);
+            return transformSubject(subject);
+          }
+        } catch (error) {
+          console.error('[MemoryModule] getSubject error for', idHash, ':', error);
+        }
+
+        return null;
+      }
+    };
+
+    // Wire up ChatMemoryService with adapter
+    (this.chatMemoryService as any).deps.memoryPlan = memoryPlanAdapter;
 
     // Create ChatMemoryPlan with ChatMemoryService
     this.chatMemoryPlan = new ChatMemoryPlan({
@@ -126,7 +345,12 @@ export class MemoryModule implements Module {
 
     // Create the UI-compatible memoryPlan adapter
     // This implements ui.core's MemoryPlan interface
-    this.memoryPlan = this.createUIMemoryPlan(topicAnalysisModel!, this.chatMemoryService);
+    this.memoryPlan = this.createUIMemoryPlan(
+      topicAnalysisModel!,
+      this.chatMemoryService,
+      memoryPlanAdapter,
+      meaningDimension
+    );
 
     console.log('[MemoryModule] Initialized');
   }
@@ -137,7 +361,9 @@ export class MemoryModule implements Module {
    */
   private createUIMemoryPlan(
     topicAnalysisModel: TopicAnalysisModel,
-    chatMemoryService: ChatMemoryService
+    chatMemoryService: ChatMemoryService,
+    memoryPlanAdapter: { _createdSubjects: Map<string, any> },
+    meaningDimension?: MeaningDimensionLike
   ): UIMemoryPlan {
     return {
       // Status and toggle methods delegate to chatMemoryService
@@ -197,9 +423,43 @@ export class MemoryModule implements Module {
       },
 
       async find(params: { topicId?: string; keywords: string[]; limit?: number }) {
+        const limit = params.limit ?? 10;
+
+        // Try semantic search via MeaningDimension first (HNSW-indexed)
+        if (meaningDimension && meaningDimension.getIndexSize() > 0) {
+          const queryText = params.keywords.join(' ');
+          try {
+            const semanticResults = await meaningDimension.queryByText(queryText, limit, 0.3);
+            if (semanticResults.length > 0) {
+              console.log(`[MemoryModule] Semantic search found ${semanticResults.length} results`);
+
+              // Enrich results with subject data from cache
+              const enrichedMemories = await Promise.all(semanticResults.map(async (r) => {
+                const cached = memoryPlanAdapter._createdSubjects.get(r.objectHash);
+                return {
+                  id: r.objectHash,
+                  idHash: r.objectHash,
+                  description: cached?.description || cached?.name || 'Memory',
+                  keywords: cached?.keywords || [],
+                  relevanceScore: r.similarity
+                };
+              }));
+
+              return {
+                memories: enrichedMemories,
+                searchKeywords: params.keywords,
+                totalFound: semanticResults.length
+              };
+            }
+          } catch (searchError) {
+            console.warn('[MemoryModule] MeaningDimension search failed, falling back to keyword search:', searchError);
+          }
+        }
+
+        // Fall back to keyword-based search via ChatMemoryService
         const result = await chatMemoryService.findRelatedMemories({
           keywords: params.keywords,
-          limit: params.limit ?? 10,
+          limit,
           minRelevance: 0.3
         });
         return {
@@ -497,7 +757,8 @@ export class MemoryModule implements Module {
       this.deps.channelManager &&
       this.deps.topicAnalysisModel &&
       this.deps.subjectsPlan &&
-      this.deps.oneCore
+      this.deps.oneCore &&
+      this.deps.lLMManager
     );
   }
 }

@@ -49,7 +49,6 @@ import { ProposalCache } from '@lama/core/services/proposal-cache.js';
 import { LLMManager } from '@lama/core/services/llm-manager.js';
 import type { LLMPlatform } from '@lama/core/services/llm-platform.js';
 import { AIToolExecutor, type AIToolExecutorDeps } from '@lama/core/services/AIToolExecutor.js';
-import { planRegistry } from '@mcp/core';
 
 /**
  * Platform-specific LLM configuration interface
@@ -595,73 +594,24 @@ export class AIModule implements Module {
    * Initialize the AI tool executor for unified tool access
    * Call this after mcpManager is available (from platform code)
    *
-   * Creates a simple planRouter adapter for internal AI calls that uses
-   * the global planRegistry singleton. This bypasses PolicyEngine for
-   * internal calls which is acceptable since internal calls are already
-   * allowed by default policy (supply:internal:all at priority 990).
+   * Plan registration now happens in the platform layer (e.g., mcp-server-init.ts)
+   * which wires modules to refinio.api's PlanRegistry.
    *
    * @param deps - Tool executor dependencies (planRouter, mcpManager, etc.)
    */
   initToolExecutor(deps: AIToolExecutorDeps): void {
     console.log('[AIModule] Initializing AIToolExecutor...');
 
-    // Register our plans with the global planRegistry
-    this.registerPlansWithRegistry();
+    // planRouter should be provided by the platform layer
+    // It wraps the refinio.api PlanRegistry
+    if (!deps.planRouter) {
+      console.warn('[AIModule] No planRouter provided - plan: prefixed tools will not work');
+    }
 
-    // Create a simple planRouter adapter for internal AI calls
-    // This bypasses PolicyEngine since internal calls are allowed by default
-    const internalPlanRouter = {
-      call: async (_context: any, plan: string, method: string, params: any) => {
-        try {
-          const result = await planRegistry.callPlanMethod(plan, method, params);
-          return { success: true, data: result };
-        } catch (error: any) {
-          return { success: false, error: error.message || String(error) };
-        }
-      }
-    };
-
-    // Merge with provided deps, adding planRouter if not already provided
-    const fullDeps: AIToolExecutorDeps = {
-      planRouter: deps.planRouter || internalPlanRouter,
-      mcpManager: deps.mcpManager,
-      policyEngine: deps.policyEngine
-    };
-
-    this.toolExecutor = new AIToolExecutor(fullDeps);
+    this.toolExecutor = new AIToolExecutor(deps);
     this.llmManager.setToolExecutor(this.toolExecutor);
 
-    console.log('[AIModule] AIToolExecutor initialized with planRouter and wired to LLMManager');
-  }
-
-  /**
-   * Register AIModule's plans with the global planRegistry
-   * This enables plan: prefixed tool calls from LLMs (Gemma, Claude, etc.)
-   */
-  private registerPlansWithRegistry(): void {
-    console.log('[AIModule] Registering plans with global registry...');
-
-    // Register AI-related plans for tool access
-    if (this.aiAssistantPlan) {
-      planRegistry.registerPlan('ai-assistant', 'llm', this.aiAssistantPlan, 'AI assistant operations');
-    }
-    if (this.llmConfigPlan) {
-      planRegistry.registerPlan('llm-config', 'llm', this.llmConfigPlan, 'LLM configuration');
-    }
-    if (this.topicAnalysisPlan) {
-      planRegistry.registerPlan('topic-analysis', 'analysis', this.topicAnalysisPlan, 'Topic analysis');
-    }
-    if (this.proposalsPlan) {
-      planRegistry.registerPlan('proposals', 'recommendations', this.proposalsPlan, 'Proposal generation');
-    }
-    if (this.subjectsPlan) {
-      planRegistry.registerPlan('subjects', 'memory', this.subjectsPlan, 'Subject management');
-    }
-    if (this.llmManager) {
-      planRegistry.registerPlan('llm', 'llm', this.llmManager, 'LLM provider management');
-    }
-
-    console.log('[AIModule] Plans registered with global registry');
+    console.log('[AIModule] AIToolExecutor initialized');
   }
 
   async shutdown(): Promise<void> {
